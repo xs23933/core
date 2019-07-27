@@ -1,0 +1,8 @@
+.DS_Store
+*.db
+*.img
+*.sum
+*.conf
+work
+server
+vendor
