@@ -44,6 +44,18 @@ func (h *Handler) JSON(w http.ResponseWriter, v interface{}, err error) {
 	})
 }
 
+// OriginJSON 直接输出json 不做任何处理
+func (h *Handler) OriginJSON(w http.ResponseWriter, v interface{}) {
+	render.New().JSON(w, http.StatusOK, v)
+}
+
+// Data 直接输出Data
+func (h *Handler) Data(w http.ResponseWriter, v []byte) {
+	render.New(render.Options{
+		BinaryContentType: "text/json",
+	}).Data(w, http.StatusOK, v)
+}
+
 // Request 请求request
 type Request interface {
 	ServeHTTP(w http.ResponseWriter, r *http.Request)
