@@ -79,7 +79,11 @@ func New(file string) *Core {
 // Run 运行
 func (c *Core) Run(hand Request) error {
 	handler := c.handleContext(hand)
-	server := &http.Server{Addr: ":" + c.config.Get("app.port").(string), Handler: handler}
+	port := ":" + c.config.Get("app.port").(string)
+	server := &http.Server{Addr: port, Handler: handler}
+
+	Log("Start http://127.0.0.1%s", port)
+
 	return server.ListenAndServe()
 }
 
