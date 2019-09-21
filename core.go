@@ -2,7 +2,6 @@ package core
 
 import (
 	"context"
-	"log"
 	"net/http"
 
 	"github.com/davecgh/go-spew/spew"
@@ -96,9 +95,4 @@ func (c *Core) handleContext(hand http.Handler) http.Handler {
 // Dump 打印数据信息
 func Dump(v ...interface{}) {
 	spew.Dump(v...)
-}
-
-// Log 日志输出信息
-func Log(f string, args ...interface{}) {
-	log.Printf(f+"\n", args...)
 }
