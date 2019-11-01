@@ -22,6 +22,28 @@ func (h *RequestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.Router.ServeHTTP(w, r)
 }
 
+// JSON JSON
+func (h *RequestHandler) JSON(w http.ResponseWriter, v interface{}, err error) {
+	if err != nil {
+		render.New().JSON(w, http.StatusOK, map[string]interface{}{
+			"status": false,
+			"data":   v,
+			"msg":    err.Error(),
+		})
+		return
+	}
+	render.New().JSON(w, http.StatusOK, map[string]interface{}{
+		"status": true,
+		"data":   v,
+		"msg":    "success",
+	})
+}
+
+// OriginJSON OriginJSON
+func (h *RequestHandler) OriginJSON(w http.ResponseWriter, v interface{}) {
+	render.New().JSON(w, http.StatusOK, v)
+}
+
 // Handler handler 基类
 type Handler struct {
 }
