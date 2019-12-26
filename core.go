@@ -17,6 +17,7 @@ type TreeMux *httptreemux.TreeMux
 
 // RequestHandler 请求转化对象
 type RequestHandler struct {
+	prefix string
 	Router *httptreemux.TreeMux
 }
 
@@ -87,6 +88,12 @@ type Request interface {
 	PushPut(string, httptreemux.HandlerFunc)
 	PushDelete(string, httptreemux.HandlerFunc)
 	InitRouter()
+	Init()
+	Uri(name, method string) string
+}
+
+func (h *RequestHandler) Init() {
+	h.prefix = ""
 }
 
 // InitRouter 初始化路由
@@ -114,6 +121,14 @@ func (h *RequestHandler) PushPut(uri string, handler httptreemux.HandlerFunc) {
 // PushDelete 注册PushDelete
 func (h *RequestHandler) PushDelete(uri string, handler httptreemux.HandlerFunc) {
 	h.Router.DELETE(uri, handler)
+}
+
+func (h *RequestHandler) Uri(name, method string) string {
+	return h.prefix + strings.TrimPrefix(name, method)
+}
+
+func (h *RequestHandler) SetPrefix(prefix string) {
+	h.prefix = prefix
 }
 
 // Core core
@@ -144,6 +159,7 @@ func (c *Core) Run(hand Request) error {
 
 func (c *Core) handleContext(hand Request) http.Handler {
 	hand.InitRouter()
+	hand.Init()
 	// 注册路由
 	refCtl := reflect.TypeOf(hand)
 	methodCount := refCtl.NumMethod()
@@ -152,25 +168,28 @@ func (c *Core) handleContext(hand Request) http.Handler {
 	for idx := 0; idx < methodCount; idx++ {
 		m := refCtl.Method(idx)
 		name := toNamer(m.Name)
-		uri := strings.TrimPrefix(name, "get")
 		switch {
 		case strings.HasPrefix(name, "get"):
 			if fn, ok := (valFn.Method(idx).Interface()).(func(http.ResponseWriter, *http.Request, map[string]string)); ok {
+				uri := hand.Uri(name, "get")
 				hand.PushGet(uri, fn)
 				Log("GET %s", uri)
 			}
 		case strings.HasPrefix(name, "post"):
 			if fn, ok := (valFn.Method(idx).Interface()).(func(http.ResponseWriter, *http.Request, map[string]string)); ok {
+				uri := hand.Uri(name, "post")
 				hand.PushPost(uri, fn)
 				Log("POST %s", uri)
 			}
 		case strings.HasPrefix(name, "put"):
 			if fn, ok := (valFn.Method(idx).Interface()).(func(http.ResponseWriter, *http.Request, map[string]string)); ok {
+				uri := hand.Uri(name, "put")
 				hand.PushPut(uri, fn)
 				Log("PUT %s", uri)
 			}
 		case strings.HasPrefix(name, "delete"):
 			if fn, ok := (valFn.Method(idx).Interface()).(func(http.ResponseWriter, *http.Request, map[string]string)); ok {
+				uri := hand.Uri(name, "delete")
 				hand.PushDelete(uri, fn)
 				Log("DELETE %s", uri)
 			}

@@ -20,7 +20,12 @@ type Handler struct {
   core.RequestHandler
 }
 
-// ServeHTTP if check ServeHTTP or hook method
+// Init if typedef prefix
+func (h *Handler) Init() {
+	h.SetPrefix("/api")
+}
+
+// ServeHTTP if check ServeHTTP or hook method 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 		default: // access check required.
@@ -38,12 +43,22 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 }
 
+// Get_ it's get /
+func (h *Handler) Get_(w http.ResponseWriter, r *http.Request, params map[string]string) {
+	h.JSON(w, "get /", nil)
+}
 
 // GetHome uri is /home
 func (h *Handler) GetHome(w http.ResponseWriter, r *http.Request, params map[string]string) {
   h.OriginJSON(map[string]string{
     "Hello": "world",
   })
+}
+
+// GetUserParam Use Param
+//   get /user/:param
+func (h *Handler) GetUserParam(w http.ResponseWriter, r *http.Request, params map[string]string) {
+	h.JSON(w, params["param"], nil)
 }
 
 ```

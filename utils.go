@@ -90,5 +90,6 @@ func toNamer(name string) string {
 	s := strings.ToLower(buf.String())
 	smap.Set(name, s)
 	s = strings.Replace(s, "_", "/", -1)
+	s = strings.Replace(s, "param", ":param", -1)
 	return s
 }
