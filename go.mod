@@ -1,4 +1,4 @@
-module core
+module github.com/xs23933/core
 
 go 1.13
 
