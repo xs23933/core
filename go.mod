@@ -1,4 +1,6 @@
-module github.com/xs23933/core
+module core
+
+// module github.com/xs23933/core
 
 go 1.12
 

@@ -3,6 +3,8 @@ package core
 import (
 	"context"
 	"net/http"
+	"reflect"
+	"strings"
 
 	"github.com/davecgh/go-spew/spew"
 	"github.com/dimfeld/httptreemux"
@@ -80,6 +82,38 @@ func (h *Handler) Data(w http.ResponseWriter, v []byte) {
 // Request 请求request
 type Request interface {
 	ServeHTTP(w http.ResponseWriter, r *http.Request)
+	PushGet(string, httptreemux.HandlerFunc)
+	PushPost(string, httptreemux.HandlerFunc)
+	PushPut(string, httptreemux.HandlerFunc)
+	PushDelete(string, httptreemux.HandlerFunc)
+	InitRouter()
+}
+
+// InitRouter 初始化路由
+func (h *RequestHandler) InitRouter() {
+	if h.Router == nil {
+		h.Router = httptreemux.New()
+	}
+}
+
+// PushGet 注册get
+func (h *RequestHandler) PushGet(uri string, handler httptreemux.HandlerFunc) {
+	h.Router.GET(uri, handler)
+}
+
+// PushPost 注册PushPost
+func (h *RequestHandler) PushPost(uri string, handler httptreemux.HandlerFunc) {
+	h.Router.POST(uri, handler)
+}
+
+// PushPut 注册PushPut
+func (h *RequestHandler) PushPut(uri string, handler httptreemux.HandlerFunc) {
+	h.Router.PUT(uri, handler)
+}
+
+// PushDelete 注册PushDelete
+func (h *RequestHandler) PushDelete(uri string, handler httptreemux.HandlerFunc) {
+	h.Router.DELETE(uri, handler)
 }
 
 // Core core
@@ -108,7 +142,41 @@ func (c *Core) Run(hand Request) error {
 	return server.ListenAndServe()
 }
 
-func (c *Core) handleContext(hand http.Handler) http.Handler {
+func (c *Core) handleContext(hand Request) http.Handler {
+	hand.InitRouter()
+	// 注册路由
+	refCtl := reflect.TypeOf(hand)
+	methodCount := refCtl.NumMethod()
+	valFn := reflect.ValueOf(hand)
+	Log("Auto register router")
+	for idx := 0; idx < methodCount; idx++ {
+		m := refCtl.Method(idx)
+		name := toNamer(m.Name)
+		uri := strings.TrimPrefix(name, "get")
+		switch {
+		case strings.HasPrefix(name, "get"):
+			if fn, ok := (valFn.Method(idx).Interface()).(func(http.ResponseWriter, *http.Request, map[string]string)); ok {
+				hand.PushGet(uri, fn)
+				Log("GET %s", uri)
+			}
+		case strings.HasPrefix(name, "post"):
+			if fn, ok := (valFn.Method(idx).Interface()).(func(http.ResponseWriter, *http.Request, map[string]string)); ok {
+				hand.PushPost(uri, fn)
+				Log("POST %s", uri)
+			}
+		case strings.HasPrefix(name, "put"):
+			if fn, ok := (valFn.Method(idx).Interface()).(func(http.ResponseWriter, *http.Request, map[string]string)); ok {
+				hand.PushPut(uri, fn)
+				Log("PUT %s", uri)
+			}
+		case strings.HasPrefix(name, "delete"):
+			if fn, ok := (valFn.Method(idx).Interface()).(func(http.ResponseWriter, *http.Request, map[string]string)); ok {
+				hand.PushDelete(uri, fn)
+				Log("DELETE %s", uri)
+			}
+		}
+	}
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hand.ServeHTTP(w, r.WithContext(c.ctx))
 	})
