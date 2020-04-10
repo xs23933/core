@@ -87,7 +87,6 @@ type Request interface {
 	PushPost(string, httptreemux.HandlerFunc)
 	PushPut(string, httptreemux.HandlerFunc)
 	PushDelete(string, httptreemux.HandlerFunc)
-	Check(http.ResponseWriter, *http.Request, map[string]string)
 	InitRouter()
 	Init()
 	URI(name, method string) string
@@ -96,11 +95,6 @@ type Request interface {
 // Init 设置前缀
 func (h *RequestHandler) Init() {
 	h.prefix = ""
-}
-
-// Check 检测链接
-func (h *RequestHandler) Check(w http.ResponseWriter, r *http.Request, params map[string]string) {
-	w.Write([]byte("ok"))
 }
 
 // InitRouter 初始化路由
@@ -205,9 +199,11 @@ func (c *Core) handleContext(hand Request) http.Handler {
 		}
 	}
 
-	hand.PushGet("/check", hand.Check)
-
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/check" {
+			w.Write([]byte("ok"))
+			return
+		}
 		hand.ServeHTTP(w, r.WithContext(c.ctx))
 	})
 }
