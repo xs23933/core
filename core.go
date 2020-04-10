@@ -87,13 +87,20 @@ type Request interface {
 	PushPost(string, httptreemux.HandlerFunc)
 	PushPut(string, httptreemux.HandlerFunc)
 	PushDelete(string, httptreemux.HandlerFunc)
+	Check(http.ResponseWriter, *http.Request, map[string]string)
 	InitRouter()
 	Init()
-	Uri(name, method string) string
+	URI(name, method string) string
 }
 
+// Init 设置前缀
 func (h *RequestHandler) Init() {
 	h.prefix = ""
+}
+
+// Check 检测链接
+func (h *RequestHandler) Check(w http.ResponseWriter, r *http.Request, params map[string]string) {
+	w.Write([]byte("ok"))
 }
 
 // InitRouter 初始化路由
@@ -123,10 +130,12 @@ func (h *RequestHandler) PushDelete(uri string, handler httptreemux.HandlerFunc)
 	h.Router.DELETE(uri, handler)
 }
 
-func (h *RequestHandler) Uri(name, method string) string {
+// URI 组装uri
+func (h *RequestHandler) URI(name, method string) string {
 	return h.prefix + strings.TrimPrefix(name, method)
 }
 
+// SetPrefix 设置前缀
 func (h *RequestHandler) SetPrefix(prefix string) {
 	h.prefix = prefix
 }
@@ -171,30 +180,32 @@ func (c *Core) handleContext(hand Request) http.Handler {
 		switch {
 		case strings.HasPrefix(name, "get"):
 			if fn, ok := (valFn.Method(idx).Interface()).(func(http.ResponseWriter, *http.Request, map[string]string)); ok {
-				uri := hand.Uri(name, "get")
+				uri := hand.URI(name, "get")
 				hand.PushGet(uri, fn)
 				Log("GET %s", uri)
 			}
 		case strings.HasPrefix(name, "post"):
 			if fn, ok := (valFn.Method(idx).Interface()).(func(http.ResponseWriter, *http.Request, map[string]string)); ok {
-				uri := hand.Uri(name, "post")
+				uri := hand.URI(name, "post")
 				hand.PushPost(uri, fn)
 				Log("POST %s", uri)
 			}
 		case strings.HasPrefix(name, "put"):
 			if fn, ok := (valFn.Method(idx).Interface()).(func(http.ResponseWriter, *http.Request, map[string]string)); ok {
-				uri := hand.Uri(name, "put")
+				uri := hand.URI(name, "put")
 				hand.PushPut(uri, fn)
 				Log("PUT %s", uri)
 			}
 		case strings.HasPrefix(name, "delete"):
 			if fn, ok := (valFn.Method(idx).Interface()).(func(http.ResponseWriter, *http.Request, map[string]string)); ok {
-				uri := hand.Uri(name, "delete")
+				uri := hand.URI(name, "delete")
 				hand.PushDelete(uri, fn)
 				Log("DELETE %s", uri)
 			}
 		}
 	}
+
+	hand.PushGet("/check", hand.Check)
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hand.ServeHTTP(w, r.WithContext(c.ctx))
