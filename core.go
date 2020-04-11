@@ -202,7 +202,7 @@ func (c *Core) handleContext(hand Request) http.Handler {
 				hand.PushGet(uri, fn)
 				hand.PushPost(uri, fn)
 				hand.PushPut(uri, fn)
-				Log("GET POST PUT %s", uri)
+				Log("ALL -> GET POST PUT %s", uri)
 			}
 		}
 	}
