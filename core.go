@@ -196,6 +196,14 @@ func (c *Core) handleContext(hand Request) http.Handler {
 				hand.PushDelete(uri, fn)
 				Log("DELETE %s", uri)
 			}
+		case strings.HasPrefix(name, "all"):
+			if fn, ok := (valFn.Method(idx).Interface()).(func(http.ResponseWriter, *http.Request, map[string]string)); ok {
+				uri := hand.URI(name, "all")
+				hand.PushGet(uri, fn)
+				hand.PushPost(uri, fn)
+				hand.PushPut(uri, fn)
+				Log("GET POST PUT %s", uri)
+			}
 		}
 	}
 
