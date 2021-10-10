@@ -3,3 +3,5 @@
 __debug_bin
 *.yml
 go.sum
+Makefile
+dist

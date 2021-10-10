@@ -3,9 +3,11 @@ package core
 import (
 	"fmt"
 	"html/template"
+	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -53,7 +55,7 @@ func (c *Core) Use(args ...interface{}) *Core {
 			c.buildHanders(a)
 			goto done
 		default:
-			log.Fatalf("Use not support %v\n", a)
+			log.Fatal(ErrHandleNotSupport)
 		}
 	}
 	c.AddHandle(MethodUse, path, handlers)
@@ -204,7 +206,7 @@ func (c *Core) AddHandle(methods interface{}, path string, handler interface{}) 
 		path = "/"
 	}
 	if c.Debug {
-		log.Printf("%v: %s", methods, path)
+		D("%v: %s", methods, path)
 	}
 	switch v := methods.(type) {
 	case string:
@@ -225,20 +227,17 @@ func (c *Core) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	ctx := c.assignCtx(w, r)
 	defer c.releaseCtx(ctx)
-	start := time.Now()
-	defer func() {
-		if c.Debug {
-			log.Printf("%d %s %s %s", ctx.GetStatus(), r.Method, r.URL.Path, time.Since(start))
-		}
-	}()
+	st := time.Now()
 	result, err := c.tree.Find(r.Method, r.URL.Path)
 	if err == nil {
 		ctx.params = result.params
-		ctx.handlers = append(result.preloads, result.handler)
+		ctx.handlers = append(result.preloads, result.handler...)
 		ctx.Next()
+		ctx.SetHeader(HeaderTk, time.Since(st).String())
 		ctx.wm.DoWriteHeader()
 		return
 	}
+	requestLog(StatusNotFound, ctx.Method(), ctx.Path(), time.Since(st).String())
 	ctx.SendStatus(http.StatusNotFound, err.Error())
 }
 
@@ -267,6 +266,20 @@ func New(conf ...config) *Core {
 	return c
 }
 
+// Default init and use Logger And Recovery
+func Default(conf ...config) *Core {
+	c := New(conf...)
+	out := ioutil.Discard
+	if c.Debug {
+		out = os.Stdout
+	}
+	c.Use(Logger(LoggerConfig{ForceColor: c.Debug, Output: out}), Recovery())
+	if conf := c.Conf.GetMap("database"); conf != nil {
+		NewModel(conf, c.Debug)
+	}
+	return c
+}
+
 func (c *Core) ListenAndServe(addr ...string) error {
 	if len(addr) > 0 {
 		c.addr = addr[0]
@@ -285,8 +298,7 @@ func (c *Core) ListenAndServe(addr ...string) error {
 }
 
 func (c *Core) Serve(ln net.Listener) error {
-
-	log.Printf("Listen: %s\n", strings.TrimPrefix(ln.Addr().String(), "[::]"))
+	Log("Listen %s\n", strings.TrimPrefix(ln.Addr().String(), "[::]"))
 	return http.Serve(ln, c)
 }
 

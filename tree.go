@@ -6,8 +6,8 @@ import (
 
 type node struct {
 	path     string
-	handles  map[int8]HandlerFunc // key is methods
-	children map[string]*node     // key is path of next node
+	handles  map[int8]HandlerFuncs // key is methods
+	children map[string]*node      // key is path of next node
 }
 
 type tree struct {
@@ -23,7 +23,7 @@ type params []*param
 
 type result struct {
 	preloads HandlerFuncs
-	handler  HandlerFunc
+	handler  HandlerFuncs
 	params   params
 }
 
@@ -44,8 +44,8 @@ func NewTree() *tree {
 	return &tree{
 		node: &node{
 			path:     slashDelimiter,
-			handles:  make(map[int8]HandlerFunc), // method handle
-			children: make(map[string]*node),     // children node
+			handles:  make(map[int8]HandlerFuncs), // method handle
+			children: make(map[string]*node),      // children node
 		},
 	}
 }
@@ -55,7 +55,12 @@ func (t *tree) Insert(methods []string, path string, handler HandlerFunc) error 
 	if path == slashDelimiter { // add root node
 		curNode.path = path
 		for _, method := range methods {
-			curNode.handles[methodInt(method)] = handler
+			if curNode.handles[methodInt(method)] == nil {
+				curNode.handles[methodInt(method)] = HandlerFuncs{handler}
+			} else {
+				curNode.handles[methodInt(method)] = append(curNode.handles[methodInt(method)], handler)
+			}
+
 		}
 		return nil
 	}
@@ -69,7 +74,7 @@ func (t *tree) Insert(methods []string, path string, handler HandlerFunc) error 
 		if !ok {
 			curNode.children[p] = &node{
 				path:     p,
-				handles:  make(map[int8]HandlerFunc),
+				handles:  make(map[int8]HandlerFuncs),
 				children: make(map[string]*node),
 			}
 			curNode = curNode.children[p]
@@ -78,7 +83,12 @@ func (t *tree) Insert(methods []string, path string, handler HandlerFunc) error 
 		if i == len(paths)-1 {
 			curNode.path = p
 			for _, method := range methods {
-				curNode.handles[methodInt(method)] = handler
+				if curNode.handles[methodInt(method)] == nil {
+					curNode.handles[methodInt(method)] = HandlerFuncs{handler}
+				} else {
+					curNode.handles[methodInt(method)] = append(curNode.handles[methodInt(method)], handler)
+				}
+				// curNode.handles[methodInt(method)] = handler
 			}
 			break
 		}
@@ -162,7 +172,7 @@ func (t *tree) Find(method, path string) (*result, error) {
 
 func addPreload(node *node, result *result) {
 	if h, ok := node.handles[methodInt(MethodUse)]; ok && h != nil {
-		result.preloads = append(result.preloads, h)
+		result.preloads = append(result.preloads, h...)
 	}
 }
 

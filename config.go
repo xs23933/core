@@ -128,6 +128,7 @@ func LoadConfigFile(file string) config {
 		log.Fatalf(err.Error())
 	}
 	confFile = file
+	Conf = conf
 	return conf
 }
 
@@ -141,4 +142,5 @@ func SaveConfigFile(conf map[string]interface{}) error {
 
 var (
 	confFile string
+	Conf     config
 )

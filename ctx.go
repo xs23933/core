@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
-	"log"
 	"mime/multipart"
 	"net"
 	"net/http"
@@ -32,7 +31,6 @@ type Ctx struct {
 	params   params
 	path     string
 	idx      int8
-	done     bool
 	mu       sync.RWMutex
 	vars     map[string]interface{}
 	querys   url.Values
@@ -55,6 +53,15 @@ func (c *Ctx) init(w http.ResponseWriter, r *http.Request, core *Core) {
 	c.querys = c.r.URL.Query()
 }
 
+// Path output path
+func (c *Ctx) Path() string {
+	return c.path
+}
+
+func (c *Ctx) Method() string {
+	return c.r.Method
+}
+
 func (c *Ctx) Next() {
 	c.idx++
 	for c.idx < int8(len(c.handlers)) {
@@ -63,7 +70,7 @@ func (c *Ctx) Next() {
 	}
 }
 
-func (c *Ctx) Abort(args ...interface{}) {
+func (c *Ctx) Abort(args ...interface{}) *Ctx {
 	for _, arg := range args {
 		switch a := arg.(type) {
 		case string:
@@ -75,6 +82,7 @@ func (c *Ctx) Abort(args ...interface{}) {
 		}
 	}
 	c.idx = abortIdx
+	return c
 }
 
 func (c *Ctx) Core() *Core {
@@ -88,7 +96,7 @@ func (c *Ctx) GetStatus() int {
 
 // Flush response dat and break
 func (c *Ctx) Flush(data interface{}, statusCode ...int) error {
-	c.Final()
+	c.Abort()
 	if len(statusCode) > 0 {
 		c.SendStatus(statusCode[0])
 	}
@@ -107,17 +115,12 @@ func (c *Ctx) Flush(data interface{}, statusCode ...int) error {
 	// return ErrDataTypeNotSupport
 }
 
-func (c *Ctx) FinalToJSON(data interface{}, err error) error {
-	return c.Final().ToJSON(data, err)
+func (c *Ctx) AbortToJSON(data interface{}, err error) error {
+	return c.Abort().ToJSON(data, err)
 }
 
-func (c *Ctx) FinalJSON(data interface{}) error {
-	return c.Final().JSON(data)
-}
-
-func (c *Ctx) Final() *Ctx {
-	c.done = true
-	return c
+func (c *Ctx) AbortJSON(data interface{}) error {
+	return c.Abort().JSON(data)
 }
 
 // SetParam set param
@@ -524,7 +527,6 @@ func (c *Ctx) GetAs(key string, v interface{}) error {
 // RemoteIP parses the IP from Request.RemoteAddr, normalizes and returns the IP (without the port).
 // It also checks if the remoteIP is a trusted proxy or not.
 // In order to perform this validation, it will see if the IP is contained within at least one of the CIDR blocks
-// defined by Engine.SetTrustedProxies()
 func (c *Ctx) RemoteIP() (net.IP, bool) {
 	ip, _, err := net.SplitHostPort(strings.TrimSpace(c.r.RemoteAddr))
 	if err != nil {
@@ -753,7 +755,7 @@ func (w *resp) Pusher() (pusher http.Pusher) {
 func (w *resp) WriteHeader(code int) {
 	if code > 0 && w.status != code {
 		if w.Written() {
-			log.Printf("headers were already written. Wanted to override status code %d with %d", w.status, code)
+			Warn("headers were already written. Wanted to override status code %d with %d", w.status, code)
 		}
 		w.status = code
 	}

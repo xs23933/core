@@ -14,6 +14,7 @@ func (h *Handler) Init() {
 
 func (Handler) Get(c *core.Ctx) {
 	c.SendString("Hello world")
+	core.Conn()
 }
 
 func (Handler) GetParam1Param2Params(c *core.Ctx) {
