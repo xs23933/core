@@ -1,10 +1,11 @@
 package main
 
 import (
-	"core"
 	"fmt"
 	"net/http"
 	_ "net/http/pprof"
+
+	"github.com/xs23933/core"
 )
 
 func main() {
