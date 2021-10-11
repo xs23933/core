@@ -1,6 +1,7 @@
 package core
 
 import (
+	"net/http"
 	"strings"
 )
 
@@ -50,18 +51,16 @@ func NewTree() *tree {
 	}
 }
 
-func (t *tree) Insert(methods []string, path string, handler HandlerFunc) error {
+// Insert insert handler
+//
+//  methods []string  GET | POST any http method
+//  path string static, param(:param), catchall(*)
+//  handler  HandlerFunc | HandlerFuncs
+func (t *tree) Insert(methods []string, path string, handler interface{}) error {
 	curNode := t.node
 	if path == slashDelimiter { // add root node
 		curNode.path = path
-		for _, method := range methods {
-			if curNode.handles[methodInt(method)] == nil {
-				curNode.handles[methodInt(method)] = HandlerFuncs{handler}
-			} else {
-				curNode.handles[methodInt(method)] = append(curNode.handles[methodInt(method)], handler)
-			}
-
-		}
+		t.insert(methods, curNode, handler)
 		return nil
 	}
 	paths := split(path)
@@ -82,19 +81,49 @@ func (t *tree) Insert(methods []string, path string, handler HandlerFunc) error 
 		// last loop. if there is already registered date, overwrite it.
 		if i == len(paths)-1 {
 			curNode.path = p
-			for _, method := range methods {
-				if curNode.handles[methodInt(method)] == nil {
-					curNode.handles[methodInt(method)] = HandlerFuncs{handler}
-				} else {
-					curNode.handles[methodInt(method)] = append(curNode.handles[methodInt(method)], handler)
-				}
-				// curNode.handles[methodInt(method)] = handler
-			}
+			t.insert(methods, curNode, handler)
 			break
 		}
 	}
 
 	return nil
+}
+
+// insert for insert handler with methods
+func (t *tree) insert(methods []string, cur *node, hand interface{}) {
+	for _, method := range methods {
+		hands := t.procHandler(hand)
+		if cur.handles[methodInt(method)] == nil {
+			cur.handles[methodInt(method)] = hands
+		} else {
+			cur.handles[methodInt(method)] = append(cur.handles[methodInt(method)], hands...)
+		}
+	}
+}
+
+// procHandler convert HandlerFunc, HandlerFuncs to HandlerFuncs
+func (t *tree) procHandler(hand interface{}) HandlerFuncs {
+	hands := make(HandlerFuncs, 0)
+	switch h := hand.(type) {
+	case func(*Ctx):
+		hands = append(hands, HandlerFunc(h))
+	case HandlerFunc:
+		hands = append(hands, h)
+	case HandlerFuncs:
+		hands = append(hands, h...)
+	case []interface{}:
+		has := make(HandlerFuncs, 0)
+		for _, v := range h {
+			has = append(has, t.procHandler(v)...)
+		}
+		hands = append(hands, has...)
+	case func(http.ResponseWriter, *http.Request):
+		hands = append(hands, HandlerFunc(func(c *Ctx) { h(c.w, c.r) }))
+	case http.Handler:
+		Warn("warning add http.handler")
+		hands = append(hands, HandlerFunc(func(c *Ctx) { h.ServeHTTP(c.w, c.r) }))
+	}
+	return hands
 }
 
 func (n *node) child(p, m string) (child *node, ok bool) {

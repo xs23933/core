@@ -9,7 +9,7 @@ require (
 	github.com/mattn/go-isatty v0.0.14
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/stretchr/testify v1.7.0
-	github.com/xs23933/uid v0.0.6
+	github.com/xs23933/uid v1.0.1
 	gopkg.in/yaml.v3 v3.0.0-20200313102051-9f266ea9e77c
 	gorm.io/driver/mysql v1.1.2
 	gorm.io/driver/postgres v1.1.2

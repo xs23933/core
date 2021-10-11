@@ -34,6 +34,26 @@ func (m *Model) BeforeCreate(tx *DB) error {
 	return nil
 }
 
+// FindPage Gorm find to page process whr
+func FindPage(whr *Map, out interface{}) (result Pages, err error) {
+	var total int64
+	db, pos, lmt := Where(whr)
+	err = db.Find(out).Offset(-1).Limit(-1).Count(&total).Error
+	result = Pages{
+		P: pos, L: lmt,
+		Total: total,
+		Data:  out,
+	}
+	return
+}
+
+// Find find all data record max 10000
+func Find(whr *Map, out interface{}) error {
+	(*whr)["l"] = float64(10000.0)
+	db, _, _ := Where(whr)
+	return db.Find(out).Error
+}
+
 func NewModel(conf config, debug bool) (*DB, error) {
 	tp := conf.GetString("type")
 	dsn := conf.GetString("dsn")
@@ -56,35 +76,34 @@ func NewModel(conf config, debug bool) (*DB, error) {
 	if debug {
 		db = db.Debug()
 	}
+	D("%s Connected", tp)
 	conn = db
 	return db, err
 }
 
 // 字典类型
 
-// Dict map[string]interface{}
-type Dict map[string]interface{}
-
-type Map = map[string]interface{}
+// Map map[string]interface{}
+type Map map[string]interface{}
 
 // Value 数据驱动接口
-func (d Dict) Value() (driver.Value, error) {
+func (d Map) Value() (driver.Value, error) {
 	bytes, err := json.Marshal(d)
 	return string(bytes), err
 }
 
 // Scan 数据驱动接口
-func (d *Dict) Scan(src interface{}) error {
+func (d *Map) Scan(src interface{}) error {
 	switch val := src.(type) {
 	case string:
 		return json.Unmarshal([]byte(val), d)
 	case []byte:
 		if strings.EqualFold(string(val), "null") {
-			*d = make(Dict)
+			*d = make(Map)
 			return nil
 		}
 		if err := json.Unmarshal(val, d); err != nil {
-			*d = make(Dict)
+			*d = make(Map)
 		}
 		return nil
 	}
@@ -92,7 +111,7 @@ func (d *Dict) Scan(src interface{}) error {
 }
 
 // GormDataType schema.Field DataType
-func (Dict) GormDataType() string {
+func (Map) GormDataType() string {
 	return "text"
 }
 
@@ -180,7 +199,11 @@ func ToHandle(src string) string {
 	return r.Replace(src)
 }
 
-func Where(whr *map[string]interface{}, db ...*DB) (*DB, int, int) {
+// Where build page query
+//  whr *Map
+//  db  *DB optional
+//  return *DB, pos, lmt
+func Where(whr *Map, db ...*DB) (*DB, int, int) {
 	var tx *DB
 	if len(db) > 0 {
 		tx = db[0]
@@ -188,7 +211,7 @@ func Where(whr *map[string]interface{}, db ...*DB) (*DB, int, int) {
 		tx = conn
 	}
 
-	wher := *whr
+	wher := map[string]interface{}(*whr)
 
 	l, ok := wher["l"].(float64)
 	lmt := 20
@@ -224,10 +247,19 @@ func Where(whr *map[string]interface{}, db ...*DB) (*DB, int, int) {
 		}
 	}
 
+	if omit, ok := wher["omitFields"]; ok { // 排除相应字段 多个,号隔开
+		delete(wher, "omitFields")
+		tx = tx.Omit(omit.(string))
+	}
+
 	// 过滤掉字符串等于空 的搜索
 	if len(wher) > 0 {
 		for k, v := range wher {
 			if x, ok := v.(string); ok && x == "" {
+				delete(wher, k)
+			}
+			if strings.HasSuffix(k, "*") {
+				tx = tx.Where(fmt.Sprintf("%s like ?", strings.TrimSuffix(k, "*")), fmt.Sprintf("%%%s%%", v))
 				delete(wher, k)
 			}
 			if strings.HasSuffix(k, " !=") {

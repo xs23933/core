@@ -13,6 +13,15 @@ func TestNewTree(t *testing.T) {
 	assert.NotNil(t, actual)
 }
 
+func Test_InsertHandle(t *testing.T) {
+	tree := NewTree()
+	hands := []interface{}{
+		HandlerFunc(func(c *Ctx) {}),
+		HandlerFunc(func(c *Ctx) {}),
+	}
+	tree.Insert([]string{"USE"}, "/", hands)
+}
+
 func buildTree(t *testing.T, hand func(*Ctx)) *tree {
 	tree := NewTree()
 	cases := []struct {
@@ -64,7 +73,7 @@ func buildTree(t *testing.T, hand func(*Ctx)) *tree {
 	return tree
 }
 func TestSearch(t *testing.T) {
-	rootHandler := (func(*Ctx))(func(c *Ctx) {})
+	rootHandler := HandlerFunc(func(c *Ctx) {})
 	tree := buildTree(t, rootHandler)
 
 	cases := []caseWithFailure{
@@ -102,7 +111,7 @@ func TestSearch(t *testing.T) {
 				path:   "/foo/abcd",
 			},
 			expected: &result{
-				handler: rootHandler,
+				handler: HandlerFuncs{rootHandler},
 				params: params{
 					{
 						key:   "param",
@@ -118,7 +127,7 @@ func TestSearch(t *testing.T) {
 				path:   "/foo/abcd/1234",
 			},
 			expected: &result{
-				handler: rootHandler,
+				handler: HandlerFuncs{rootHandler},
 				params: params{
 					{
 						key:   "param",
@@ -198,7 +207,7 @@ func TestFindOnlyRoot(t *testing.T) {
 				path:   "/",
 			},
 			expected: &result{
-				handler: rootHandler,
+				handler: HandlerFuncs{rootHandler},
 				params:  params{},
 			},
 		},
@@ -209,7 +218,7 @@ func TestFindOnlyRoot(t *testing.T) {
 				path:   "//",
 			},
 			expected: &result{
-				handler: rootHandler,
+				handler: HandlerFuncs{rootHandler},
 				params:  params{},
 			},
 		},

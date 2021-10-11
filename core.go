@@ -53,13 +53,13 @@ func (c *Core) Use(args ...interface{}) *Core {
 			handlers = append(handlers, a)
 		case handler:
 			c.buildHanders(a)
-			goto done
 		default:
 			log.Fatal(ErrHandleNotSupport)
 		}
 	}
-	c.AddHandle(MethodUse, path, handlers)
-done:
+	if len(handlers) > 0 {
+		c.AddHandle(MethodUse, path, handlers)
+	}
 	return c
 }
 
@@ -102,63 +102,63 @@ func (c *Core) buildHanders(h handler) {
 //  c.Get("/foo", func(c *core.Ctx){
 //		c.SendString("Hello world")
 //  })
-func (c *Core) Get(path string, handler interface{}) error {
+func (c *Core) Get(path string, handler ...interface{}) error {
 	return c.AddHandle(MethodGet, path, handler)
 }
 
 // Post add get method
 //
 //  > see Get
-func (c *Core) Post(path string, handler interface{}) error {
+func (c *Core) Post(path string, handler ...interface{}) error {
 	return c.AddHandle(MethodPost, path, handler)
 }
 
 // Head add get method
 //
 //  > see Get
-func (c *Core) Head(path string, handler interface{}) error {
+func (c *Core) Head(path string, handler ...interface{}) error {
 	return c.AddHandle(MethodHead, path, handler)
 }
 
 // Put add get method
 //
 //  > see Get
-func (c *Core) Put(path string, handler interface{}) error {
+func (c *Core) Put(path string, handler ...interface{}) error {
 	return c.AddHandle(MethodPut, path, handler)
 }
 
 // Delete add get method
 //
 //  > see Get
-func (c *Core) Delete(path string, handler interface{}) error {
+func (c *Core) Delete(path string, handler ...interface{}) error {
 	return c.AddHandle(MethodDelete, path, handler)
 }
 
 // Connect add get method
 //
 //  > see Get
-func (c *Core) Connect(path string, handler interface{}) error {
+func (c *Core) Connect(path string, handler ...interface{}) error {
 	return c.AddHandle(MethodConnect, path, handler)
 }
 
 // Options add get method
 //
 //  > see Get
-func (c *Core) Options(path string, handler interface{}) error {
+func (c *Core) Options(path string, handler ...interface{}) error {
 	return c.AddHandle(MethodOptions, path, handler)
 }
 
 // Trace add get method
 //
 //  > see Get
-func (c *Core) Trace(path string, handler interface{}) error {
+func (c *Core) Trace(path string, handler ...interface{}) error {
 	return c.AddHandle(MethodTrace, path, handler)
 }
 
 // Patch add get method
 //
 //  > see Get
-func (c *Core) Patch(path string, handler interface{}) error {
+func (c *Core) Patch(path string, handler ...interface{}) error {
 	return c.AddHandle(MethodPatch, path, handler)
 }
 
@@ -182,37 +182,18 @@ func (c *Core) static(w http.ResponseWriter, r *http.Request, path, dir string) 
 // 		c.SendString("hello world")
 //  })
 func (c *Core) AddHandle(methods interface{}, path string, handler interface{}) error {
-	var handle HandlerFunc
-	switch v := handler.(type) {
-	case []interface{}:
-		for _, h := range v {
-			if err := c.AddHandle(methods, path, h); err != nil {
-				return err
-			}
-		}
-		return nil
-	case HandlerFunc:
-		handle = v
-	case func(*Ctx):
-		handle = HandlerFunc(v)
-	case func(http.ResponseWriter, *http.Request):
-		handle = HandlerFunc(func(c *Ctx) { v(c.w, c.r) })
-	case http.Handler:
-		handle = HandlerFunc(func(c *Ctx) { v.ServeHTTP(c.w, c.r) })
-	default:
-		return ErrHandleNotSupport
+	if handler == nil {
+		return ErrHandlerNotFound
 	}
 	if path == "" {
 		path = "/"
 	}
-	if c.Debug {
-		D("%v: %s", methods, path)
-	}
-	switch v := methods.(type) {
+	D("%v: %s", methods, path)
+	switch v := methods.(type) { // check method is string or []string
 	case string:
-		return c.tree.Insert([]string{v}, path, handle)
+		return c.tree.Insert([]string{v}, path, handler)
 	case []string:
-		return c.tree.Insert(v, path, handle)
+		return c.tree.Insert(v, path, handler)
 	}
 	return ErrMethodNotAllowed
 }
@@ -299,6 +280,7 @@ func (c *Core) ListenAndServe(addr ...string) error {
 
 func (c *Core) Serve(ln net.Listener) error {
 	Log("Listen %s\n", strings.TrimPrefix(ln.Addr().String(), "[::]"))
+	Dump(c.tree)
 	return http.Serve(ln, c)
 }
 

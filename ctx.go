@@ -545,27 +545,64 @@ func (c *Ctx) RemoteIP() (net.IP, bool) {
 // SetCookie adds a Set-Cookie header to the ResponseWriter's headers.
 // The provided cookie must have a valid Name. Invalid cookies may be
 // silently dropped.
-func (c *Ctx) SetCookie(name, value string, maxAge int, path, domain string, secure, httpOnly bool) {
+func (c *Ctx) SetCookie(name, value string, exp time.Time, path string, args ...interface{}) {
 	if path == "" {
 		path = "/"
 	}
-	http.SetCookie(c.w, &http.Cookie{
+	cookie := &http.Cookie{
 		Name:     name,
 		Value:    url.QueryEscape(value),
-		MaxAge:   maxAge,
+		Expires:  exp,
 		Path:     path,
-		Domain:   domain,
-		SameSite: c.sameSite,
-		Secure:   secure,
-		HttpOnly: httpOnly,
-	})
+		SameSite: http.SameSiteLaxMode,
+	}
+
+	for _, arg := range args {
+		switch a := arg.(type) {
+		case string:
+			if strings.EqualFold(a, "httponly") {
+				cookie.HttpOnly = true
+				continue
+			}
+			cookie.Domain = a
+		case bool:
+			cookie.Secure = a
+		}
+	}
+
+	if cookie.Domain == "" { // read config domain
+		cookie.Domain = c.Core().Conf.GetString("domain")
+	}
+
+	http.SetCookie(c.w, cookie)
+}
+
+func (c *Ctx) RemoveCookie(name, path string, dom ...string) {
+	exp := time.Now().Add(-time.Hour)
+	cookie := &http.Cookie{
+		Name:    name,
+		Value:   "",
+		Expires: exp,
+		Path:    path,
+	}
+	if len(dom) > 0 {
+		cookie.Domain = dom[0]
+	}
+	if cookie.Domain == "" { // read config domain
+		cookie.Domain = c.Core().Conf.GetString("domain")
+	}
+	http.SetCookie(c.w, cookie)
+}
+
+func (c *Ctx) Cookie(cookie *http.Cookie) {
+	http.SetCookie(c.w, cookie)
 }
 
 // Cookie returns the named cookie provided in the request or
 // ErrNoCookie if not found. And return the named cookie is unescaped.
 // If multiple cookies match the given name, only one cookie will
 // be returned.
-func (c *Ctx) Cookie(name string) (string, error) {
+func (c *Ctx) Cookies(name string) (string, error) {
 	cookie, err := c.r.Cookie(name)
 	if err != nil {
 		return "", err
