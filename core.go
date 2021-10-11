@@ -280,7 +280,6 @@ func (c *Core) ListenAndServe(addr ...string) error {
 
 func (c *Core) Serve(ln net.Listener) error {
 	Log("Listen %s\n", strings.TrimPrefix(ln.Addr().String(), "[::]"))
-	Dump(c.tree)
 	return http.Serve(ln, c)
 }
 
