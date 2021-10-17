@@ -35,10 +35,18 @@ func (m *Model) BeforeCreate(tx *DB) error {
 }
 
 // FindPage Gorm find to page process whr
-func FindPage(whr *Map, out interface{}) (result Pages, err error) {
-	var total int64
-	db, pos, lmt := Where(whr)
-	err = db.Find(out).Offset(-1).Limit(-1).Count(&total).Error
+func FindPage(whr *Map, out interface{}, db ...*DB) (result Pages, err error) {
+	var (
+		total    int64
+		tx       *DB
+		pos, lmt int
+	)
+	if len(db) > 0 {
+		tx, pos, lmt = Where(whr, db[0])
+	} else {
+		tx, pos, lmt = Where(whr)
+	}
+	err = tx.Find(out).Offset(-1).Limit(-1).Count(&total).Error
 	result = Pages{
 		P: pos, L: lmt,
 		Total: total,
@@ -48,9 +56,21 @@ func FindPage(whr *Map, out interface{}) (result Pages, err error) {
 }
 
 // Find find all data record max 10000
-func Find(whr *Map, out interface{}) error {
-	(*whr)["l"] = float64(10000.0)
-	db, _, _ := Where(whr)
+func Find(out interface{}, args ...interface{}) error {
+	wher := make(Map)
+	db := Conn()
+	for _, arg := range args {
+		switch a := arg.(type) {
+		case *Map:
+			wher = *a
+		case *DB:
+			db = a
+		}
+	}
+	if _, ok := wher["l"]; !ok {
+		wher["l"] = float64(10000.0)
+	}
+	db, _, _ = Where(&wher, db)
 	return db.Find(out).Error
 }
 
