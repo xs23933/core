@@ -68,7 +68,7 @@ func Find(out interface{}, args ...interface{}) error {
 		}
 	}
 	if _, ok := wher["l"]; !ok {
-		wher["l"] = float64(10000.0)
+		wher["l"] = 10000
 	}
 	db, _, _ = Where(&wher, db)
 	return db.Find(out).Error
@@ -233,19 +233,29 @@ func Where(whr *Map, db ...*DB) (*DB, int, int) {
 
 	wher := map[string]interface{}(*whr)
 
-	l, ok := wher["l"].(float64)
 	lmt := 20
+	l, ok := wher["l"]
 	if ok {
 		delete(wher, "l") //删除lmt
-		lmt = int(l)
+		switch v := l.(type) {
+		case int:
+			lmt = v
+		case float64:
+			lmt = int(v)
+		}
 	}
-
 	tx = tx.Limit(lmt)
-	p, ok := wher["p"].(float64)
+
+	p, ok := wher["p"]
 	pos := 1
 	if ok {
-		pos = int(p)
 		delete(wher, "p") // 删除 pos
+		switch v := p.(type) {
+		case int:
+			pos = v
+		case float64:
+			pos = int(v)
+		}
 		tx = tx.Offset((pos - 1) * lmt)
 	}
 
