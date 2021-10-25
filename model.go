@@ -148,12 +148,12 @@ func (d Array) Value() (driver.Value, error) {
 
 // Scan 数据驱动接口
 func (d *Array) Scan(src interface{}) error {
+	*d = Array{}
 	switch val := src.(type) {
 	case string:
 		return json.Unmarshal([]byte(val), d)
 	case []byte:
 		if strings.EqualFold(string(val), "null") {
-			*d = Array{}
 			return nil
 		}
 		if err := json.Unmarshal(val, d); err != nil {
@@ -288,13 +288,30 @@ func Where(whr *Map, db ...*DB) (*DB, int, int) {
 			if x, ok := v.(string); ok && x == "" {
 				delete(wher, k)
 			}
+			if strings.HasSuffix(k, " NOTIN") {
+				tx = tx.Where(fmt.Sprintf("%s NOT IN (?)", strings.TrimSuffix(k, " NOTIN")), v)
+				delete(wher, k)
+				continue
+			}
+			if strings.HasSuffix(k, " IN") {
+				tx = tx.Where(fmt.Sprintf("%s in (?)", strings.TrimSuffix(k, " IN")), v)
+				delete(wher, k)
+				continue
+			}
+			if strings.HasPrefix(k, "^") {
+				tx = tx.Where(fmt.Sprintf("%s like ?", strings.TrimPrefix(k, "^")), fmt.Sprintf("%s%%", v))
+				delete(wher, k)
+				continue
+			}
 			if strings.HasSuffix(k, "*") {
 				tx = tx.Where(fmt.Sprintf("%s like ?", strings.TrimSuffix(k, "*")), fmt.Sprintf("%%%s%%", v))
 				delete(wher, k)
+				continue
 			}
 			if strings.HasSuffix(k, " !=") {
 				tx = tx.Where(fmt.Sprintf("`%s` <> ?", strings.TrimSuffix(k, " !=")), v)
 				delete(wher, k)
+				continue
 			}
 			if strings.HasSuffix(k, " >") || strings.HasSuffix(k, " <") {
 				ks := strings.Split(k, " ")
@@ -302,6 +319,7 @@ func Where(whr *Map, db ...*DB) (*DB, int, int) {
 				ks = append(ks, "?")
 				tx = tx.Where(strings.Join(ks, " "), v)
 				delete(wher, k)
+				continue
 			}
 		}
 		tx = tx.Where(wher)
