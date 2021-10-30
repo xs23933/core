@@ -112,6 +112,24 @@ func (d Map) Value() (driver.Value, error) {
 	return string(bytes), err
 }
 
+func (d Map) GetString(k string) (value string) {
+	if val, ok := d[k]; ok && val != nil {
+		if value, ok = val.(string); ok {
+			return
+		}
+	}
+	return ""
+}
+
+func (d Map) GetBool(k string) (value bool) {
+	if val, ok := d[k]; ok && val != nil {
+		if value, ok = val.(bool); ok {
+			return
+		}
+	}
+	return false
+}
+
 // Scan 数据驱动接口
 func (d *Map) Scan(src interface{}) error {
 	switch val := src.(type) {
@@ -139,6 +157,22 @@ func (Map) GormDataType() string {
 
 // Array 数组类型
 type Array []interface{}
+
+func (d Array) FindHandle(handle, value string) Map {
+	for _, r := range d {
+		var v Map
+		switch val := r.(type) {
+		case map[string]interface{}:
+			v = Map(val)
+		case Map:
+			v = val
+		}
+		if v.GetString(handle) == value {
+			return v
+		}
+	}
+	return Map{}
+}
 
 // Value 数据驱动接口
 func (d Array) Value() (driver.Value, error) {
@@ -259,15 +293,15 @@ func Where(whr *Map, db ...*DB) (*DB, int, int) {
 		tx = tx.Offset((pos - 1) * lmt)
 	}
 
-	desc, ok := wher["desc"].(string)
-	if ok {
-		delete(wher, "desc")
-		tx = tx.Order(fmt.Sprintf("%s desc", strings.Replace(desc, ",", " ", -1)))
-	}
 	asc, ok := wher["asc"].(string)
 	if ok {
 		delete(wher, "asc")
-		tx = tx.Order(strings.Replace(asc, ",", " ", -1))
+		tx = tx.Order(asc)
+	}
+	desc, ok := wher["desc"].(string)
+	if ok {
+		delete(wher, "desc")
+		tx = tx.Order(fmt.Sprintf("%s desc", desc))
 	}
 
 	if name, ok := wher["name"]; ok {
@@ -285,8 +319,13 @@ func Where(whr *Map, db ...*DB) (*DB, int, int) {
 	// 过滤掉字符串等于空 的搜索
 	if len(wher) > 0 {
 		for k, v := range wher {
-			if x, ok := v.(string); ok && x == "" {
+			if v == nil {
 				delete(wher, k)
+				continue
+			}
+			if x, ok := v.(string); ok && len(x) == 0 {
+				delete(wher, k)
+				continue
 			}
 			if strings.HasSuffix(k, " NOTIN") {
 				tx = tx.Where(fmt.Sprintf("%s NOT IN (?)", strings.TrimSuffix(k, " NOTIN")), v)
