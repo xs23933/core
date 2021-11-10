@@ -22,6 +22,7 @@ type Core struct {
 	Debug  bool
 	Conf   config
 	assets config
+	srv    *http.Server
 
 	// Value of 'maxMemory' param that is given to http.Request's ParseMultipartForm
 	// method call.
@@ -236,7 +237,9 @@ func New(conf ...config) *Core {
 				}
 			},
 		},
+		srv: &http.Server{},
 	}
+	c.srv.Handler = c
 	if len(conf) > 0 {
 		c.Conf = conf[0]
 		c.Debug = c.Conf.GetBool("debug")
@@ -251,7 +254,13 @@ func New(conf ...config) *Core {
 func Default(conf ...config) *Core {
 	c := New(conf...)
 	out := ioutil.Discard
-	if c.Debug {
+	if log := c.Conf.GetString("log", ""); log != "" {
+		var err error
+		out, err = os.OpenFile(log, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0666)
+		if err != nil {
+			panic(err)
+		}
+	} else if c.Debug {
 		out = os.Stdout
 	}
 	c.Use(Logger(LoggerConfig{ForceColor: c.Debug, Output: out}), Recovery())
@@ -280,7 +289,7 @@ func (c *Core) ListenAndServe(addr ...string) error {
 
 func (c *Core) Serve(ln net.Listener) error {
 	Log("Listen %s\n", strings.TrimPrefix(ln.Addr().String(), "[::]"))
-	return http.Serve(ln, c)
+	return c.srv.Serve(ln)
 }
 
 // SetFuncMap sets the FuncMap used for template.FuncMap.

@@ -118,10 +118,10 @@ func (t *tree) procHandler(hand interface{}) HandlerFuncs {
 		}
 		hands = append(hands, has...)
 	case func(http.ResponseWriter, *http.Request):
-		hands = append(hands, HandlerFunc(func(c *Ctx) { h(c.w, c.r) }))
+		hands = append(hands, HandlerFunc(func(c *Ctx) { h(c.W, c.R) }))
 	case http.Handler:
 		Warn("warning add http.handler")
-		hands = append(hands, HandlerFunc(func(c *Ctx) { h.ServeHTTP(c.w, c.r) }))
+		hands = append(hands, HandlerFunc(func(c *Ctx) { h.ServeHTTP(c.W, c.R) }))
 	}
 	return hands
 }

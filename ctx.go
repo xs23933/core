@@ -24,8 +24,8 @@ import (
 type Ctx struct {
 	wm resp
 	context.Context
-	w        ResponseWriter
-	r        *http.Request
+	W        ResponseWriter
+	R        *http.Request
 	core     *Core
 	Config   *config
 	params   params
@@ -39,9 +39,9 @@ type Ctx struct {
 }
 
 func (c *Ctx) init(w http.ResponseWriter, r *http.Request, core *Core) {
-	c.r = r
+	c.R = r
 	c.wm.init(w)
-	c.w = &c.wm
+	c.W = &c.wm
 	c.path = r.URL.Path
 	c.Context = r.Context()
 	c.params = make(params, 0)
@@ -50,7 +50,7 @@ func (c *Ctx) init(w http.ResponseWriter, r *http.Request, core *Core) {
 	c.core = core
 	c.sameSite = http.SameSiteDefaultMode
 	c.vars = make(map[string]interface{})
-	c.querys = c.r.URL.Query()
+	c.querys = c.R.URL.Query()
 }
 
 // Path output path
@@ -59,7 +59,7 @@ func (c *Ctx) Path() string {
 }
 
 func (c *Ctx) Method() string {
-	return c.r.Method
+	return c.R.Method
 }
 
 func (c *Ctx) Next() {
@@ -91,7 +91,7 @@ func (c *Ctx) Core() *Core {
 
 // GetStatus get response statusCode
 func (c *Ctx) GetStatus() int {
-	return c.w.Status()
+	return c.W.Status()
 }
 
 // Flush response dat and break
@@ -158,23 +158,23 @@ func (c *Ctx) JSON(data interface{}) error {
 	if err != nil {
 		return err
 	}
-	c.w.Header().Set(HeaderContentType, MIMEApplicationJSONCharsetUTF8)
-	_, err = c.w.Write(raw)
+	c.W.Header().Set(HeaderContentType, MIMEApplicationJSONCharsetUTF8)
+	_, err = c.W.Write(raw)
 	return err
 }
 
 // SetHeader set response header
 func (c *Ctx) SetHeader(key, value string) {
 	if value == "" {
-		c.w.Header().Del(key)
+		c.W.Header().Del(key)
 		return
 	}
-	c.w.Header().Set(key, value)
+	c.W.Header().Set(key, value)
 }
 
 // GetHeader get request header
 func (c *Ctx) GetHeader(key string) string {
-	return c.r.Header.Get(key)
+	return c.R.Header.Get(key)
 }
 
 func (c *Ctx) JSONP(data interface{}, callback ...string) error {
@@ -189,7 +189,7 @@ func (c *Ctx) JSONP(data interface{}, callback ...string) error {
 	}
 
 	result := fmt.Sprintf("%s(%s);", cb, string(raw))
-	c.w.Header().Set(HeaderContentType, MIMEApplicationJavaScriptCharsetUTF8)
+	c.W.Header().Set(HeaderContentType, MIMEApplicationJavaScriptCharsetUTF8)
 	return c.SendString(result)
 }
 
@@ -217,7 +217,7 @@ func (c *Ctx) SendStatus(status int, msg ...string) error {
 
 // Send send []byte to client
 func (c *Ctx) Send(buf []byte) error {
-	_, err := c.w.Write(buf)
+	_, err := c.W.Write(buf)
 	return err
 }
 
@@ -229,25 +229,25 @@ func (c *Ctx) SendString(str ...interface{}) error {
 	} else if len(str) > 1 {
 		buf = fmt.Sprintf(str[0].(string), str[1:]...)
 	}
-	_, err := c.w.WriteString(buf)
+	_, err := c.W.WriteString(buf)
 	return err
 }
 
 // Status WriteHeader status code
 func (c *Ctx) Status(status int) *Ctx {
-	c.w.WriteHeader(status)
+	c.W.WriteHeader(status)
 	return c
 }
 
 // FormFile returns the first file for the provided form key.
 // FormFile calls ParseMultipartForm and ParseForm if necessary.
 func (c *Ctx) FormFile(key string) (*multipart.FileHeader, error) {
-	if c.r.MultipartForm == nil {
-		if err := c.r.ParseMultipartForm(c.core.MaxMultipartMemory); err != nil {
+	if c.R.MultipartForm == nil {
+		if err := c.R.ParseMultipartForm(c.core.MaxMultipartMemory); err != nil {
 			return nil, err
 		}
 	}
-	f, fh, err := c.r.FormFile(key)
+	f, fh, err := c.R.FormFile(key)
 	if err != nil {
 		return nil, err
 	}
@@ -316,7 +316,7 @@ func (c *Ctx) SaveFile(key, dst string, args ...interface{}) (relpath, abspath s
 //     id := c.FromValue("id", "1") // id = 1 Because the default value is used
 //   `
 func (c *Ctx) FormValue(key string, def ...string) string {
-	if val := c.r.FormValue(key); val != "" {
+	if val := c.R.FormValue(key); val != "" {
 		return val
 	}
 	if len(def) > 0 {
@@ -528,7 +528,7 @@ func (c *Ctx) GetAs(key string, v interface{}) error {
 // It also checks if the remoteIP is a trusted proxy or not.
 // In order to perform this validation, it will see if the IP is contained within at least one of the CIDR blocks
 func (c *Ctx) RemoteIP() (net.IP, bool) {
-	ip, _, err := net.SplitHostPort(strings.TrimSpace(c.r.RemoteAddr))
+	ip, _, err := net.SplitHostPort(strings.TrimSpace(c.R.RemoteAddr))
 	if err != nil {
 		return nil, false
 	}
@@ -574,7 +574,7 @@ func (c *Ctx) SetCookie(name, value string, exp time.Time, path string, args ...
 		cookie.Domain = c.Core().Conf.GetString("domain")
 	}
 
-	http.SetCookie(c.w, cookie)
+	http.SetCookie(c.W, cookie)
 }
 
 func (c *Ctx) RemoveCookie(name, path string, dom ...string) {
@@ -591,11 +591,11 @@ func (c *Ctx) RemoveCookie(name, path string, dom ...string) {
 	if cookie.Domain == "" { // read config domain
 		cookie.Domain = c.Core().Conf.GetString("domain")
 	}
-	http.SetCookie(c.w, cookie)
+	http.SetCookie(c.W, cookie)
 }
 
 func (c *Ctx) Cookie(cookie *http.Cookie) {
-	http.SetCookie(c.w, cookie)
+	http.SetCookie(c.W, cookie)
 }
 
 // Cookie returns the named cookie provided in the request or
@@ -603,7 +603,7 @@ func (c *Ctx) Cookie(cookie *http.Cookie) {
 // If multiple cookies match the given name, only one cookie will
 // be returned.
 func (c *Ctx) Cookies(name string) (string, error) {
-	cookie, err := c.r.Cookie(name)
+	cookie, err := c.R.Cookie(name)
 	if err != nil {
 		return "", err
 	}
@@ -613,31 +613,31 @@ func (c *Ctx) Cookies(name string) (string, error) {
 
 // File writes the specified file into the body stream in an efficient way.
 func (c *Ctx) File(filepath string) {
-	http.ServeFile(c.w, c.r, filepath)
+	http.ServeFile(c.W, c.R, filepath)
 }
 
 // FileAttachment writes the specified file into the body stream in an efficient way
 // On the client side, the file will typically be downloaded with the given filename
 func (c *Ctx) FileAttachment(filepath, filename string) {
 	c.SetHeader(HeaderContentDisposition, fmt.Sprintf(`attachment; filename="%s"`, filename))
-	http.ServeFile(c.w, c.r, filepath)
+	http.ServeFile(c.W, c.R, filepath)
 }
 
 // FileFromFS writes the specified file from http.FileSystem into the body stream in an efficient way.
 func (c *Ctx) FileFromFS(filepath string, fs http.FileSystem) {
 	defer func(old string) {
-		c.r.URL.Path = old
-	}(c.r.URL.Path)
+		c.R.URL.Path = old
+	}(c.R.URL.Path)
 
-	c.r.URL.Path = filepath
+	c.R.URL.Path = filepath
 
-	http.FileServer(fs).ServeHTTP(c.w, c.r)
+	http.FileServer(fs).ServeHTTP(c.W, c.R)
 }
 
 // Stream sends a streaming response and returns a boolean
 // indicates "Is client disconnected in middle of stream"
 func (c *Ctx) Stream(step func(w io.Writer) bool) bool {
-	w := c.w
+	w := c.W
 	ctx := c.Context
 	for {
 		select {
@@ -665,31 +665,31 @@ func (c *Ctx) ReadBody(out interface{}) error {
 	defer decoderPool.Put(schemaDecoder)
 
 	// Get content-type
-	ctype := strings.ToLower(c.r.Header.Get(HeaderContentType))
+	ctype := strings.ToLower(c.R.Header.Get(HeaderContentType))
 
 	switch {
 	case strings.HasPrefix(ctype, MIMEApplicationJSON):
 		schemaDecoder.SetAliasTag("json")
-		body, err := ioutil.ReadAll(c.r.Body)
+		body, err := ioutil.ReadAll(c.R.Body)
 		if err != nil {
 			return err
 		}
 		return json.Unmarshal(body, out)
 	case strings.HasPrefix(ctype, MIMEApplicationForm):
 		schemaDecoder.SetAliasTag("form")
-		if err := c.r.ParseForm(); err != nil {
+		if err := c.R.ParseForm(); err != nil {
 			return err
 		}
-		return schemaDecoder.Decode(out, c.r.PostForm)
+		return schemaDecoder.Decode(out, c.R.PostForm)
 	case strings.HasPrefix(ctype, MIMEMultipartForm):
 		schemaDecoder.SetAliasTag("form")
-		if err := c.r.ParseMultipartForm(1048576); err != nil {
+		if err := c.R.ParseMultipartForm(1048576); err != nil {
 			return nil
 		}
-		return schemaDecoder.Decode(out, c.r.MultipartForm.Value)
+		return schemaDecoder.Decode(out, c.R.MultipartForm.Value)
 	case strings.HasPrefix(ctype, MIMETextXML), strings.HasPrefix(ctype, MIMEApplicationXML):
 		schemaDecoder.SetAliasTag("xml")
-		body, err := ioutil.ReadAll(c.r.Body)
+		body, err := ioutil.ReadAll(c.R.Body)
 		if err != nil {
 			return err
 		}

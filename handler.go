@@ -22,6 +22,7 @@ type Handler struct {
 	Handlers map[string]struct{} // Record callable handle
 	name     string
 	prefix   string
+	ID       string
 }
 
 // Core get or set Core
