@@ -8,14 +8,14 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-type config map[string]interface{}
+type Options map[string]interface{}
 
-func (c *config) Value(k string) (interface{}, bool) {
+func (c *Options) Value(k string) (interface{}, bool) {
 	val, ok := (*c)[k].(string)
 	return val, ok
 }
 
-func (c *config) GetString(k string, def ...string) string {
+func (c *Options) GetString(k string, def ...string) string {
 	if val, ok := (*c)[k]; ok && val != nil {
 		if v, ok := val.(string); ok {
 			return v
@@ -27,19 +27,19 @@ func (c *config) GetString(k string, def ...string) string {
 	return ""
 }
 
-func (c *config) GetMap(k string, def ...config) config {
+func (c *Options) GetMap(k string, def ...Options) Options {
 	if val, ok := (*c)[k]; ok && val != nil {
-		if v, ok := val.(config); ok {
+		if v, ok := val.(Options); ok {
 			return v
 		}
 	}
 	if len(def) > 0 {
 		return def[0]
 	}
-	return config{}
+	return Options{}
 }
 
-func (c *config) GetStrings(k string, def ...[]string) []string {
+func (c *Options) GetStrings(k string, def ...[]string) []string {
 	if val, ok := (*c)[k]; ok && val != nil {
 		if v, ok := val.([]string); ok {
 			return v
@@ -51,7 +51,7 @@ func (c *config) GetStrings(k string, def ...[]string) []string {
 	return []string{}
 }
 
-func (c *config) GetInt(k string, def ...int) int {
+func (c *Options) GetInt(k string, def ...int) int {
 	if val, ok := (*c)[k]; ok && val != nil {
 		if v := val.(int); ok {
 			return v
@@ -63,7 +63,7 @@ func (c *config) GetInt(k string, def ...int) int {
 	return 0
 }
 
-func (c *config) GetInt64(k string, def ...int64) int64 {
+func (c *Options) GetInt64(k string, def ...int64) int64 {
 	if val, ok := (*c)[k]; ok && val != nil {
 		if v := val.(int); ok {
 			return int64(v)
@@ -75,7 +75,7 @@ func (c *config) GetInt64(k string, def ...int64) int64 {
 	return 0
 }
 
-func (c *config) GetBool(k string, def ...bool) bool {
+func (c *Options) GetBool(k string, def ...bool) bool {
 	val, ok := (*c)[k]
 	if !ok {
 		if len(def) > 0 {
@@ -92,7 +92,7 @@ func (c *config) GetBool(k string, def ...bool) bool {
 	return val.(bool)
 }
 
-func (c *config) ToString(k string, def ...string) string {
+func (c *Options) ToString(k string, def ...string) string {
 	if val, ok := (*c)[k]; ok && val != nil {
 		switch v := val.(type) {
 		case string:
@@ -109,8 +109,8 @@ func (c *config) ToString(k string, def ...string) string {
 	return ""
 }
 
-func LoadConfigFile(file string) config {
-	conf := make(config)
+func LoadConfigFile(file string) Options {
+	conf := make(Options)
 	buf, err := ioutil.ReadFile(file)
 	if err != nil {
 		conf["debug"] = true
@@ -142,5 +142,5 @@ func SaveConfigFile(conf map[string]interface{}) error {
 
 var (
 	confFile string
-	Conf     config
+	Conf     Options
 )

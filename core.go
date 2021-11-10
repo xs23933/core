@@ -20,8 +20,8 @@ type Core struct {
 	pool   sync.Pool
 	addr   string
 	Debug  bool
-	Conf   config
-	assets config
+	Conf   Options
+	assets Options
 	srv    *http.Server
 
 	// Value of 'maxMemory' param that is given to http.Request's ParseMultipartForm
@@ -224,10 +224,10 @@ func (c *Core) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // New New Core
-func New(conf ...config) *Core {
+func New(conf ...Options) *Core {
 	c := &Core{
 		tree:            NewTree(),
-		assets:          make(config),
+		assets:          make(Options),
 		ViewFuncMap:     template.FuncMap{},
 		RemoteIPHeaders: []string{"X-Forwarded-For", "X-Real-IP"},
 		pool: sync.Pool{
@@ -251,7 +251,7 @@ func New(conf ...config) *Core {
 }
 
 // Default init and use Logger And Recovery
-func Default(conf ...config) *Core {
+func Default(conf ...Options) *Core {
 	c := New(conf...)
 	out := ioutil.Discard
 	if log := c.Conf.GetString("log", ""); log != "" {

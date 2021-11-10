@@ -27,7 +27,7 @@ type Ctx struct {
 	W        ResponseWriter
 	R        *http.Request
 	core     *Core
-	Config   *config
+	Config   *Options
 	params   params
 	path     string
 	idx      int8

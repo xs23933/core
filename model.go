@@ -74,7 +74,7 @@ func Find(out interface{}, args ...interface{}) error {
 	return db.Find(out).Error
 }
 
-func NewModel(conf config, debug bool) (*DB, error) {
+func NewModel(conf Options, debug bool) (*DB, error) {
 	tp := conf.GetString("type")
 	dsn := conf.GetString("dsn")
 	if dsn == "" {

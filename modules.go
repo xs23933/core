@@ -32,7 +32,7 @@ type hasHandler interface {
 	Preload(*Ctx)
 }
 
-func NewEngine(conf ...config) *Engine {
+func NewEngine(conf ...Options) *Engine {
 	engine := &Engine{
 		Core: Default(conf...),
 		quit: make(chan os.Signal, 1),
