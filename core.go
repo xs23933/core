@@ -1,9 +1,9 @@
 package core
 
 import (
+	"context"
 	"fmt"
 	"html/template"
-	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
@@ -13,16 +13,20 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/sync/errgroup"
 )
 
 type Core struct {
-	tree   *tree
-	pool   sync.Pool
-	addr   string
-	Debug  bool
-	Conf   Options
-	assets Options
-	srv    *http.Server
+	*http.Server
+	tree      *tree
+	pool      sync.Pool
+	addr      string
+	Debug     bool
+	Conf      Options
+	assets    Options
+	waiterMux sync.Mutex
+	waiter    *errgroup.Group
 
 	// Value of 'maxMemory' param that is given to http.Request's ParseMultipartForm
 	// method call.
@@ -30,6 +34,7 @@ type Core struct {
 
 	ViewFuncMap     template.FuncMap
 	RemoteIPHeaders []string
+	Ln              net.Listener
 }
 
 func (c *Core) assignCtx(w http.ResponseWriter, r *http.Request) *Ctx {
@@ -56,6 +61,7 @@ func (c *Core) Use(args ...interface{}) *Core {
 			c.buildHanders(a)
 		default:
 			log.Fatal(ErrHandleNotSupport)
+			continue
 		}
 	}
 	if len(handlers) > 0 {
@@ -200,6 +206,10 @@ func (c *Core) AddHandle(methods interface{}, path string, handler interface{}) 
 }
 
 func (c *Core) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if strings.EqualFold(r.URL.Path, "/favicon.ico") {
+		c.static(w, r, r.URL.Path, "/statis")
+		return
+	}
 	for k, v := range c.assets {
 		if strings.HasPrefix(r.URL.Path, k) {
 			c.static(w, r, k, v.(string))
@@ -215,8 +225,7 @@ func (c *Core) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		ctx.params = result.params
 		ctx.handlers = append(result.preloads, result.handler...)
 		ctx.Next()
-		ctx.SetHeader(HeaderTk, time.Since(st).String())
-		ctx.wm.DoWriteHeader()
+		// ctx.wm.DoWriteHeader()
 		return
 	}
 	requestLog(StatusNotFound, ctx.Method(), ctx.Path(), time.Since(st).String())
@@ -237,11 +246,12 @@ func New(conf ...Options) *Core {
 				}
 			},
 		},
-		srv: &http.Server{},
+		Server: &http.Server{},
 	}
-	c.srv.Handler = c
+	c.Handler = c
 	if len(conf) > 0 {
 		c.Conf = conf[0]
+		Conf = c.Conf
 		c.Debug = c.Conf.GetBool("debug")
 		c.addr = c.Conf.ToString("listen")
 		c.assets = c.Conf.GetMap("static")
@@ -253,7 +263,7 @@ func New(conf ...Options) *Core {
 // Default init and use Logger And Recovery
 func Default(conf ...Options) *Core {
 	c := New(conf...)
-	out := ioutil.Discard
+	out := os.Stdout
 	if log := c.Conf.GetString("log", ""); log != "" {
 		var err error
 		out, err = os.OpenFile(log, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0666)
@@ -268,6 +278,66 @@ func Default(conf ...Options) *Core {
 		NewModel(conf, c.Debug)
 	}
 	return c
+}
+
+func (c *Core) GoListenAndServe(addr ...string) error {
+	return c.GoListenAndServeContext(context.Background(), addr...)
+}
+
+func (c *Core) GoListenAndServeContext(ctx context.Context, addr ...string) error {
+	if ctx == nil {
+		return ErrContextMustBeSet
+	}
+	if len(addr) > 0 {
+		c.addr = addr[0]
+	}
+	if c.addr == "" {
+		c.addr = ":8080"
+	}
+	c.addr = FixedPort(c.addr)
+	ln, err := net.Listen("tcp", c.addr)
+	if err != nil {
+		return err
+	}
+	return c.GoServe(ctx, ln)
+}
+
+func FixedPort(port string) string {
+	if !strings.Contains(port, ":") {
+		port = fmt.Sprintf(":%s", port)
+	}
+	return port
+}
+
+func (c *Core) GoServe(ctx context.Context, ln net.Listener) error {
+	c.waiterMux.Lock()
+	defer c.waiterMux.Unlock()
+	c.waiter, ctx = errgroup.WithContext(ctx)
+	c.waiter.Go(func() error {
+		return c.Serve(ln)
+	})
+	go func(ctx context.Context) {
+		<-ctx.Done()
+		c.Close()
+	}(ctx)
+	return nil
+}
+
+func (c *Core) Wait() error {
+	c.waiterMux.Lock()
+	unset := c.waiter == nil
+	c.waiterMux.Unlock()
+	if unset {
+		return ErrNotStartedYet
+	}
+	c.waiterMux.Lock()
+	wait := c.waiter.Wait
+	c.waiterMux.Unlock()
+	err := wait()
+	if err == http.ErrServerClosed {
+		err = nil
+	}
+	return err
 }
 
 func (c *Core) ListenAndServe(addr ...string) error {
@@ -288,12 +358,37 @@ func (c *Core) ListenAndServe(addr ...string) error {
 }
 
 func (c *Core) Serve(ln net.Listener) error {
-	Log("Listen %s\n", strings.TrimPrefix(ln.Addr().String(), "[::]"))
-	return c.srv.Serve(ln)
+	port := strings.TrimPrefix(ln.Addr().String(), "[::]")
+	Log("Listen: http://127.0.0.1%s\n", port)
+	localIP, err := LocalIP()
+	if err == nil {
+		Log("Listen: http://%s%s\n", localIP.String(), port)
+	}
+	return c.Server.Serve(ln)
+}
+
+func (c *Core) Close() error {
+	c.waiterMux.Lock()
+	defer c.waiterMux.Unlock()
+	if c.waiter == nil {
+		return nil
+	}
+	return c.Server.Close()
 }
 
 // SetFuncMap sets the FuncMap used for template.FuncMap.
 func (c *Core) SetFuncMap(funcMap template.FuncMap) *Core {
 	c.ViewFuncMap = funcMap
 	return c
+}
+
+func LocalIP() (ip net.IP, err error) {
+	conn, err := net.Dial("udp", "8.8.8.8:80")
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+
+	addr := conn.LocalAddr().(*net.UDPAddr)
+	return addr.IP, nil
 }

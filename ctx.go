@@ -25,6 +25,7 @@ type Ctx struct {
 	wm resp
 	context.Context
 	W        ResponseWriter
+	Resp     http.ResponseWriter
 	R        *http.Request
 	core     *Core
 	Config   *Options
@@ -42,6 +43,7 @@ func (c *Ctx) init(w http.ResponseWriter, r *http.Request, core *Core) {
 	c.R = r
 	c.wm.init(w)
 	c.W = &c.wm
+	c.Resp = w
 	c.path = r.URL.Path
 	c.Context = r.Context()
 	c.params = make(params, 0)

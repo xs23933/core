@@ -85,7 +85,6 @@ func (t *tree) Insert(methods []string, path string, handler interface{}) error 
 			break
 		}
 	}
-
 	return nil
 }
 
@@ -120,7 +119,6 @@ func (t *tree) procHandler(hand interface{}) HandlerFuncs {
 	case func(http.ResponseWriter, *http.Request):
 		hands = append(hands, HandlerFunc(func(c *Ctx) { h(c.W, c.R) }))
 	case http.Handler:
-		Warn("warning add http.handler")
 		hands = append(hands, HandlerFunc(func(c *Ctx) { h.ServeHTTP(c.W, c.R) }))
 	}
 	return hands
@@ -128,9 +126,14 @@ func (t *tree) procHandler(hand interface{}) HandlerFuncs {
 
 func (n *node) child(p, m string) (child *node, ok bool) {
 	child, ok = n.children[p]
-	if !ok {
-		child, ok = n.children[p+optionalDelimiter]
+	if ok {
+		return
 	}
+	child, ok = n.children[p+optionalDelimiter]
+	if ok {
+		return
+	}
+	child, ok = n.children[ptnWildcard]
 	return
 }
 
@@ -146,7 +149,7 @@ func (t *tree) Find(method, path string) (*result, error) {
 			continue
 		}
 		if len(curNode.children) == 0 {
-			if curNode.path != p {
+			if curNode.path != p && curNode.path != ptnWildcard {
 				return nil, ErrNotFound
 			}
 			break
@@ -175,16 +178,14 @@ func (t *tree) Find(method, path string) (*result, error) {
 
 	addPreload(curNode, result)
 
-	if path == slashDelimiter {
-		if len(curNode.handles) == 0 {
-			return nil, ErrNotFound
-		}
+	if path == slashDelimiter && len(curNode.handles) == 0 {
+		return nil, ErrNotFound
 	}
 	ok := false
 	if result.handler, ok = curNode.handles[methodInt(method)]; !ok {
 		if len(curNode.children) > 0 {
 			for k, v := range curNode.children {
-				if string([]rune(k)[len(k)-1]) == optionalDelimiter {
+				if string([]rune(k)[len(k)-1]) == optionalDelimiter || string(k) == ptnWildcard {
 					addPreload(v, result)
 					result.handler = v.handles[methodInt(method)]
 					break

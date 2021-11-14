@@ -12,20 +12,19 @@ import (
 	"strings"
 	"sync"
 	"syscall"
-	"time"
+
+	"golang.org/x/sync/errgroup"
 )
 
 type Engine struct {
 	*Core
-	quit chan os.Signal
-}
-
-type canExitModule interface {
-	Exit(*sync.WaitGroup) error
+	stop context.CancelFunc
+	Ctx  context.Context
+	EG   *errgroup.Group
 }
 
 type canStartModule interface {
-	Start(*Engine)
+	Start(*Engine) error
 }
 
 type hasHandler interface {
@@ -35,10 +34,22 @@ type hasHandler interface {
 func NewEngine(conf ...Options) *Engine {
 	engine := &Engine{
 		Core: Default(conf...),
-		quit: make(chan os.Signal, 1),
 	}
-	signal.Notify(engine.quit, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT)
-	go engine.init()
+	ctx, cancel := context.WithCancel(context.Background())
+	engine.EG, engine.Ctx = errgroup.WithContext(ctx)
+	engine.stop = cancel
+	//创建监听退出chan
+	c := make(chan os.Signal)
+	//监听指定信号 ctrl+c kill
+	const SIGUSR2 = syscall.Signal(0x1f)
+	signal.Notify(c, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM,
+		syscall.SIGQUIT, syscall.SIGUSR1, SIGUSR2)
+	go func() {
+		for range c {
+			cancel()
+			engine.Server.Shutdown(ctx)
+		}
+	}()
 	return engine
 }
 
@@ -46,7 +57,9 @@ func (e *Engine) loadMods() {
 	for _, m := range GetModules("module") {
 		mo := m.Instance()
 		if mod, ok := mo.(canStartModule); ok {
-			go mod.Start(e)
+			e.EG.Go(func() error {
+				return mod.Start(e)
+			})
 		}
 		if mod, ok := mo.(hasHandler); ok {
 			e.Core.Use(mod)
@@ -55,7 +68,6 @@ func (e *Engine) loadMods() {
 }
 
 func (e *Engine) ListenAndServe(addr ...string) error {
-	defer e.Exit()
 	e.loadMods()
 	err := e.Core.ListenAndServe(addr...)
 	if errors.Is(err, http.ErrServerClosed) {
@@ -65,43 +77,12 @@ func (e *Engine) ListenAndServe(addr ...string) error {
 }
 
 func (e *Engine) Serve(ln net.Listener) error {
-	defer e.Exit()
 	e.loadMods()
 	err := e.Core.Serve(ln)
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}
 	return err
-}
-
-func (e *Engine) init() {
-	for range e.quit {
-		ctx, _ := context.WithTimeout(context.Background(), 3*time.Second)
-		_ = e.Core.srv.Shutdown(ctx)
-	}
-}
-
-func (e *Engine) Shutdown() {
-	e.quit <- os.Interrupt
-}
-
-func (e *Engine) Exit() {
-	defer func() {
-		if r := recover(); r != nil {
-			Erro("exit module %v", r)
-		}
-	}()
-	modulesMu.Lock()
-	defer modulesMu.Unlock()
-	wg := sync.WaitGroup{}
-	for _, m := range modules {
-		pos := m.Instance()
-		if mod, ok := pos.(canExitModule); ok {
-			wg.Add(1)
-			go mod.Exit(&wg)
-		}
-	}
-	wg.Wait()
 }
 
 type Module interface {

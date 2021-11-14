@@ -118,9 +118,9 @@ func LoadConfigFile(file string) Options {
 		conf["maxMultipartMemory"] = defaultMultipartMemory
 		conf["static"] = map[string]string{
 			"/favicon": "./static",
-			"/js":      "./static/js",
-			"/css":     "./static/css",
-			"/assets":  "./static/assets",
+			"/js":      "./static",
+			"/css":     "./static",
+			"/assets":  "./static",
 		}
 		yml, _ := yaml.Marshal(conf)
 		ioutil.WriteFile(file, yml, 0644)
@@ -128,7 +128,6 @@ func LoadConfigFile(file string) Options {
 		log.Fatalf(err.Error())
 	}
 	confFile = file
-	Conf = conf
 	return conf
 }
 

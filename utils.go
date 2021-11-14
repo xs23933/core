@@ -710,6 +710,8 @@ var (
 	ErrHandleNotSupport   = errors.New("handle does not support. Must use core.Handle, http.HandlerFunc or http.Handler")
 	ErrDataTypeNotSupport = errors.New("dataType does not support")
 	ErrNoConfig           = errors.New("field global configuration not found")
+	ErrContextMustBeSet   = errors.New("context must  be set")
+	ErrNotStartedYet      = errors.New("not started yet")
 )
 
 // ErrInmemoryListenerClosed indicates that the InmemoryListener is already closed.
