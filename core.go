@@ -2,13 +2,14 @@ package core
 
 import (
 	"context"
+	"embed"
 	"fmt"
 	"html/template"
 	"log"
 	"net"
 	"net/http"
 	"os"
-	"path/filepath"
+	"path"
 	"reflect"
 	"strings"
 	"sync"
@@ -169,14 +170,40 @@ func (c *Core) Patch(path string, handler ...interface{}) error {
 	return c.AddHandle(MethodPatch, path, handler)
 }
 
-func (c *Core) Static(path, dirname string) error {
-	c.assets[path] = dirname
-	return nil
+func (c *Core) Static(relativePath, dirname string) *Core {
+	c.Get(path.Join(dirname, ":staticfilepath"), func(ctx *Ctx) {
+		file := ctx.GetParam("staticfilepath")
+		filepath := path.Join(".", relativePath, file)
+		http.ServeFile(ctx.W, ctx.R, filepath)
+	})
+	return c
 }
 
-func (c *Core) static(w http.ResponseWriter, r *http.Request, path, dir string) {
-	file := filepath.Join(dir, r.URL.Path)
-	http.ServeFile(w, r, file)
+func (c *Core) StaticFS(relativePath string, ef *embed.FS) *Core {
+	fs := NewFileSystem(relativePath, ef)
+	fileServer := http.FileServer(fs)
+	c.Get("/favicon.ico", func(ctx *Ctx) {
+		filepath := path.Join(".", relativePath, "favicon.ico")
+		c.handleFS(ctx, filepath, ef, fileServer)
+	})
+	for _, rel := range fs.Dirs() {
+		c.Get(path.Join(rel, ":fsfilepath"), func(ctx *Ctx) {
+			file := ctx.GetParam("fsfilepath")
+			filepath := path.Join(".", relativePath, rel, file)
+			c.handleFS(ctx, filepath, ef, fileServer)
+		})
+	}
+	return c
+}
+
+func (c *Core) handleFS(ctx *Ctx, filepath string, ef *embed.FS, fshand http.Handler) {
+	f, err := ef.Open(filepath)
+	if err != nil {
+		http.ServeFile(ctx.W, ctx.R, filepath)
+		return
+	}
+	f.Close()
+	fshand.ServeHTTP(ctx.W, ctx.R)
 }
 
 // AddHandle
@@ -206,17 +233,6 @@ func (c *Core) AddHandle(methods interface{}, path string, handler interface{}) 
 }
 
 func (c *Core) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if strings.EqualFold(r.URL.Path, "/favicon.ico") {
-		c.static(w, r, r.URL.Path, "/statis")
-		return
-	}
-	for k, v := range c.assets {
-		if strings.HasPrefix(r.URL.Path, k) {
-			c.static(w, r, k, v.(string))
-			return
-		}
-	}
-
 	ctx := c.assignCtx(w, r)
 	defer c.releaseCtx(ctx)
 	st := time.Now()

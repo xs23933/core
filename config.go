@@ -116,12 +116,6 @@ func LoadConfigFile(file string) Options {
 		conf["debug"] = true
 		conf["listen"] = 8080
 		conf["maxMultipartMemory"] = defaultMultipartMemory
-		conf["static"] = map[string]string{
-			"/favicon": "./static",
-			"/js":      "./static",
-			"/css":     "./static",
-			"/assets":  "./static",
-		}
 		yml, _ := yaml.Marshal(conf)
 		ioutil.WriteFile(file, yml, 0644)
 	} else if err = yaml.Unmarshal(buf, &conf); err != nil {
