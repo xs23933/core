@@ -5,6 +5,7 @@ import (
 	"embed"
 	"fmt"
 	"html/template"
+	"io/fs"
 	"log"
 	"net"
 	"net/http"
@@ -180,29 +181,33 @@ func (c *Core) Static(relativePath, dirname string) *Core {
 }
 
 func (c *Core) StaticFS(relativePath string, ef *embed.FS) *Core {
-	fs := NewFileSystem(relativePath, ef)
-	fileServer := http.FileServer(fs)
-	c.Get("/favicon.ico", func(ctx *Ctx) {
-		filepath := path.Join(".", relativePath, "favicon.ico")
-		c.handleFS(ctx, filepath, ef, fileServer)
-	})
-	for _, rel := range fs.Dirs() {
-		c.Get(path.Join(rel, ":fsfilepath"), func(ctx *Ctx) {
-			file := ctx.GetParam("fsfilepath")
-			filepath := path.Join(".", relativePath, rel, file)
-			c.handleFS(ctx, filepath, ef, fileServer)
-		})
+	dirs, _ := ef.ReadDir(relativePath)
+	subDir, _ := fs.Sub(ef, "static")
+	fileServer := http.FileServer(http.FS(subDir))
+	for _, rel := range dirs {
+		switch {
+		case rel.IsDir():
+			c.Get(path.Join(rel.Name(), ":fsfilepath"), func(ctx *Ctx) {
+				file := ctx.GetParam("fsfilepath")
+				filepath := path.Join(".", rel.Name(), file)
+				c.handleFS(ctx, filepath, fileServer)
+			})
+		case rel.Name() == "index.html":
+			c.Get("/", func(ctx *Ctx) {
+				filepath := path.Join(".", relativePath, "index.html")
+				c.handleFS(ctx, filepath, fileServer)
+			})
+		case rel.Name() == "favicon.ico":
+			c.Get(rel.Name(), func(ctx *Ctx) {
+				filepath := path.Join(".", relativePath, "index.html")
+				c.handleFS(ctx, filepath, fileServer)
+			})
+		}
 	}
 	return c
 }
 
-func (c *Core) handleFS(ctx *Ctx, filepath string, ef *embed.FS, fshand http.Handler) {
-	f, err := ef.Open(filepath)
-	if err != nil {
-		http.ServeFile(ctx.W, ctx.R, filepath)
-		return
-	}
-	f.Close()
+func (c *Core) handleFS(ctx *Ctx, filepath string, fshand http.Handler) {
 	fshand.ServeHTTP(ctx.W, ctx.R)
 }
 
@@ -383,13 +388,9 @@ func (c *Core) Serve(ln net.Listener) error {
 	return c.Server.Serve(ln)
 }
 
-func (c *Core) Close() error {
-	c.waiterMux.Lock()
-	defer c.waiterMux.Unlock()
-	if c.waiter == nil {
-		return nil
-	}
-	return c.Server.Close()
+func (c *Core) Shutdown() error {
+	// TODO: 需要修正 GoServe 退出请求
+	return c.Server.Shutdown(context.TODO())
 }
 
 // SetFuncMap sets the FuncMap used for template.FuncMap.

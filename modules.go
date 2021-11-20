@@ -58,6 +58,11 @@ func (e *Engine) loadMods() {
 		mo := m.Instance()
 		if mod, ok := mo.(canStartModule); ok {
 			e.EG.Go(func() error {
+				select {
+				case <-e.Ctx.Done():
+					return nil
+				default:
+				}
 				return mod.Start(e)
 			})
 		}
@@ -69,6 +74,7 @@ func (e *Engine) loadMods() {
 
 func (e *Engine) ListenAndServe(addr ...string) error {
 	e.loadMods()
+	defer e.stop()
 	err := e.Core.ListenAndServe(addr...)
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
@@ -78,6 +84,7 @@ func (e *Engine) ListenAndServe(addr ...string) error {
 
 func (e *Engine) Serve(ln net.Listener) error {
 	e.loadMods()
+	defer e.stop()
 	err := e.Core.Serve(ln)
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
