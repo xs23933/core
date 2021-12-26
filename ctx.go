@@ -37,6 +37,7 @@ type Ctx struct {
 	querys   url.Values
 	sameSite http.SameSite
 	handlers HandlerFuncs
+	theme    string
 }
 
 func (c *Ctx) init(w http.ResponseWriter, r *http.Request, core *Core) {
@@ -653,6 +654,38 @@ func (c *Ctx) Stream(step func(w io.Writer) bool) bool {
 			}
 		}
 	}
+}
+
+// ViewTheme 使用模版风格
+func (c *Ctx) ViewTheme(theme string) {
+	c.theme = theme
+}
+
+func (c *Ctx) Render(f string, bind ...interface{}) error {
+	var err error
+	var binding interface{}
+	if len(bind) > 0 {
+		binding = bind[0]
+	} else {
+		binding = c.vars
+	}
+
+	if c.core.Views == nil {
+		err = fmt.Errorf("Render: Not Initial Views")
+		Erro(err.Error())
+		return err
+	}
+
+	if c.theme != "" {
+		c.core.Views.DoTheme(c.theme)
+	}
+
+	// c.SetHeader(HeaderContentType, MIMETextHTML)
+	err = c.core.Views.Execute(c.W, f, binding)
+	if err != nil {
+		c.Abort(err.Error(), StatusInternalServerError)
+	}
+	return err
 }
 
 // ReadBody binds the request body to a struct.

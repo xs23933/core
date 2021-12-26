@@ -3,6 +3,7 @@ package core
 import (
 	"io/ioutil"
 	"log"
+	"reflect"
 	"strconv"
 
 	"gopkg.in/yaml.v3"
@@ -37,6 +38,19 @@ func (c *Options) GetMap(k string, def ...Options) Options {
 		return def[0]
 	}
 	return Options{}
+}
+
+func (c *Options) GetAs(k string, v interface{}) error {
+	if val, ok := (*c)[k]; ok && val != nil {
+		rv := reflect.ValueOf(v)
+		if rv.Kind() != reflect.Ptr || rv.IsNil() {
+			return &InvalidUnmarshalError{reflect.TypeOf(v)}
+		}
+		rv = rv.Elem()
+		rv.Set(reflect.ValueOf(val).Convert(rv.Type()))
+		return nil
+	}
+	return ErrDataTypeNotSupport
 }
 
 func (c *Options) GetStrings(k string, def ...[]string) []string {
@@ -109,13 +123,16 @@ func (c *Options) ToString(k string, def ...string) string {
 	return ""
 }
 
-func LoadConfigFile(file string) Options {
+func LoadConfigFile(file string, opts ...Options) Options {
 	conf := make(Options)
+	if len(opts) > 0 {
+		conf = opts[0]
+	}
 	buf, err := ioutil.ReadFile(file)
 	if err != nil {
-		conf["debug"] = true
-		conf["listen"] = 8080
-		conf["maxMultipartMemory"] = defaultMultipartMemory
+		// if len(opts) == 0 {
+		// 	// conf["debug"] = true
+		// }
 		yml, _ := yaml.Marshal(conf)
 		ioutil.WriteFile(file, yml, 0644)
 	} else if err = yaml.Unmarshal(buf, &conf); err != nil {

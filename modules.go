@@ -31,6 +31,14 @@ type hasHandler interface {
 	Preload(*Ctx)
 }
 
+func (e *Engine) Shutdown() error {
+	if e.stop != nil {
+		e.stop()
+	}
+	e.EG.Wait()
+	return e.Core.Shutdown()
+}
+
 func NewEngine(conf ...Options) *Engine {
 	engine := &Engine{
 		Core: Default(conf...),
@@ -43,7 +51,7 @@ func NewEngine(conf ...Options) *Engine {
 	//监听指定信号 ctrl+c kill
 	const SIGUSR2 = syscall.Signal(0x1f)
 	signal.Notify(c, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM,
-		syscall.SIGQUIT, syscall.SIGUSR1, SIGUSR2)
+		syscall.SIGQUIT, SIGUSR2)
 	go func() {
 		for range c {
 			cancel()

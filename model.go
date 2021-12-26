@@ -4,6 +4,7 @@ import (
 	"database/sql/driver"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -117,6 +118,27 @@ func (d Map) GetString(k string) (value string) {
 		if value, ok = val.(string); ok {
 			return
 		}
+	}
+	return ""
+}
+
+func (d Map) ToString(k string, def ...string) string {
+	if val, ok := (d)[k]; ok && val != nil {
+		switch v := val.(type) {
+		case string:
+			return v
+		case []byte:
+			return string(v)
+		case float64:
+			return strconv.Itoa(int(v))
+		case int:
+			return strconv.Itoa(v)
+		default:
+			D("unknow %v", v)
+		}
+	}
+	if len(def) > 0 {
+		return def[0]
 	}
 	return ""
 }

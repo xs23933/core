@@ -29,6 +29,7 @@ type Core struct {
 	assets    Options
 	waiterMux sync.Mutex
 	waiter    *errgroup.Group
+	Views     Views
 
 	// Value of 'maxMemory' param that is given to http.Request's ParseMultipartForm
 	// method call.
@@ -59,6 +60,8 @@ func (c *Core) Use(args ...interface{}) *Core {
 			path = a
 		case func(*Ctx), HandlerFunc, func(http.ResponseWriter, *http.Request), http.Handler:
 			handlers = append(handlers, a)
+		case Views:
+			c.Views = a
 		case handler:
 			c.buildHanders(a)
 		default:
@@ -238,6 +241,10 @@ func (c *Core) AddHandle(methods interface{}, path string, handler interface{}) 
 }
 
 func (c *Core) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "HEAD" {
+		w.WriteHeader(204)
+		return
+	}
 	ctx := c.assignCtx(w, r)
 	defer c.releaseCtx(ctx)
 	st := time.Now()
@@ -285,16 +292,18 @@ func New(conf ...Options) *Core {
 func Default(conf ...Options) *Core {
 	c := New(conf...)
 	out := os.Stdout
+	forceColor := c.Debug
 	if log := c.Conf.GetString("log", ""); log != "" {
 		var err error
-		out, err = os.OpenFile(log, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0666)
+		out, err = os.OpenFile(log, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0640)
+		forceColor = false
 		if err != nil {
 			panic(err)
 		}
 	} else if c.Debug {
 		out = os.Stdout
 	}
-	c.Use(Logger(LoggerConfig{ForceColor: c.Debug, Output: out}), Recovery())
+	c.Use(Logger(LoggerConfig{ForceColor: forceColor, Output: out}), Recovery())
 	if conf := c.Conf.GetMap("database"); conf != nil {
 		NewModel(conf, c.Debug)
 	}
@@ -380,10 +389,15 @@ func (c *Core) ListenAndServe(addr ...string) error {
 
 func (c *Core) Serve(ln net.Listener) error {
 	port := strings.TrimPrefix(ln.Addr().String(), "[::]")
-	Log("Listen: http://127.0.0.1%s\n", port)
-	localIP, err := LocalIP()
-	if err == nil {
-		Log("Listen: http://%s%s\n", localIP.String(), port)
+	if !strings.Contains(ln.Addr().String(), "127.0.0.1") {
+		D("Listen: http://127.0.0.1%s\n", port)
+
+		localIP, err := LocalIP()
+		if err == nil {
+			D("Listen: http://%s%s\n", localIP.String(), port)
+		}
+	} else {
+		D("Listen: http://%s\n", port)
 	}
 	return c.Server.Serve(ln)
 }
