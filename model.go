@@ -77,6 +77,7 @@ func Find(out interface{}, args ...interface{}) error {
 
 func NewModel(conf Options, debug bool) (*DB, error) {
 	tp := conf.GetString("type")
+	dbType = tp
 	dsn := conf.GetString("dsn")
 	if dsn == "" {
 		return nil, ErrNoConfig
@@ -396,8 +397,13 @@ func Conn() *DB {
 	return nil
 }
 
+func DBType() string {
+	return dbType
+}
+
 var (
-	conn *DB
+	conn   *DB
+	dbType string
 )
 
 type DB = gorm.DB

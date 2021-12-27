@@ -178,6 +178,9 @@ func (c *Core) Static(relativePath, dirname string) *Core {
 	c.Get(path.Join(dirname, ":staticfilepath"), func(ctx *Ctx) {
 		file := ctx.GetParam("staticfilepath")
 		filepath := path.Join(".", relativePath, file)
+
+		Erro(os.Getwd())
+		Erro(filepath)
 		http.ServeFile(ctx.W, ctx.R, filepath)
 	})
 	return c
@@ -185,7 +188,7 @@ func (c *Core) Static(relativePath, dirname string) *Core {
 
 func (c *Core) StaticFS(relativePath string, ef *embed.FS) *Core {
 	dirs, _ := ef.ReadDir(relativePath)
-	subDir, _ := fs.Sub(ef, "static")
+	subDir, _ := fs.Sub(ef, relativePath)
 	fileServer := http.FileServer(http.FS(subDir))
 	for _, rel := range dirs {
 		switch {

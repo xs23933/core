@@ -146,7 +146,7 @@ func (ve *ViewEngine) DoTheme(theme string) {
 }
 
 func (ve *ViewEngine) Execute(out io.Writer, tpl string, binding interface{}, layout ...string) error {
-	if !ve.loaded {
+	if !ve.loaded || ve.debug {
 		if err := ve.Load(); err != nil {
 			return err
 		}
@@ -176,7 +176,7 @@ func (ve *ViewEngine) Execute(out io.Writer, tpl string, binding interface{}, la
 
 // Load load tmpl file
 func (ve *ViewEngine) Load() error {
-	if ve.loaded {
+	if ve.loaded && !ve.debug {
 		return nil
 	}
 	ve.mutex.Lock()
