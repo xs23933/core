@@ -8,6 +8,7 @@ import (
 	"html/template"
 	"io"
 	"io/ioutil"
+	"math"
 	"net/http"
 	"os"
 	"path"
@@ -385,6 +386,56 @@ var templateHelpers = template.FuncMap{
 			return src
 		}
 		return def
+	},
+	"paginator": func(page, prepage int, nums int64, url ...string) map[string]interface{} {
+		var prevpage int //前一页地址
+		var nextpage int //后一页地址
+		//根据nums总数，和prepage每页数量 生成分页总数
+		totalpages := int(math.Ceil(float64(nums) / float64(prepage))) //page总数
+		if page > totalpages {
+			page = totalpages
+		}
+		if page <= 0 {
+			page = 1
+		}
+		var pages []int
+		switch {
+		case page >= totalpages-5 && totalpages > 5: //最后5页
+			start := totalpages - 5
+			prevpage = page - 1
+			nextpage = int(math.Min(float64(totalpages), float64(page+1)))
+			pages = make([]int, 5)
+			for i := range pages {
+				pages[i] = start + i
+			}
+		case page >= 3 && totalpages > 5:
+			start := page - 3 + 1
+			pages = make([]int, 5)
+			for i := range pages {
+				pages[i] = start + i
+			}
+			prevpage = page - 1
+			nextpage = page + 1
+		default:
+			pages = make([]int, int(math.Min(5, float64(totalpages))))
+			for i := range pages {
+				pages[i] = i + 1
+			}
+			prevpage = int(math.Max(float64(1), float64(page-1)))
+			nextpage = page + 1
+		}
+		paginatorMap := make(map[string]interface{})
+		paginatorMap["pages"] = pages
+		paginatorMap["totalpages"] = totalpages
+		paginatorMap["prevpage"] = prevpage
+		paginatorMap["nextpage"] = nextpage
+		paginatorMap["currpage"] = page
+		paginatorMap["url"] = ""
+		if len(url) > 0 {
+			paginatorMap["url"] = url[0]
+		}
+
+		return paginatorMap
 	},
 }
 
