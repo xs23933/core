@@ -90,6 +90,16 @@ func (e *Engine) ListenAndServe(addr ...string) error {
 	return err
 }
 
+func (e *Engine) ListenAndServeTLS(cert, key string) error {
+	e.loadMods()
+	defer e.stop()
+	err := e.Core.ListenAndServeTLS(cert, key)
+	if errors.Is(err, http.ErrServerClosed) {
+		return nil
+	}
+	return err
+}
+
 func (e *Engine) Serve(ln net.Listener) error {
 	e.loadMods()
 	defer e.stop()
