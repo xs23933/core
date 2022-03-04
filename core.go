@@ -34,10 +34,9 @@ type Core struct {
 	// Value of 'maxMemory' param that is given to http.Request's ParseMultipartForm
 	// method call.
 	MaxMultipartMemory int64
-
-	ViewFuncMap     template.FuncMap
-	RemoteIPHeaders []string
-	Ln              net.Listener
+	ViewFuncMap        template.FuncMap
+	RemoteIPHeaders    []string
+	Ln                 net.Listener
 }
 
 func (c *Core) assignCtx(w http.ResponseWriter, r *http.Request) *Ctx {
@@ -175,14 +174,11 @@ func (c *Core) Patch(path string, handler ...interface{}) error {
 }
 
 func (c *Core) Static(relativePath, dirname string) *Core {
-	c.Get(path.Join(dirname, ":staticfilepath"), func(ctx *Ctx) {
+	c.AddHandle(MethodGet, path.Join(dirname, ":staticfilepath"), func(ctx *Ctx) {
 		file := ctx.GetParam("staticfilepath")
 		filepath := path.Join(".", relativePath, file)
-
-		Erro(os.Getwd())
-		Erro(filepath)
 		http.ServeFile(ctx.W, ctx.R, filepath)
-	})
+	}, true)
 	return c
 }
 
@@ -193,21 +189,21 @@ func (c *Core) StaticFS(relativePath string, ef *embed.FS) *Core {
 	for _, rel := range dirs {
 		switch {
 		case rel.IsDir():
-			c.Get(path.Join(rel.Name(), ":fsfilepath"), func(ctx *Ctx) {
+			c.AddHandle(MethodGet, path.Join(rel.Name(), ":fsfilepath"), func(ctx *Ctx) {
 				file := ctx.GetParam("fsfilepath")
 				filepath := path.Join(".", rel.Name(), file)
 				c.handleFS(ctx, filepath, fileServer)
-			})
+			}, true)
 		case rel.Name() == "index.html":
-			c.Get("/", func(ctx *Ctx) {
+			c.AddHandle(MethodGet, "/", func(ctx *Ctx) {
 				filepath := path.Join(".", relativePath, "index.html")
 				c.handleFS(ctx, filepath, fileServer)
-			})
+			}, true)
 		case rel.Name() == "favicon.ico":
-			c.Get(rel.Name(), func(ctx *Ctx) {
-				filepath := path.Join(".", relativePath, "index.html")
+			c.AddHandle(MethodGet, rel.Name(), func(ctx *Ctx) {
+				filepath := path.Join(".", relativePath, "favicon.ico")
 				c.handleFS(ctx, filepath, fileServer)
-			})
+			}, true)
 		}
 	}
 	return c
@@ -226,7 +222,7 @@ func (c *Core) handleFS(ctx *Ctx, filepath string, fshand http.Handler) {
 //  app.AddHandle("GET", "/foo", func(c*core.Ctx){
 // 		c.SendString("hello world")
 //  })
-func (c *Core) AddHandle(methods interface{}, path string, handler interface{}) error {
+func (c *Core) AddHandle(methods interface{}, path string, handler interface{}, static ...bool) error {
 	if handler == nil {
 		return ErrHandlerNotFound
 	}
@@ -236,9 +232,9 @@ func (c *Core) AddHandle(methods interface{}, path string, handler interface{}) 
 	D("%v: %s", methods, path)
 	switch v := methods.(type) { // check method is string or []string
 	case string:
-		return c.tree.Insert([]string{v}, path, handler)
+		return c.tree.Insert([]string{v}, path, handler, static...)
 	case []string:
-		return c.tree.Insert(v, path, handler)
+		return c.tree.Insert(v, path, handler, static...)
 	}
 	return ErrMethodNotAllowed
 }
@@ -255,6 +251,9 @@ func (c *Core) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		ctx.params = result.params
 		ctx.handlers = append(result.preloads, result.handler...)
+		if result.static {
+			ctx.handlers = HandlerFuncs{result.handler[len(result.handler)-1]}
+		}
 		ctx.Next()
 		// ctx.wm.DoWriteHeader()
 		return
@@ -285,6 +284,9 @@ func New(conf ...Options) *Core {
 		Conf = c.Conf
 		c.Debug = c.Conf.GetBool("debug")
 		c.addr = c.Conf.ToString("listen")
+		if c.addr != "" {
+			c.Server.Addr = c.addr
+		}
 		c.assets = c.Conf.GetMap("static")
 		c.MaxMultipartMemory = c.Conf.GetInt64("maxMultipartMemory", defaultMultipartMemory)
 	}

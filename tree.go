@@ -9,6 +9,7 @@ type node struct {
 	path     string
 	handles  map[int8]HandlerFuncs // key is methods
 	children map[string]*node      // key is path of next node
+	static   bool
 }
 
 type tree struct {
@@ -26,6 +27,7 @@ type result struct {
 	preloads HandlerFuncs
 	handler  HandlerFuncs
 	params   params
+	static   bool
 }
 
 func newResult() *result {
@@ -56,7 +58,7 @@ func NewTree() *tree {
 //  methods []string  GET | POST any http method
 //  path string static, param(:param), catchall(*)
 //  handler  HandlerFunc | HandlerFuncs
-func (t *tree) Insert(methods []string, path string, handler interface{}) error {
+func (t *tree) Insert(methods []string, path string, handler interface{}, static ...bool) error {
 	curNode := t.node
 	if path == slashDelimiter { // add root node
 		curNode.path = path
@@ -81,7 +83,7 @@ func (t *tree) Insert(methods []string, path string, handler interface{}) error 
 		// last loop. if there is already registered date, overwrite it.
 		if i == len(paths)-1 {
 			curNode.path = p
-			t.insert(methods, curNode, handler)
+			t.insert(methods, curNode, handler, static...)
 			break
 		}
 	}
@@ -89,7 +91,10 @@ func (t *tree) Insert(methods []string, path string, handler interface{}) error 
 }
 
 // insert for insert handler with methods
-func (t *tree) insert(methods []string, cur *node, hand interface{}) {
+func (t *tree) insert(methods []string, cur *node, hand interface{}, static ...bool) {
+	if len(static) > 0 && static[0] {
+		cur.static = true
+	}
 	for _, method := range methods {
 		hands := t.procHandler(hand)
 		if cur.handles[methodInt(method)] == nil {
@@ -197,6 +202,7 @@ func (t *tree) Find(method, path string) (*result, error) {
 		return nil, ErrNotFound
 	}
 	result.params = params
+	result.static = curNode.static
 	return result, nil
 }
 

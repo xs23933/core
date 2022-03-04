@@ -25,6 +25,7 @@ type Views interface {
 	Theme(string)
 	DoTheme(string)
 	Execute(out io.Writer, tpl string, binding interface{}, layout ...string) error
+	AddFunc(name string, fn interface{}) *ViewEngine
 }
 type ViewEngine struct {
 	left       string // default {{

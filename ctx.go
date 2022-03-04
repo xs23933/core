@@ -73,6 +73,22 @@ func (c *Ctx) Next() {
 	}
 }
 
+func (c *Ctx) Redirect(to string, stCode ...int) {
+	code := StatusTemporaryRedirect
+	if len(stCode) > 0 {
+		code = stCode[0]
+	}
+	http.Redirect(c.W, c.R, to, code)
+}
+
+func (c *Ctx) RedirectJS(to string, msg ...string) {
+	c.SetHeader(HeaderContentType, MIMETextHTMLCharsetUTF8)
+	if len(msg) > 0 {
+		c.SendString("<script>alert('" + msg[0] + "');location.href='" + to + "';</script>")
+	}
+	c.SendString("<script>location.href='" + to + "'</script>")
+}
+
 func (c *Ctx) Abort(args ...interface{}) *Ctx {
 	for _, arg := range args {
 		switch a := arg.(type) {
