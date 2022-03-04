@@ -843,7 +843,8 @@ func (w *resp) Pusher() (pusher http.Pusher) {
 func (w *resp) WriteHeader(code int) {
 	if code > 0 && w.status != code {
 		if w.Written() {
-			Warn("headers were already written. Wanted to override status code %d with %d", w.status, code)
+			// Warn("headers were already written. Wanted to override status code %d with %d", w.status, code)
+			return
 		}
 		w.status = code
 	}
