@@ -677,6 +677,10 @@ func (c *Ctx) ViewTheme(theme string) {
 	c.theme = theme
 }
 
+func (c *Ctx) ViewReload() {
+	c.core.Views.SetReload()
+}
+
 func (c *Ctx) Render(f string, bind ...interface{}) error {
 	var err error
 	var binding interface{}

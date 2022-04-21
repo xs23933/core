@@ -26,6 +26,7 @@ type Views interface {
 	DoTheme(string)
 	Execute(out io.Writer, tpl string, binding interface{}, layout ...string) error
 	AddFunc(name string, fn interface{}) *ViewEngine
+	SetReload()
 }
 type ViewEngine struct {
 	left       string // default {{
@@ -140,6 +141,11 @@ func (ve *ViewEngine) Layout(layout string) *ViewEngine {
 // Theme sets theme
 func (ve *ViewEngine) Theme(theme string) {
 	ve.theme = theme
+}
+
+// SetReload 设置模版需要更新
+func (ve *ViewEngine) SetReload() {
+	ve.loaded = false
 }
 
 // DoTheme 调用已装载的主题
