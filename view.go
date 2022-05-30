@@ -25,9 +25,10 @@ type Views interface {
 	Theme(string)
 	DoTheme(string)
 	Execute(out io.Writer, tpl string, binding interface{}, layout ...string) error
-	AddFunc(name string, fn interface{}) *ViewEngine
+	AddFunc(name string, fn interface{}) Views
 	SetReload()
 }
+
 type ViewEngine struct {
 	left       string // default {{
 	right      string // default }}
@@ -108,8 +109,10 @@ func NewView(directory, ext string, args ...interface{}) *ViewEngine {
 }
 
 func (ve *ViewEngine) lookup(tpl string) *template.Template {
+	// Erro("theme[%s]", ve.theme)
 	if ve.theme != "" {
 		themeTpl := filepath.Join(ve.theme, tpl)
+		// Erro("Views: load template: %s", themeTpl)
 		tmpl := ve.Templates.Lookup(themeTpl)
 		if tmpl != nil {
 			if ve.debug {
@@ -187,6 +190,8 @@ func (ve *ViewEngine) Load() error {
 	if ve.loaded && !ve.debug {
 		return nil
 	}
+
+	// Dump("load template", ve.loaded, ve.debug)
 	ve.mutex.Lock()
 	defer ve.mutex.Unlock()
 	ve.Templates = template.New(ve.directory)

@@ -10,10 +10,11 @@ import (
 
 func main() {
 	conf := core.LoadConfigFile("./config.yml")
-	app := core.New(conf)
+	app := core.NewEngine(conf)
 	// app.Use(core.Logger())
+	app.Use(core.NewTextView("./views", ".js", app.Debug))
 	app.Get("/foo", func(c *core.Ctx) {
-		c.SendString("/foo")
+		c.Render("test", core.Map{"IP": "127.0.0.1"})
 	})
 	app.Get("/bar", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("bar"))
