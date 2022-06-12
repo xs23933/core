@@ -546,17 +546,27 @@ func (c *Ctx) GetAs(key string, v interface{}) error {
 // RemoteIP parses the IP from Request.RemoteAddr, normalizes and returns the IP (without the port).
 // It also checks if the remoteIP is a trusted proxy or not.
 // In order to perform this validation, it will see if the IP is contained within at least one of the CIDR blocks
-func (c *Ctx) RemoteIP() (net.IP, bool) {
+func (c *Ctx) RemoteIP() net.IP {
+	remote := c.GetHeader("X-Forwarded-For")
+	remoteIP := net.ParseIP(remote)
+	if remoteIP != nil {
+		return remoteIP
+	}
+	remote = c.GetHeader("X-Real-IP")
+	remoteIP = net.ParseIP(remote)
+	if remoteIP != nil {
+		return remoteIP
+	}
 	ip, _, err := net.SplitHostPort(strings.TrimSpace(c.R.RemoteAddr))
 	if err != nil {
-		return nil, false
+		return nil
 	}
-	remoteIP := net.ParseIP(ip)
+	remoteIP = net.ParseIP(ip)
 	if remoteIP == nil {
-		return nil, false
+		return nil
 	}
 
-	return remoteIP, false
+	return remoteIP
 }
 
 // Cookie
