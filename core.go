@@ -105,70 +105,70 @@ func (c *Core) buildHanders(h handler) {
 
 // Get add get method
 //
-//  path string /foo
-//  handler core.Handle || http.HandlerFunc || http.Handler
+//	 path string /foo
+//	 handler core.Handle || http.HandlerFunc || http.Handler
 //
-//  > add method
+//	 > add method
 //
-//  c.Get("/foo", func(c *core.Ctx){
-//		c.SendString("Hello world")
-//  })
+//	 c.Get("/foo", func(c *core.Ctx){
+//			c.SendString("Hello world")
+//	 })
 func (c *Core) Get(path string, handler ...interface{}) error {
 	return c.AddHandle(MethodGet, path, handler)
 }
 
 // Post add get method
 //
-//  > see Get
+//	> see Get
 func (c *Core) Post(path string, handler ...interface{}) error {
 	return c.AddHandle(MethodPost, path, handler)
 }
 
 // Head add get method
 //
-//  > see Get
+//	> see Get
 func (c *Core) Head(path string, handler ...interface{}) error {
 	return c.AddHandle(MethodHead, path, handler)
 }
 
 // Put add get method
 //
-//  > see Get
+//	> see Get
 func (c *Core) Put(path string, handler ...interface{}) error {
 	return c.AddHandle(MethodPut, path, handler)
 }
 
 // Delete add get method
 //
-//  > see Get
+//	> see Get
 func (c *Core) Delete(path string, handler ...interface{}) error {
 	return c.AddHandle(MethodDelete, path, handler)
 }
 
 // Connect add get method
 //
-//  > see Get
+//	> see Get
 func (c *Core) Connect(path string, handler ...interface{}) error {
 	return c.AddHandle(MethodConnect, path, handler)
 }
 
 // Options add get method
 //
-//  > see Get
+//	> see Get
 func (c *Core) Options(path string, handler ...interface{}) error {
 	return c.AddHandle(MethodOptions, path, handler)
 }
 
 // Trace add get method
 //
-//  > see Get
+//	> see Get
 func (c *Core) Trace(path string, handler ...interface{}) error {
 	return c.AddHandle(MethodTrace, path, handler)
 }
 
 // Patch add get method
 //
-//  > see Get
+//	> see Get
 func (c *Core) Patch(path string, handler ...interface{}) error {
 	return c.AddHandle(MethodPatch, path, handler)
 }
@@ -215,13 +215,13 @@ func (c *Core) handleFS(ctx *Ctx, filepath string, fshand http.Handler) {
 
 // AddHandle
 //
-//  methods string || []string
-//  path string /foo
-//  handler core.Handle || http.HandlerFunc || http.Handler
+//	 methods string || []string
+//	 path string /foo
+//	 handler core.Handle || http.HandlerFunc || http.Handler
 //
-//  app.AddHandle("GET", "/foo", func(c*core.Ctx){
-// 		c.SendString("hello world")
-//  })
+//	 app.AddHandle("GET", "/foo", func(c*core.Ctx){
+//			c.SendString("hello world")
+//	 })
 func (c *Core) AddHandle(methods interface{}, path string, handler interface{}, static ...bool) error {
 	if handler == nil {
 		return ErrHandlerNotFound

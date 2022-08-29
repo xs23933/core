@@ -1,8 +1,8 @@
 package core
 
 import (
-	"io/ioutil"
 	"log"
+	"os"
 	"reflect"
 	"strconv"
 
@@ -128,13 +128,13 @@ func LoadConfigFile(file string, opts ...Options) Options {
 	if len(opts) > 0 {
 		conf = opts[0]
 	}
-	buf, err := ioutil.ReadFile(file)
+	buf, err := os.ReadFile(file)
 	if err != nil {
 		// if len(opts) == 0 {
 		// 	// conf["debug"] = true
 		// }
 		yml, _ := yaml.Marshal(conf)
-		ioutil.WriteFile(file, yml, 0644)
+		os.WriteFile(file, yml, 0644)
 	} else if err = yaml.Unmarshal(buf, &conf); err != nil {
 		log.Fatalf(err.Error())
 	}
@@ -147,7 +147,7 @@ func SaveConfigFile(conf map[string]interface{}) error {
 	if err != nil {
 		return err
 	}
-	return ioutil.WriteFile(confFile, yml, 0644)
+	return os.WriteFile(confFile, yml, 0644)
 }
 
 var (

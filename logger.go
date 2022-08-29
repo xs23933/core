@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
@@ -120,7 +119,7 @@ func Erro(f string, args ...interface{}) {
 }
 
 var (
-	DefaultOutput           = ioutil.Discard
+	DefaultOutput           = io.Discard
 	logout        io.Writer = DefaultOutput
 	golog                   = log.New(logout, "", log.Ltime)
 	isTerm                  = true
@@ -216,7 +215,7 @@ func stack(skip int) []byte {
 		// Print this much at least.  If we can't find the source, it won't show.
 		fmt.Fprintf(buf, "%s:%d (0x%x)\n", file, line, pc)
 		if file != lastFile {
-			data, err := ioutil.ReadFile(file)
+			data, err := os.ReadFile(file)
 			if err != nil {
 				continue
 			}

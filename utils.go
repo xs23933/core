@@ -17,6 +17,8 @@ import (
 	"github.com/davecgh/go-spew/spew"
 	"github.com/google/uuid"
 	"github.com/xs23933/uid"
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
 )
 
 // Exists check file or path exists
@@ -30,32 +32,32 @@ func Exists(path string) bool {
 
 // MakePath make dir
 //
-//  path = {root}/{dst}/{id}
-//  @param
-//  name string filename
-//  dst string dst path
-//  root string root path optional
-//  id   path optional type uid.UID, int, uint, int64,uint64
-//  rename bool optional
-//  return relPath, absPath
+//	path = {root}/{dst}/{id}
+//	@param
+//	name string filename
+//	dst string dst path
+//	root string root path optional
+//	id   path optional type uid.UID, int, uint, int64,uint64
+//	rename bool optional
+//	return relPath, absPath
 //
-//   `
-//     MakePath("favicon.png", "/images")
-//     (string) relpath "/images/10/favicon.png"
-//     (string) abspath "/images/10/favicon.png"
+//	 `
+//	   MakePath("favicon.png", "/images")
+//	   (string) relpath "/images/10/favicon.png"
+//	   (string) abspath "/images/10/favicon.png"
 //
-//     MakePath("favicon.png", "/images", "/static")
-//     (string) relpath "/images/10/5hsbkthaadld/favicon.png"
-//     (string) abspath "/static/images/10/5hsbkthaadld/favicon.png"
+//	   MakePath("favicon.png", "/images", "/static")
+//	   (string) relpath "/images/10/5hsbkthaadld/favicon.png"
+//	   (string) abspath "/static/images/10/5hsbkthaadld/favicon.png"
 //
-//     MakePath("favicon.png", "/images", "/static", uid.New())
-//     (string) relpath "/images/10/5hsbkthaadld/5hsbkthaadld.png"
-//     (string) abspath "/static/images/10/5hsbkthaadld/5hsbkthaadld.png"
-//                👇filename    👇dst      👇root     👇id      👇rename
-//     MakePath("favicon.png", "/images", "/static", uid.New(), true)
-//     (string) relpath "/images/10/5hsbkthaadld/5hsbkthaadld.png"
-//     (string) abspath "/static/images/10/5hsbkthaadld/5hsbkthaadld.png"
-//   `
+//	   MakePath("favicon.png", "/images", "/static", uid.New())
+//	   (string) relpath "/images/10/5hsbkthaadld/5hsbkthaadld.png"
+//	   (string) abspath "/static/images/10/5hsbkthaadld/5hsbkthaadld.png"
+//	              👇filename    👇dst      👇root     👇id      👇rename
+//	   MakePath("favicon.png", "/images", "/static", uid.New(), true)
+//	   (string) relpath "/images/10/5hsbkthaadld/5hsbkthaadld.png"
+//	   (string) abspath "/static/images/10/5hsbkthaadld/5hsbkthaadld.png"
+//	 `
 func MakePath(name, dst string, args ...interface{}) (string, string, error) {
 	mon := time.Now().String()[5:7]
 	pathArr := []string{dst, mon}
@@ -100,7 +102,7 @@ func MakePath(name, dst string, args ...interface{}) (string, string, error) {
 func init() {
 	var commonInitialismsForReplacer []string
 	for _, initialism := range commonInitialisms {
-		commonInitialismsForReplacer = append(commonInitialismsForReplacer, initialism, strings.Title(strings.ToLower(initialism)))
+		commonInitialismsForReplacer = append(commonInitialismsForReplacer, initialism, cases.Title(language.Und, cases.NoLower).String(initialism))
 	}
 	commonInitialismsReplacer = strings.NewReplacer(commonInitialismsForReplacer...)
 }
@@ -831,10 +833,10 @@ func NewPipeConns() *PipeConns {
 // PipeConns has the following additional features comparing to connections
 // returned from net.Pipe():
 //
-//   * It is faster.
-//   * It buffers Write calls, so there is no need to have concurrent goroutine
+//   - It is faster.
+//   - It buffers Write calls, so there is no need to have concurrent goroutine
 //     calling Read in order to unblock each Write call.
-//   * It supports read and write deadlines.
+//   - It supports read and write deadlines.
 //
 // PipeConns is NOT safe for concurrent use by multiple goroutines!
 type PipeConns struct {
@@ -1005,7 +1007,7 @@ func (e *timeoutError) Error() string {
 // Only implement the Timeout() function of the net.Error interface.
 // This allows for checks like:
 //
-//   if x, ok := err.(interface{ Timeout() bool }); ok && x.Timeout() {
+//	if x, ok := err.(interface{ Timeout() bool }); ok && x.Timeout() {
 func (e *timeoutError) Timeout() bool {
 	return true
 }

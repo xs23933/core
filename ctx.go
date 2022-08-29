@@ -7,7 +7,6 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"mime/multipart"
 	"net"
 	"net/http"
@@ -276,30 +275,30 @@ func (c *Ctx) FormFile(key string) (*multipart.FileHeader, error) {
 
 // SaveFile upload file save to a folder
 //
-//  path = {root}/{dst}/{id}
-//  @param
-//  name string filename
-//  dst string dst path
-//  root string root path optional
-//  id   path optional type uid.UID, int, uint, int64,uint64
-//  rename bool optional
-//  return relPath, absPath
+//	path = {root}/{dst}/{id}
+//	@param
+//	name string filename
+//	dst string dst path
+//	root string root path optional
+//	id   path optional type uid.UID, int, uint, int64,uint64
+//	rename bool optional
+//	return relPath, absPath
 //
-//     c.SaveFile("file", "/images")
-//     (string) relpath "/images/10/favicon.png"
-//     (string) abspath "/images/10/favicon.png"
+//	   c.SaveFile("file", "/images")
+//	   (string) relpath "/images/10/favicon.png"
+//	   (string) abspath "/images/10/favicon.png"
 //
-//     c.SaveFile("file", "/images", "./static")
-//     (string) relpath "/images/10/5hsbkthaadld/favicon.png"
-//     (string) abspath "/static/images/10/5hsbkthaadld/favicon.png"
+//	   c.SaveFile("file", "/images", "./static")
+//	   (string) relpath "/images/10/5hsbkthaadld/favicon.png"
+//	   (string) abspath "/static/images/10/5hsbkthaadld/favicon.png"
 //
-//     c.SaveFile("file", "/images", "./static", uid.New())
-//     (string) relpath "/images/10/5hsbkthaadld/5hsbkthaadld.png"
-//     (string) abspath "/static/images/10/5hsbkthaadld/5hsbkthaadld.png"
-//                👇file    👇dst      👇root     👇id      👇rename
-//     c.SaveFile("file", "/images", "./static", uid.New(), true)
-//     (string) relpath "/images/10/5hsbkthaadld/5hsbkthaadld.png"
-//     (string) abspath "/static/images/10/5hsbkthaadld/5hsbkthaadld.png"
+//	   c.SaveFile("file", "/images", "./static", uid.New())
+//	   (string) relpath "/images/10/5hsbkthaadld/5hsbkthaadld.png"
+//	   (string) abspath "/static/images/10/5hsbkthaadld/5hsbkthaadld.png"
+//	              👇file    👇dst      👇root     👇id      👇rename
+//	   c.SaveFile("file", "/images", "./static", uid.New(), true)
+//	   (string) relpath "/images/10/5hsbkthaadld/5hsbkthaadld.png"
+//	   (string) abspath "/static/images/10/5hsbkthaadld/5hsbkthaadld.png"
 func (c *Ctx) SaveFile(key, dst string, args ...interface{}) (relpath, abspath string, err error) {
 	file, err := c.FormFile(key)
 	if err != nil {
@@ -325,15 +324,15 @@ func (c *Ctx) SaveFile(key, dst string, args ...interface{}) (relpath, abspath s
 
 // FormValue Get query
 //
-//  key string
-//  def string default val optional
+//	key string
+//	def string default val optional
 //
 // >  GET /?name=Jack&id=
 //
-//   `
-//     name := c.FromValue("name")  // name = Jack
-//     id := c.FromValue("id", "1") // id = 1 Because the default value is used
-//   `
+//	`
+//	  name := c.FromValue("name")  // name = Jack
+//	  id := c.FromValue("id", "1") // id = 1 Because the default value is used
+//	`
 func (c *Ctx) FormValue(key string, def ...string) string {
 	if val := c.R.FormValue(key); val != "" {
 		return val
@@ -486,7 +485,8 @@ func (c *Ctx) GetStrings(key string, def ...[]string) (value []string) {
 }
 
 // GetMap returns the value associated with the key as a map of interfaces.
-//  > return map[string]interface{}
+//
+//	> return map[string]interface{}
 func (c *Ctx) GetMap(key string, def ...map[string]interface{}) (value map[string]interface{}) {
 	if val, ok := c.Get(key); ok && val != nil {
 		if value, ok = val.(map[string]interface{}); ok {
@@ -500,7 +500,8 @@ func (c *Ctx) GetMap(key string, def ...map[string]interface{}) (value map[strin
 }
 
 // GetMapString returns the value associated with the key as a map of strings.
-// 	> return map[string]string
+//
+//	> return map[string]string
 func (c *Ctx) GetMapString(key string, def ...map[string]string) (value map[string]string) {
 	if val, ok := c.Get(key); ok && val != nil {
 		if value, ok = val.(map[string]string); ok {
@@ -514,7 +515,8 @@ func (c *Ctx) GetMapString(key string, def ...map[string]string) (value map[stri
 }
 
 // GetStringMapStringSlice returns the value associated with the key as a map to a slice of strings.
-// 	> return map[string][]string
+//
+//	> return map[string][]string
 func (c *Ctx) GetMapStringSlice(key string, def ...map[string][]string) (value map[string][]string) {
 	if val, ok := c.Get(key); ok && val != nil {
 		if value, ok = val.(map[string][]string); ok {
@@ -529,7 +531,7 @@ func (c *Ctx) GetMapStringSlice(key string, def ...map[string][]string) (value m
 
 // GetAs retrieve struct like c.Get("user").(User)
 //
-//  > Experimental function, problem unknown
+//	> Experimental function, problem unknown
 func (c *Ctx) GetAs(key string, v interface{}) error {
 	if val, ok := c.Get(key); ok && val != nil {
 		rv := reflect.ValueOf(v)
@@ -723,7 +725,7 @@ func (c *Ctx) Render(f string, bind ...interface{}) error {
 // application/json, application/xml, application/x-www-form-urlencoded, multipart/form-data
 // If none of the content types above are matched, it will return a ErrUnprocessableEntity error
 //
-//   out interface{} MIMEApplicationForm MIMEMultipartForm MIMETextXML must struct
+//	out interface{} MIMEApplicationForm MIMEMultipartForm MIMETextXML must struct
 func (c *Ctx) ReadBody(out interface{}) error {
 	// Get decoder from pool
 	schemaDecoder := decoderPool.Get().(*schema.Decoder)
@@ -735,7 +737,7 @@ func (c *Ctx) ReadBody(out interface{}) error {
 	switch {
 	case strings.HasPrefix(ctype, MIMEApplicationJSON):
 		schemaDecoder.SetAliasTag("json")
-		body, err := ioutil.ReadAll(c.R.Body)
+		body, err := io.ReadAll(c.R.Body)
 		if err != nil {
 			return err
 		}
@@ -754,7 +756,7 @@ func (c *Ctx) ReadBody(out interface{}) error {
 		return schemaDecoder.Decode(out, c.R.MultipartForm.Value)
 	case strings.HasPrefix(ctype, MIMETextXML), strings.HasPrefix(ctype, MIMEApplicationXML):
 		schemaDecoder.SetAliasTag("xml")
-		body, err := ioutil.ReadAll(c.R.Body)
+		body, err := io.ReadAll(c.R.Body)
 		if err != nil {
 			return err
 		}

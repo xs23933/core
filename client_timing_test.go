@@ -2,7 +2,7 @@ package core
 
 import (
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net"
 	"net/http"
 	"runtime"
@@ -65,7 +65,7 @@ func benchmarkClientGetEndToEndInmemory(b *testing.B, parallelism int) {
 			if resp.StatusCode != http.StatusOK {
 				b.Fatalf("unexpected status code: %d. Expecting %d", resp.StatusCode, http.StatusOK)
 			}
-			body, err := ioutil.ReadAll(resp.Body)
+			body, err := io.ReadAll(resp.Body)
 			resp.Body.Close()
 
 			if err != nil {

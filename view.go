@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"html/template"
 	"io"
-	"io/ioutil"
 	"math"
 	"net/http"
 	"os"
@@ -343,12 +342,12 @@ func ReadFile(path string, fs http.FileSystem) ([]byte, error) {
 			return nil, err
 		}
 		defer file.Close()
-		return ioutil.ReadAll(file)
+		return io.ReadAll(file)
 	}
-	return ioutil.ReadFile(path)
+	return os.ReadFile(path)
 }
 
-func (ve *ViewEngine) AddFunc(name string, fn interface{}) *ViewEngine {
+func (ve *ViewEngine) AddFunc(name string, fn interface{}) Views {
 	ve.mutex.Lock()
 	defer ve.mutex.Unlock()
 	ve.helpers[name] = fn
