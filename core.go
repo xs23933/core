@@ -37,6 +37,7 @@ type Core struct {
 	ViewFuncMap        template.FuncMap
 	RemoteIPHeaders    []string
 	Ln                 net.Listener
+	NotFoundFunc       NotFoundFunc
 }
 
 func (c *Core) assignCtx(w http.ResponseWriter, r *http.Request) *Ctx {
@@ -101,6 +102,18 @@ func (c *Core) buildHanders(h handler) {
 			}
 		}
 	}
+}
+
+func (c *Core) ALL(path string, handler ...interface{}) error {
+	for _, method := range Methods {
+		if method == MethodUse {
+			continue
+		}
+		if err := c.AddHandle(method, path, handler); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Get add get method
@@ -258,7 +271,14 @@ func (c *Core) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// ctx.wm.DoWriteHeader()
 		return
 	}
-	requestLog(StatusNotFound, ctx.Method(), ctx.Path(), time.Since(st).String())
+
+	ctx.Set("request_duration", time.Since(st).String())
+	c.NotFoundFunc(ctx, err)
+}
+
+func (c *Core) NotFound(ctx *Ctx, err error) {
+	st := ctx.GetString("request_duration", "0")
+	requestLog(StatusNotFound, ctx.Method(), ctx.Path(), st)
 	ctx.SendStatus(http.StatusNotFound, err.Error())
 }
 
@@ -279,13 +299,24 @@ func New(conf ...Options) *Core {
 		Server: &http.Server{},
 	}
 	c.Handler = c
+	c.NotFoundFunc = c.NotFound
 	if len(conf) > 0 {
 		c.Conf = conf[0]
 		Conf = c.Conf
 		c.Debug = c.Conf.GetBool("debug")
-		c.addr = c.Conf.ToString("listen")
-		if c.addr != "" {
-			c.Server.Addr = c.addr
+		c.addr = c.Conf.ToString("listen", ":http")
+		if !strings.Contains(c.addr, ":") {
+			c.addr = fmt.Sprintf(":%s", c.addr)
+		}
+		c.Server.Addr = c.addr
+		// 配置信息
+		servConf := make(Options)
+		Conf.GetAs("server", &servConf)
+		if servConf != nil {
+			c.Server.ReadTimeout = time.Second * time.Duration(Conf.GetInt("read_timeout", 10))
+			c.Server.ReadHeaderTimeout = time.Second * time.Duration(Conf.GetInt("read_header_timeout", 5))
+			c.Server.WriteTimeout = time.Second * time.Duration(Conf.GetInt("write_timeout", 10))
+			c.Server.IdleTimeout = time.Second * time.Duration(Conf.GetInt("idle_timeout", 30))
 		}
 		c.assets = c.Conf.GetMap("static")
 		c.MaxMultipartMemory = c.Conf.GetInt64("maxMultipartMemory", defaultMultipartMemory)
@@ -334,6 +365,11 @@ func (c *Core) GoListenAndServeContext(ctx context.Context, addr ...string) erro
 	if err != nil {
 		return err
 	}
+
+	if tcpLn, ok := ln.(*net.TCPListener); ok {
+		ln = tcpKeepAliveListener{TCPListener: tcpLn}
+	}
+
 	return c.GoServe(ctx, ln)
 }
 
@@ -378,17 +414,24 @@ func (c *Core) Wait() error {
 func (c *Core) ListenAndServe(addr ...string) error {
 	if len(addr) > 0 {
 		c.addr = addr[0]
+
+		if c.addr == "" {
+			c.addr = ":8080"
+		}
+		if !strings.Contains(c.addr, ":") {
+			c.addr = fmt.Sprintf(":%s", c.addr)
+		}
+		c.Server.Addr = c.addr
 	}
-	if c.addr == "" {
-		c.addr = ":8080"
-	}
-	if !strings.Contains(c.addr, ":") {
-		c.addr = fmt.Sprintf(":%s", c.addr)
-	}
-	ln, err := net.Listen("tcp", c.addr)
+	ln, err := net.Listen("tcp", c.Server.Addr)
 	if err != nil {
 		return err
 	}
+
+	if tcpLn, ok := ln.(*net.TCPListener); ok {
+		ln = tcpKeepAliveListener{TCPListener: tcpLn}
+	}
+
 	return c.Serve(ln)
 }
 
@@ -427,4 +470,19 @@ func LocalIP() (ip net.IP, err error) {
 
 	addr := conn.LocalAddr().(*net.UDPAddr)
 	return addr.IP, nil
+}
+
+type tcpKeepAliveListener struct {
+	*net.TCPListener
+}
+
+func (ln tcpKeepAliveListener) Accept() (net.Conn, error) {
+	tc, err := ln.AcceptTCP()
+	if err != nil {
+		return nil, err
+	}
+	if err = tc.SetKeepAlive(true); err != nil {
+		return nil, err
+	}
+	return tc, err
 }

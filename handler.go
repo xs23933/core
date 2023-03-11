@@ -14,6 +14,9 @@ type handler interface {
 // HandlerFunc defines the handlerFunc
 type HandlerFunc func(*Ctx)
 
+// NotFoundFunc Handle
+type NotFoundFunc func(*Ctx, error)
+
 type HandlerFuncs []HandlerFunc
 
 // Handler base Handler
