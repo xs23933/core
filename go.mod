@@ -38,5 +38,3 @@ require (
 	golang.org/x/crypto v0.0.0-20210921155107-089bfa567519 // indirect
 	golang.org/x/sys v0.0.0-20210630005230-0f9fa26af87c // indirect
 )
-
-replace github.com/xs23933/middlewares => ../middlewares
