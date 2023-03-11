@@ -9,7 +9,7 @@
 
 more doc 
 
-https://godoc.org/github.com/xs23933/web
+https://godoc.org/github.com/xs23933/core
 
 examples
 
