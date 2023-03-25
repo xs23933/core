@@ -9,6 +9,17 @@
 
 more doc 
 
+> if error output
+cannot use column (variable of type Column) as gorm.ColumnType value in argument to append:
+unknown field WithReturning in struct literal of type callbacks.Config
+```shell
+go get gorm.io/gorm
+go get gorm.io/driver/mysql
+go get gorm.io/driver/sqlite
+go get gorm.io/driver/postgres
+```
+
+
 https://godoc.org/github.com/xs23933/core
 
 examples
