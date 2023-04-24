@@ -3,14 +3,20 @@ package core
 import (
 	"bytes"
 	"embed"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"text/template"
+	"time"
+
+	"github.com/davecgh/go-spew/spew"
 )
 
 type TextEngine struct {
@@ -37,7 +43,7 @@ func NewTextView(directory, ext string, args ...interface{}) Views {
 		directory:  directory,
 		ext:        ext,
 		layoutFunc: "yield",
-		// helpers:    templateHelpers,
+		helpers:    textHelpers,
 	}
 
 	for _, arg := range args {
@@ -85,6 +91,9 @@ func NewTextView(directory, ext string, args ...interface{}) Views {
 			binding = bind[0]
 		}
 		tmpl := engine.lookup(partName)
+		if tmpl == nil {
+			return "", fmt.Errorf("render: template %s does not exist", partName)
+		}
 		err := tmpl.Execute(buf, binding)
 		return buf.String(), err
 	})
@@ -93,23 +102,24 @@ func NewTextView(directory, ext string, args ...interface{}) Views {
 }
 
 func (ve *TextEngine) lookup(tpl string) *template.Template {
-	// Erro("theme[%s]", ve.theme)
+	D("theme[%s]", ve.theme)
 	if ve.theme != "" {
-		themeTpl := filepath.Join(ve.theme, tpl)
-		// Erro("Views: load template: %s", themeTpl)
+		themeTpl := path.Join(ve.theme, tpl)
+		D("Views: load template: %s", themeTpl)
 		tmpl := ve.Templates.Lookup(themeTpl)
 		if tmpl != nil {
 			if ve.debug {
-				D("Views: load template: %s%s", themeTpl, ve.ext)
+				D("Views: loaded template: %s", themeTpl)
 			}
 			return tmpl
 		}
+		Erro("Views: Unload template: %s", themeTpl)
 		if strings.HasSuffix(ve.theme, "/mobi") {
-			themeTpl = filepath.Join(strings.TrimSuffix(ve.theme, "/mobi"), tpl) // render pc theme
+			themeTpl = path.Join(strings.TrimSuffix(ve.theme, "/mobi"), tpl) // render pc theme
 			tmpl = ve.Templates.Lookup(themeTpl)
 			if tmpl != nil {
 				if ve.debug {
-					D("Views: load template: %s%s", themeTpl, ve.ext)
+					D("Views: load template: %s", themeTpl)
 				}
 				return tmpl
 			}
@@ -146,6 +156,7 @@ func (ve *TextEngine) Execute(out io.Writer, tpl string, binding interface{}, la
 			return err
 		}
 	}
+	Log("tpl: %s", tpl)
 	tmpl := ve.lookup(tpl)
 	if tmpl == nil {
 		return fmt.Errorf("render: template %s does not exist", tpl)
@@ -159,6 +170,8 @@ func (ve *TextEngine) Execute(out io.Writer, tpl string, binding interface{}, la
 		if lay == nil {
 			return fmt.Errorf("render: layout %s does not exist", layoutTpl)
 		}
+		ve.mutex.Lock()
+		defer ve.mutex.Unlock()
 		lay.Funcs(map[string]interface{}{
 			ve.layoutFunc: func() error {
 				return tmpl.Execute(out, binding)
@@ -183,8 +196,6 @@ func (ve *TextEngine) Load() error {
 	ve.Templates.Delims(ve.left, ve.right)
 	ve.Templates.Funcs(ve.helpers)
 
-	directory := ve.directory
-
 	walkFn := func(path string, info os.FileInfo, err error) error {
 		if err != nil { // Return error if exist
 			return err
@@ -192,12 +203,17 @@ func (ve *TextEngine) Load() error {
 		if info == nil || info.IsDir() { // Skip file if it's a directory or has no file info
 			return nil
 		}
+
+		if len(ve.ext) >= len(path) || path[len(path)-len(ve.ext):] != ve.ext {
+			return nil
+		}
+
 		ext := filepath.Ext(path) // get file ext of file
 		if ext != ve.ext {
 			return nil
 		}
 
-		rel, err := filepath.Rel(directory, path) // get the relative file path
+		rel, err := filepath.Rel(ve.directory, path) // get the relative file path
 		if err != nil {
 			return err
 		}
@@ -212,31 +228,65 @@ func (ve *TextEngine) Load() error {
 
 		// Create new template associated with the current one
 		// This enable use to invoke other templates {{ template .. }}
+
+		re := regexp.MustCompile(`\/\/@|\/\/ .*\n`)
+		buf = re.ReplaceAll(buf, []byte(""))
 		_, err = ve.Templates.New(name).Parse(string(buf))
-		if err != nil {
-			return err
-		}
 		if err != nil {
 			return err
 		}
 
 		if ve.debug {
-			D("Views: load template: %s\n", name)
+			D("Views: read template: %s\n", name)
 		}
 		return err
 	}
 
 	ve.loaded = true
 	if ve.fileSystem != nil {
-		return Walk(ve.fileSystem, directory, walkFn)
+		return Walk(ve.fileSystem, ve.directory, walkFn)
 	}
 
-	return filepath.Walk(directory, walkFn)
+	return filepath.Walk(ve.directory, walkFn)
 }
 
 func (ve *TextEngine) AddFunc(name string, fn interface{}) Views {
 	ve.mutex.Lock()
 	defer ve.mutex.Unlock()
-	// ve.helpers[name] = fn
+	ve.helpers[name] = fn
 	return ve
+}
+
+var textHelpers = template.FuncMap{
+
+	// Format a date according to the application's default date(time) format.
+	"date": func(date time.Time, f ...string) string {
+		df := DefaultDateFormat
+		if len(f) > 0 {
+			df = f[0]
+		}
+		return date.Format(df)
+	},
+	// datetime format a datetime
+	"datetime": func(date time.Time, f ...string) string {
+		df := DefaultDateTimeFormat
+		if len(f) > 0 {
+			df = f[0]
+		}
+		return date.Format(df)
+	},
+	"dump": func(src any) any {
+		return spew.Sdump(src)
+	},
+	"json": func(src any) any {
+		v, _ := json.Marshal(src)
+		return string(v)
+	},
+	// 设置默认值
+	"default": func(def, src any) any {
+		if src != nil {
+			return src
+		}
+		return def
+	},
 }

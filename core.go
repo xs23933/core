@@ -187,9 +187,10 @@ func (c *Core) Patch(path string, handler ...interface{}) error {
 }
 
 func (c *Core) Static(relativePath, dirname string) *Core {
-	c.AddHandle(MethodGet, path.Join(dirname, ":staticfilepath"), func(ctx *Ctx) {
-		file := ctx.GetParam("staticfilepath")
-		filepath := path.Join(".", relativePath, file)
+	c.AddHandle(MethodGet, path.Join(relativePath, ":staticfilepath"), func(ctx *Ctx) {
+		file := ctx.GetParam("staticfilepath", "index.html")
+		cur, _ := os.Getwd()
+		filepath := path.Join(cur, dirname, file)
 		http.ServeFile(ctx.W, ctx.R, filepath)
 	}, true)
 	return c
@@ -257,6 +258,7 @@ func (c *Core) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(204)
 		return
 	}
+
 	ctx := c.assignCtx(w, r)
 	defer c.releaseCtx(ctx)
 	st := time.Now()
@@ -272,6 +274,16 @@ func (c *Core) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	for u, p := range c.assets { // 静态解析
+		prefix := fmt.Sprintf("/%s", u)
+		if strings.HasPrefix(r.URL.Path, prefix) {
+			cur, _ := os.Getwd()
+			file := strings.TrimLeft(r.URL.Path, prefix)
+			filepath := path.Join(cur, p.(string), file)
+			http.ServeFile(w, r, filepath)
+			return
+		}
+	}
 	ctx.Set("request_duration", time.Since(st).String())
 	c.NotFoundFunc(ctx, err)
 }
@@ -319,6 +331,7 @@ func New(conf ...Options) *Core {
 			c.Server.IdleTimeout = time.Second * time.Duration(Conf.GetInt("idle_timeout", 30))
 		}
 		c.assets = c.Conf.GetMap("static")
+
 		c.MaxMultipartMemory = c.Conf.GetInt64("maxMultipartMemory", defaultMultipartMemory)
 	}
 	return c

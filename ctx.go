@@ -693,13 +693,21 @@ func (c *Ctx) ViewReload() {
 	c.core.Views.SetReload()
 }
 
+func (c *Ctx) Vars() map[string]any {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.vars
+}
+
 func (c *Ctx) Render(f string, bind ...interface{}) error {
 	var err error
 	var binding interface{}
 	if len(bind) > 0 {
 		binding = bind[0]
 	} else {
+		c.mu.RLock()
 		binding = c.vars
+		c.mu.RUnlock()
 	}
 
 	if c.core.Views == nil {
@@ -707,7 +715,6 @@ func (c *Ctx) Render(f string, bind ...interface{}) error {
 		Erro(err.Error())
 		return err
 	}
-
 	if c.theme != "" {
 		c.core.Views.DoTheme(c.theme)
 	}

@@ -22,7 +22,7 @@ type Pages struct {
 }
 
 type Model struct {
-	ID        uid.UID `gorm:"primaryKey"`
+	ID        uid.UID `gorm:"primaryKey" json:",omitempty"`
 	CreatedAt time.Time
 	UpdatedAt time.Time
 	DeletedAt *gorm.DeletedAt `json:",omitempty"`
@@ -277,9 +277,10 @@ func ToHandle(src string) string {
 }
 
 // Where build page query
-//  whr *Map
-//  db  *DB optional
-//  return *DB, pos, lmt
+//
+//	whr *Map
+//	db  *DB optional
+//	return *DB, pos, lmt
 func Where(whr *Map, db ...*DB) (*DB, int, int) {
 	var tx *DB
 	if len(db) > 0 {
@@ -375,7 +376,8 @@ func Where(whr *Map, db ...*DB) (*DB, int, int) {
 				delete(wher, k)
 				continue
 			}
-			if strings.HasSuffix(k, " >") || strings.HasSuffix(k, " <") {
+			if strings.HasSuffix(k, " >") || strings.HasSuffix(k, " <") ||
+				strings.HasSuffix(k, " >=") || strings.HasSuffix(k, " <=") {
 				ks := strings.Split(k, " ")
 				ks[0] = fmt.Sprintf("`%s`", ks[0])
 				ks = append(ks, "?")
