@@ -11,6 +11,7 @@ import (
 	"github.com/xs23933/uid"
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
+	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
 
@@ -87,8 +88,8 @@ func NewModel(conf Options, debug bool) (*DB, error) {
 		dial = mysql.Open(dsn)
 	case "pg":
 		dial = postgres.Open(dsn)
-		// case "sqlite":
-		// 	dial = sqlite.Open(dsn)
+	case "sqlite":
+		dial = sqlite.Open(dsn)
 	}
 	db, err := gorm.Open(dial)
 	if err != nil {
