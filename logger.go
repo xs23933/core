@@ -68,7 +68,7 @@ func requestLog(code int, method, path, ts string) {
 	golog.Printf("%s%s%s %d %s%s%s %s %s%s%s\n", color, tp, rst, code, mcolor, method, rst, path, tcolor, ts, rst)
 }
 
-func D(f string, args ...interface{}) {
+func D(f string, args ...any) {
 	var color, rst string
 	if isTerm || forceColor {
 		color = yellow
