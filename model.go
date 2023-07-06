@@ -88,7 +88,7 @@ func NewModel(conf Options, debug bool) (*DB, error) {
 		dial = mysql.Open(dsn)
 	case "pg":
 		dial = postgres.Open(dsn)
-	case "sqlite":
+	case "sqlite", "sqlite3":
 		dial = sqlite.Open(dsn)
 	}
 	db, err := gorm.Open(dial)
