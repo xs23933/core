@@ -16,9 +16,10 @@ import (
 )
 
 type Pages struct {
-	P, L  int
-	Total int64
-	Data  interface{}
+	P     int   `json:"p"`
+	L     int   `json:"l"`
+	Total int64 `json:"total"`
+	Data  any   `json:"data"`
 }
 
 type Model struct {
@@ -26,6 +27,13 @@ type Model struct {
 	CreatedAt time.Time
 	UpdatedAt time.Time
 	DeletedAt *gorm.DeletedAt `json:",omitempty"`
+}
+
+type Base struct {
+	ID        uid.UID         `gorm:"primaryKey" json:"id,omitempty"`
+	CreatedAt time.Time       `json:"created_at"`
+	UpdatedAt time.Time       `json:"updated_at"`
+	DeletedAt *gorm.DeletedAt `json:"deleted_at,omitempty"`
 }
 
 func (m *Model) BeforeCreate(tx *DB) error {
