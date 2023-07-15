@@ -322,6 +322,36 @@ func (c *Ctx) SaveFile(key, dst string, args ...interface{}) (relpath, abspath s
 	return relpath, abspath, err
 }
 
+func (c *Ctx) SaveFiles(key, dst string, args ...any) (rel Array, err error) {
+	err = c.R.ParseMultipartForm(8 << 20)
+	if err != nil {
+		return
+	}
+	rel = make(Array, 0)
+	files := c.R.MultipartForm.File["files"]
+	for _, v := range files {
+		src, err := v.Open()
+		if err != nil {
+			return rel, err
+		}
+		defer src.Close()
+		relpath, abspath, err := MakePath(v.Filename, dst, args...)
+		if err != nil {
+			return rel, err
+		}
+		out, err := os.Create(abspath)
+		if err != nil {
+			return rel, err
+		}
+		defer out.Close()
+		if _, err = io.Copy(out, src); err != nil {
+			return rel, err
+		}
+		rel = append(rel, "/"+relpath)
+	}
+	return
+}
+
 // FormValue Get query
 //
 //	key string
