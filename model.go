@@ -376,6 +376,8 @@ func Where(whr *Map, db ...*DB) (*DB, int, int) {
 			}
 			if strings.HasSuffix(k, "$") {
 				tx = tx.Where(fmt.Sprintf("%s like ?", strings.TrimSuffix(k, "$")), fmt.Sprintf("%%%s", v))
+				delete(wher, k)
+				continue
 			}
 			if strings.HasSuffix(k, "*") {
 				tx = tx.Where(fmt.Sprintf("%s like ?", strings.TrimSuffix(k, "*")), fmt.Sprintf("%%%s%%", v))
