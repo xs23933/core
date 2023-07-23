@@ -349,6 +349,7 @@ func Default(conf ...Options) *Core {
 		if err != nil {
 			panic(err)
 		}
+		os.Stdout = out
 	} else if c.Debug {
 		out = os.Stdout
 	}

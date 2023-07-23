@@ -68,6 +68,12 @@ func requestLog(code int, method, path, ts string) {
 	golog.Printf("%s%s%s %d %s%s%s %s %s%s%s\n", color, tp, rst, code, mcolor, method, rst, path, tcolor, ts, rst)
 }
 
+type Writers struct{}
+
+func (Writers) Printf(f string, args ...interface{}) {
+	Log(f, args...)
+}
+
 func D(f string, args ...any) {
 	var color, rst string
 	if isTerm || forceColor {

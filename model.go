@@ -13,6 +13,7 @@ import (
 	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 type Pages struct {
@@ -84,6 +85,10 @@ func Find(out interface{}, args ...interface{}) error {
 }
 
 func NewModel(conf Options, debug bool) (*DB, error) {
+	var (
+		db  *DB
+		err error
+	)
 	tp := conf.GetString("type")
 	dbType = tp
 	dsn := conf.GetString("dsn")
@@ -99,7 +104,20 @@ func NewModel(conf Options, debug bool) (*DB, error) {
 	case "sqlite", "sqlite3":
 		dial = sqlite.Open(dsn)
 	}
-	db, err := gorm.Open(dial)
+	if !debug {
+		db, err = gorm.Open(dial)
+	} else {
+		writer := new(Writers)
+		db, err = gorm.Open(dial, &gorm.Config{
+			Logger: logger.New(writer, logger.Config{
+				SlowThreshold:             time.Second,
+				LogLevel:                  logger.Info,
+				IgnoreRecordNotFoundError: true,
+				ParameterizedQueries:      true,
+				Colorful:                  false,
+			}),
+		})
+	}
 	if err != nil {
 		return nil, err
 	}
