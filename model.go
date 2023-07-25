@@ -113,7 +113,7 @@ func NewModel(conf Options, debug bool) (*DB, error) {
 				SlowThreshold:             time.Second,
 				LogLevel:                  logger.Info,
 				IgnoreRecordNotFoundError: true,
-				ParameterizedQueries:      true,
+				ParameterizedQueries:      false,
 				Colorful:                  false,
 			}),
 		})
