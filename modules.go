@@ -47,7 +47,7 @@ func NewEngine(conf ...Options) *Engine {
 	engine.EG, engine.Ctx = errgroup.WithContext(ctx)
 	engine.stop = cancel
 	//创建监听退出chan
-	c := make(chan os.Signal)
+	c := make(chan os.Signal, 1)
 	//监听指定信号 ctrl+c kill
 	const SIGUSR2 = syscall.Signal(0x1f)
 	signal.Notify(c, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM,

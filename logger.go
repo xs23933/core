@@ -89,15 +89,7 @@ func D(f string, args ...any) {
 }
 
 func Log(f string, args ...interface{}) {
-	var color, rst string
-	if isTerm || forceColor {
-		color = green
-		rst = reset
-	}
-	if !strings.HasSuffix(f, "\n") {
-		f += "\n"
-	}
-	golog.Printf("%s%s%s %s", color, info, rst, fmt.Sprintf(f, args...))
+	golog.Printf(f, args...)
 }
 
 func Warn(f string, args ...interface{}) {
