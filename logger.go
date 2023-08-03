@@ -77,7 +77,7 @@ func (Writers) Printf(f string, args ...interface{}) {
 func D(f string, args ...any) {
 	var color, rst string
 	if isTerm || forceColor {
-		color = yellow
+		color = gray
 		rst = reset
 	}
 	if Conf.GetBool("debug") {
@@ -143,10 +143,11 @@ const (
 	green   = "\033[97;32m"
 	yellow  = "\033[90;43m"
 	red     = "\033[97;41m"
-	blue    = "\033[97;44m"
+	blue    = "\033[0;35m"
 	magenta = "\033[97;45m"
 	cyan    = "\033[97;41m"
 	reset   = "\033[0m"
+	gray    = "\033[0;90m"
 
 	info = "[INFO]"
 	dbug = "[DBUG]"
