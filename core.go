@@ -358,7 +358,7 @@ func Default(conf ...Options) *Core {
 	}
 	c.Use(Logger(LoggerConfig{ForceColor: forceColor, Output: out}), Recovery())
 	if conf := c.Conf.GetMap("database"); conf != nil {
-		NewModel(conf, c.Debug)
+		NewModel(conf, c.Debug, forceColor)
 	}
 	return c
 }

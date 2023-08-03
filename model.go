@@ -84,7 +84,7 @@ func Find(out interface{}, args ...interface{}) error {
 	return db.Find(out).Error
 }
 
-func NewModel(conf Options, debug bool) (*DB, error) {
+func NewModel(conf Options, debug, colorful bool) (*DB, error) {
 	var (
 		db  *DB
 		err error
@@ -114,7 +114,7 @@ func NewModel(conf Options, debug bool) (*DB, error) {
 				LogLevel:                  logger.Info,
 				IgnoreRecordNotFoundError: true,
 				ParameterizedQueries:      false,
-				Colorful:                  false,
+				Colorful:                  colorful,
 			}),
 		})
 	}
