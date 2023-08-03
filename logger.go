@@ -92,6 +92,20 @@ func Log(f string, args ...interface{}) {
 	golog.Printf(f, args...)
 }
 
+// info logger
+func Info(f string, args ...interface{}) {
+	var color, rst string
+	if isTerm || forceColor {
+		color = green
+		rst = reset
+	}
+	if !strings.HasSuffix(f, "\n") {
+		f += "\n"
+	}
+	golog.Printf("%s%s%s %s", color, info, rst, fmt.Sprintf(f, args...))
+}
+
+// warning logger
 func Warn(f string, args ...interface{}) {
 	var color, rst string
 	if isTerm || forceColor {
@@ -104,6 +118,7 @@ func Warn(f string, args ...interface{}) {
 	golog.Printf("%s%s%s %s", color, warn, rst, fmt.Sprintf(f, args...))
 }
 
+// error logger
 func Erro(f string, args ...interface{}) {
 	var color, rst string
 	if isTerm || forceColor {
