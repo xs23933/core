@@ -5,6 +5,7 @@ import (
 	"github.com/xs23933/core/v2/example/work/models"
 	"github.com/xs23933/core/v2/middware/favicon"
 	"github.com/xs23933/core/v2/middware/requestid"
+	"github.com/xs23933/uid"
 )
 
 type Handler struct {
@@ -32,6 +33,16 @@ func (Handler) GetDetailParam(c core.Ctx) {
 		return
 	}
 	c.ToJSON(models.UserById(uid))
+}
+
+func (Handler) GetDetail(c core.Ctx) {
+	usid := c.FormValue("id")
+	id, err := uid.FromString(usid)
+	if err != nil {
+		c.ToJSON(nil, err)
+		return
+	}
+	c.ToJSON(models.UserById(id))
 }
 
 func (Handler) Get_id(c core.Ctx) {

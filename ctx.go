@@ -64,8 +64,8 @@ type Ctx interface {
 	SaveFiles(key, dst string, args ...any) (rel Array, err error)              // upload multi-file
 	Query(key string, def ...string) string                                     // get request query string like ?id=12345
 	Querys(key string, def ...[]string) []string                                // like query, but return []string values
-	FromValue(key string, def ...string) string                                 // like Query support old version
-	FromValues(key string, def ...[]string) []string                            // like Querys
+	FormValue(key string, def ...string) string                                 // like Query support old version
+	FormValues(key string, def ...[]string) []string                            // like Querys
 	Flush(data any, statusCode ...int) error                                    // flush
 	Accepts(offers ...string) string                                            // Accepts checks if the specified extensions or content types are acceptable.
 	AcceptsCharsets(offers ...string) string                                    // AcceptsCharsets checks if the specified charset is acceptable.
@@ -525,8 +525,8 @@ func (c *BaseCtx) Send(buf []byte) error {
 // >  GET /?name=Jack&id=
 //
 //	`
-//	  name := c.FromValue("name")  // name = Jack
-//	  id := c.FromValue("id", "1") // id = 1 Because the default value is used
+//	  name := c.FormValue("name")  // name = Jack
+//	  id := c.FormValue("id", "1") // id = 1 Because the default value is used
 //	`
 func (c *BaseCtx) Query(key string, def ...string) string {
 	if val := c.Request().FormValue(key); val != "" {
@@ -535,13 +535,13 @@ func (c *BaseCtx) Query(key string, def ...string) string {
 	return defaultString("", def)
 }
 
-// FromValue support old version
-func (c *BaseCtx) FromValue(key string, def ...string) string {
+// FormValue support old version
+func (c *BaseCtx) FormValue(key string, def ...string) string {
 	return c.Query(key, def...)
 }
 
-// FromValues returns a slice of strings for a given query key.
-func (c *BaseCtx) FromValues(key string, def ...[]string) []string {
+// FormValues returns a slice of strings for a given query key.
+func (c *BaseCtx) FormValues(key string, def ...[]string) []string {
 	return c.Querys(key, def...)
 }
 func (c *BaseCtx) Querys(key string, def ...[]string) []string {
