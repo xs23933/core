@@ -2,12 +2,12 @@ package core
 
 import (
 	"database/sql/driver"
-	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/xs23933/uid"
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
@@ -24,13 +24,6 @@ type Pages struct {
 }
 
 type Model struct {
-	ID        uid.UID `gorm:"primaryKey" json:",omitempty"`
-	CreatedAt time.Time
-	UpdatedAt time.Time
-	DeletedAt *gorm.DeletedAt `json:",omitempty"`
-}
-
-type Base struct {
 	ID        uid.UID         `gorm:"primaryKey" json:"id,omitempty"`
 	CreatedAt time.Time       `json:"created_at"`
 	UpdatedAt time.Time       `json:"updated_at"`
@@ -136,7 +129,7 @@ type Map map[string]interface{}
 
 // Value 数据驱动接口
 func (d Map) Value() (driver.Value, error) {
-	bytes, err := json.Marshal(d)
+	bytes, err := sonic.Marshal(d)
 	return string(bytes), err
 }
 
@@ -183,13 +176,13 @@ func (d Map) GetBool(k string) (value bool) {
 func (d *Map) Scan(src interface{}) error {
 	switch val := src.(type) {
 	case string:
-		return json.Unmarshal([]byte(val), d)
+		return sonic.Unmarshal([]byte(val), d)
 	case []byte:
 		if strings.EqualFold(string(val), "null") {
 			*d = make(Map)
 			return nil
 		}
-		if err := json.Unmarshal(val, d); err != nil {
+		if err := sonic.Unmarshal(val, d); err != nil {
 			*d = make(Map)
 		}
 		return nil
@@ -225,7 +218,7 @@ func (d Array) FindHandle(handle, value string) Map {
 
 // Value 数据驱动接口
 func (d Array) Value() (driver.Value, error) {
-	bytes, err := json.Marshal(d)
+	bytes, err := sonic.Marshal(d)
 	return string(bytes), err
 }
 
@@ -234,12 +227,12 @@ func (d *Array) Scan(src interface{}) error {
 	*d = Array{}
 	switch val := src.(type) {
 	case string:
-		return json.Unmarshal([]byte(val), d)
+		return sonic.Unmarshal([]byte(val), d)
 	case []byte:
 		if strings.EqualFold(string(val), "null") {
 			return nil
 		}
-		if err := json.Unmarshal(val, d); err != nil {
+		if err := sonic.Unmarshal(val, d); err != nil {
 			*d = Array{}
 		}
 		return nil

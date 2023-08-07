@@ -3,7 +3,6 @@ package core
 import (
 	"bytes"
 	"embed"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,6 +15,7 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/davecgh/go-spew/spew"
 )
 
@@ -279,7 +279,7 @@ var textHelpers = template.FuncMap{
 		return spew.Sdump(src)
 	},
 	"json": func(src any) any {
-		v, _ := json.Marshal(src)
+		v, _ := sonic.Marshal(src)
 		return string(v)
 	},
 	// 设置默认值

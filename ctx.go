@@ -3,7 +3,6 @@ package core
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -13,11 +12,14 @@ import (
 	"net/url"
 	"os"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/gorilla/schema"
+	"github.com/xs23933/uid"
 )
 
 type Ctx struct {
@@ -171,8 +173,42 @@ func (c *Ctx) GetParam(k string, def ...string) string {
 	return ""
 }
 
+// GetParamUid get uid param
+func (c *Ctx) GetParamUid(k string, def ...uid.UID) uid.UID {
+	for _, v := range c.params {
+		if v.key == k {
+			id, err := uid.FromString(v.value)
+			if err != nil {
+				break
+			}
+			return id
+		}
+	}
+	if len(def) > 0 {
+		return def[0]
+	}
+	return uid.Nil
+}
+
+// GetParamInt get int param if failed return -1
+func (c *Ctx) GetParamInt(k string, def ...int) int {
+	for _, v := range c.params {
+		if v.key == k {
+			id, err := strconv.Atoi(v.value)
+			if err != nil {
+				break
+			}
+			return id
+		}
+	}
+	if len(def) > 0 {
+		return def[0]
+	}
+	return -1
+}
+
 func (c *Ctx) JSON(data interface{}) error {
-	raw, err := json.Marshal(data)
+	raw, err := sonic.Marshal(data)
 	if err != nil {
 		return err
 	}
@@ -196,7 +232,7 @@ func (c *Ctx) GetHeader(key string) string {
 }
 
 func (c *Ctx) JSONP(data interface{}, callback ...string) error {
-	raw, err := json.Marshal(data)
+	raw, err := sonic.Marshal(data)
 	if err != nil {
 		return err
 	}
@@ -778,7 +814,7 @@ func (c *Ctx) ReadBody(out interface{}) error {
 		if err != nil {
 			return err
 		}
-		return json.Unmarshal(body, out)
+		return sonic.Unmarshal(body, out)
 	case strings.HasPrefix(ctype, MIMEApplicationForm):
 		schemaDecoder.SetAliasTag("form")
 		if err := c.R.ParseForm(); err != nil {
