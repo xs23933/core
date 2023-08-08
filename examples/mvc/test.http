@@ -1,0 +1,17 @@
+@baseURL = http://localhost:8080
+@contentType = application/json
+
+### add user
+PUT {{baseURL}} HTTP/1.1
+Content-Type: {{contentType}}
+
+{
+    "user": "x",
+    "password": "x"
+}
+
+### get user
+GET {{baseURL}}/XPXP8K4WP7ZM
+
+### get user list
+GET {{baseURL}}

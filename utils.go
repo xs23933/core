@@ -10,6 +10,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -714,10 +715,10 @@ var (
 	ErrNoConfig           = errors.New("field global configuration not found")
 	ErrContextMustBeSet   = errors.New("context must  be set")
 	ErrNotStartedYet      = errors.New("not started yet")
-)
 
-// ErrInmemoryListenerClosed indicates that the InmemoryListener is already closed.
-var ErrInmemoryListenerClosed = errors.New("InmemoryListener is already closed: use of closed network connection")
+	// ErrInmemoryListenerClosed indicates that the InmemoryListener is already closed.
+	ErrInmemoryListenerClosed = errors.New("InmemoryListener is already closed: use of closed network connection")
+)
 
 // InmemoryListener provides in-memory dialer<->net.Listener implementation.
 //
@@ -1115,3 +1116,35 @@ var (
 		},
 	}
 )
+
+const (
+	envPreforkChildKey = "CORE_PREFORK_CHILD"
+	envPreforkChildVal = "1"
+	sleepDuration      = 100 * time.Millisecond
+)
+
+// IsChild determines if the current process is a child of Prefork
+func IsChild() bool {
+	return os.Getenv(envPreforkChildKey) == envPreforkChildVal
+}
+
+// watchMaster watches child procs
+func watchMaster() {
+	if runtime.GOOS == "windows" {
+		// finds parent process,
+		// and waits for it to exit
+		p, err := os.FindProcess(os.Getppid())
+		if err == nil {
+			_, _ = p.Wait() //nolint:errcheck // It is fine to ignore the error here
+		}
+		os.Exit(1) //nolint:revive // Calling os.Exit is fine here in the prefork
+	}
+	// if it is equal to 1 (init process ID),
+	// it indicates that the master process has exited
+	const watchInterval = 500 * time.Millisecond
+	for range time.NewTicker(watchInterval).C {
+		if os.Getppid() == 1 {
+			os.Exit(1) //nolint:revive // Calling os.Exit is fine here in the prefork
+		}
+	}
+}

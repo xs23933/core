@@ -1,0 +1,13 @@
+debug: true
+network: tcp4
+listen: 8080
+restful:
+    data: data
+    status: success
+    message: msg
+
+prefork: true
+
+database:
+    type: sqlite3
+    dsn: dat

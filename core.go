@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"embed"
+	"errors"
 	"fmt"
 	"html/template"
 	"io/fs"
@@ -10,12 +11,16 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path"
 	"reflect"
+	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/xs23933/core/reuseport"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -38,6 +43,8 @@ type Core struct {
 	RemoteIPHeaders    []string
 	Ln                 net.Listener
 	NotFoundFunc       NotFoundFunc
+	enablePrefork      bool
+	networkProto       string
 }
 
 func (c *Core) assignCtx(w http.ResponseWriter, r *http.Request) *Ctx {
@@ -300,6 +307,8 @@ func New(conf ...Options) *Core {
 		tree:            NewTree(),
 		assets:          make(Options),
 		ViewFuncMap:     template.FuncMap{},
+		enablePrefork:   false,
+		networkProto:    "tcp4",
 		RemoteIPHeaders: []string{"X-Forwarded-For", "X-Real-IP"},
 		pool: sync.Pool{
 			New: func() interface{} {
@@ -330,7 +339,9 @@ func New(conf ...Options) *Core {
 			c.Server.WriteTimeout = time.Second * time.Duration(Conf.GetInt("write_timeout", 10))
 			c.Server.IdleTimeout = time.Second * time.Duration(Conf.GetInt("idle_timeout", 30))
 		}
+		c.enablePrefork = c.Conf.GetBool("prefork", false)
 		c.assets = c.Conf.GetMap("static")
+		c.networkProto = c.Conf.GetString("network", "tcp4")
 
 		c.MaxMultipartMemory = c.Conf.GetInt64("maxMultipartMemory", defaultMultipartMemory)
 	}
@@ -440,6 +451,11 @@ func (c *Core) ListenAndServe(addr ...string) error {
 		}
 		c.Server.Addr = c.addr
 	}
+
+	if c.enablePrefork {
+		return c.prefork()
+	}
+
 	ln, err := net.Listen("tcp", c.Server.Addr)
 	if err != nil {
 		return err
@@ -452,6 +468,70 @@ func (c *Core) ListenAndServe(addr ...string) error {
 	return c.Serve(ln)
 }
 
+func (c *Core) prefork() error {
+	var (
+		ln  net.Listener
+		err error
+	)
+	if IsChild() {
+		// use 1 cpu core per child process
+		runtime.GOMAXPROCS(1)
+		if ln, err = reuseport.Listen(c.networkProto, c.addr); err != nil {
+			time.Sleep(sleepDuration)
+			return fmt.Errorf("prefork: %w", err)
+		}
+		// kill current child proc when master exited
+		go watchMaster()
+
+		return c.Serve(ln)
+	}
+
+	type child struct {
+		pid int
+		err error
+	}
+	// create variables
+	max := runtime.GOMAXPROCS(0)
+	childs := make(map[int]*exec.Cmd)
+	channel := make(chan child, max)
+
+	// kill child procs when master exists
+	defer func() {
+		for _, proc := range childs {
+			if err := proc.Process.Kill(); err != nil {
+				if !errors.Is(err, os.ErrProcessDone) {
+					log.Printf("prefork: failed to kill child: %v\n", err)
+				}
+			}
+		}
+	}()
+
+	var pids []string
+	for i := 0; i < max; i++ {
+		cmd := exec.Command(os.Args[0], os.Args[1:]...) // nolint:gosec
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+
+		cmd.Env = append(os.Environ(),
+			fmt.Sprintf("%s=%s", envPreforkChildKey, envPreforkChildVal))
+		if err = cmd.Start(); err != nil {
+			return fmt.Errorf("failed to start a child prefork process, error: %w", err)
+		}
+
+		// store child process
+		pid := cmd.Process.Pid
+		childs[pid] = cmd
+		pids = append(pids, strconv.Itoa(pid))
+
+		go func() {
+			channel <- child{pid, cmd.Wait()}
+		}()
+	}
+
+	Info("start childs %s", strings.Join(pids, ","))
+
+	return (<-channel).err
+}
 func (c *Core) Serve(ln net.Listener) error {
 	port := strings.TrimPrefix(ln.Addr().String(), "[::]")
 	if !strings.Contains(ln.Addr().String(), "127.0.0.1") {

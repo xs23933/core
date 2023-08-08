@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -110,13 +111,36 @@ func (e *Engine) Serve(ln net.Listener) error {
 	return err
 }
 
+type Mod interface {
+	Init()
+}
+
+func RegHandle(mods ...any) {
+	modulesMu.Lock()
+	defer modulesMu.Unlock()
+	for _, inst := range mods {
+		refCtl := reflect.TypeOf(inst)
+		id := "module." + refCtl.Elem().String()
+		if _, ok := modules[id]; ok {
+			Log("module already registered: %s\n", id)
+			continue
+		}
+		modules[id] = ModuleInfo{
+			ID: id,
+			Instance: func() Mod {
+				return inst.(Mod)
+			},
+		}
+	}
+}
+
 type Module interface {
 	Module() ModuleInfo
 }
 
 type ModuleInfo struct {
 	ID       string
-	Instance func() Module
+	Instance func() Mod
 }
 
 func RegisterModule(inst Module) {

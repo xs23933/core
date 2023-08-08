@@ -173,7 +173,7 @@ func (c *Ctx) GetParam(k string, def ...string) string {
 	return ""
 }
 
-// GetParamUid get uid param
+// GetParamInt get int param, return uid.Nil if failed
 func (c *Ctx) GetParamUid(k string, def ...uid.UID) uid.UID {
 	for _, v := range c.params {
 		if v.key == k {
@@ -190,7 +190,7 @@ func (c *Ctx) GetParamUid(k string, def ...uid.UID) uid.UID {
 	return uid.Nil
 }
 
-// GetParamInt get int param if failed return -1
+// GetParamInt get int param, return -1 if failed
 func (c *Ctx) GetParamInt(k string, def ...int) int {
 	for _, v := range c.params {
 		if v.key == k {
