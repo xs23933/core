@@ -2,11 +2,10 @@ package models
 
 import (
 	"github.com/xs23933/core/v2"
-	"github.com/xs23933/uid"
 )
 
 type User struct {
-	core.Model
+	core.Models
 	User     string `json:"user" gorm:"size:32"`
 	Password string `json:"password" gorm:"size:96"`
 }
@@ -15,7 +14,7 @@ func (m *User) Save() error {
 	return DB.Save(m).Error
 }
 
-func UserById(id uid.UID) (user User, err error) {
+func UserById(id core.UUID) (user User, err error) {
 	err = DB.First(&user, "id = ?", id).Error
 	return
 }

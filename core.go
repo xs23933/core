@@ -52,7 +52,7 @@ type Core struct {
 	defaultRestful     RestfulDefine
 	modName            string
 	MaxMultipartMemory int64
-	enablePrefix       bool
+	enablePrefork      bool
 	networkProto       string
 }
 
@@ -69,7 +69,7 @@ func New(options ...Options) *Core {
 		Debug:          true,
 		defaultRestful: defaultRestful,
 		modName:        "mod",
-		enablePrefix:   false,
+		enablePrefork:  false,
 		networkProto:   "tcp4",
 		Conf: Options{
 			"debug": true,
@@ -112,7 +112,7 @@ func New(options ...Options) *Core {
 			colorful = true
 		}
 		if app.Conf.GetBool("prefork") {
-			app.enablePrefix = true
+			app.enablePrefork = true
 		}
 
 		app.networkProto = app.Conf.GetString("network", "tcp4")
@@ -172,7 +172,7 @@ func (app *Core) Listen(port ...any) error {
 	}
 	app.Handler = app
 
-	if app.enablePrefix {
+	if app.enablePrefork {
 		return app.prefork()
 	}
 	ln, err := reuseport.Listen(app.networkProto, app.addr)

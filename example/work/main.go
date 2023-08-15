@@ -5,7 +5,6 @@ import (
 	"github.com/xs23933/core/v2/example/work/models"
 	"github.com/xs23933/core/v2/middware/favicon"
 	"github.com/xs23933/core/v2/middware/requestid"
-	"github.com/xs23933/uid"
 )
 
 type Handler struct {
@@ -27,7 +26,7 @@ func (Handler) Put(c core.Ctx) {
 // @param: uid.UID userId
 // route: GET /detail/:param > main.Handler.GetDetailParam
 func (Handler) GetDetailParam(c core.Ctx) {
-	uid, err := c.ParamsUid("param")
+	uid, err := c.ParamsUuid("param")
 	if err != nil {
 		c.ToJSON(nil, err)
 		return
@@ -37,7 +36,7 @@ func (Handler) GetDetailParam(c core.Ctx) {
 
 func (Handler) GetDetail(c core.Ctx) {
 	usid := c.FormValue("id")
-	id, err := uid.FromString(usid)
+	id, err := core.UUIDFromString(usid)
 	if err != nil {
 		c.ToJSON(nil, err)
 		return
@@ -46,7 +45,7 @@ func (Handler) GetDetail(c core.Ctx) {
 }
 
 func (Handler) Get_id(c core.Ctx) {
-	uid, err := c.ParamsUid("id")
+	uid, err := c.ParamsUuid("id")
 	if err != nil {
 		c.ToJSON(nil, err)
 		return

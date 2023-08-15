@@ -23,38 +23,41 @@ import (
 )
 
 type Ctx interface {
-	Response() ResponseWriter                                              // Response() return http.ResponseWriter
-	Request() *http.Request                                                // Request() return *http.Request
-	RedirectJS(to string, msg ...string)                                   // use js redirect
-	Redirect(to string, stCode ...int)                                     // base redirect
-	RemoteIP() net.IP                                                      // remote client ip
-	SetCookie(name, value string, exp time.Time, path string, args ...any) // set cookie
-	RemoveCookie(name, path string, dom ...string)                         // remove some cookie
-	Cookie(cookie *http.Cookie)                                            // set cookie with cookie object
-	Cookies(name string) (string, error)                                   // get some cookie
-	ReadBody(out any) error                                                // read put post any request body to struct or map
-	Next() error                                                           // next HandlerFunc
-	Path() string                                                          // return http.Request.URI.path
-	init(*Core, http.ResponseWriter, *http.Request)
-	release()
-	Send(buf []byte) error                               // send []byte data
-	SendString(msg ...any) error                         // send string to body
-	SendStatus(code int, msg ...string) error            // send status to client, options msg with display
-	SetHeader(key string, value string)                  // set response header
-	GetHeader(key string, defaultValue ...string) string // get request header
-	Method() string                                      // return method e.g: GET,POST,PUT,DELETE,OPTION,HEAD...
-	GetStatus() int                                      // get response status
-	Status(code int) Ctx                                 // set response status
-	Core() *Core
-	Abort(args ...any) Ctx
+	Response() ResponseWriter                                                   // Response() return http.ResponseWriter
+	Request() *http.Request                                                     // Request() return *http.Request
+	RedirectJS(to string, msg ...string)                                        // use js redirect
+	Redirect(to string, stCode ...int)                                          // base redirect
+	RemoteIP() net.IP                                                           // remote client ip
+	SetCookie(name, value string, exp time.Time, path string, args ...any)      // set cookie
+	RemoveCookie(name, path string, dom ...string)                              // remove some cookie
+	Cookie(cookie *http.Cookie)                                                 // set cookie with cookie object
+	Cookies(name string) (string, error)                                        // get some cookie
+	ReadBody(out any) error                                                     // read put post any request body to struct or map
+	Next() error                                                                // next HandlerFunc
+	Path() string                                                               // return http.Request.URI.path
+	init(*Core, http.ResponseWriter, *http.Request)                             // Core call
+	release()                                                                   // Core called
+	Send(buf []byte) error                                                      // send []byte data
+	SendString(msg ...any) error                                                // send string to body
+	SendStatus(code int, msg ...string) error                                   // send status to client, options msg with display
+	SetHeader(key string, value string)                                         // set response header
+	GetHeader(key string, defaultValue ...string) string                        // get request header
+	Method() string                                                             // return method e.g: GET,POST,PUT,DELETE,OPTION,HEAD...
+	GetStatus() int                                                             // get response status
+	Status(code int) Ctx                                                        // set response status
+	Core() *Core                                                                // return app(*Core)
+	Abort(args ...any) Ctx                                                      // Deprecated: As of v2.0.0, this function simply calls Ctx.Format.
 	JSON(any) error                                                             // send json
 	JSONP(data any, callback ...string) error                                   // send jsonp
 	ToJSON(any, error) error                                                    // send json with status
 	ToJSONCode(data any, msg ...any) error                                      // send have code to json
 	StartAt(t ...time.Time) time.Time                                           // set ctx start time if t set, else get start at
 	Params(key string, defaultValue ...string) string                           // get Param data e.g c.Param("param")
-	ParamsUid(key string, defaultValue ...uid.UID) (uid.UID, error)             // get Param UID type
-	ParamsInt(key string, defaultValue ...int) (int, error)                     // get Param Int type
+	ParamsUid(key string, defaultValue ...uid.UID) (uid.UID, error)             // get Param UID type, return uid.Nil if failed
+	ParamsUuid(key string, defaultValue ...UUID) (UUID, error)                  // get Param UID type, return uid.Nil if failed
+	ParamsInt(key string, defaultValue ...int) (int, error)                     // get Param int type, return -1 if failed
+	GetParamUid(key string, defaultValue ...uid.UID) (uid.UID, error)           // get param uid.UID, return uid.Nil if failed
+	GetParamInt(key string, defaultValue ...int) (int, error)                   // get param int, return -1 if failed
 	File(filePath string)                                                       // send file
 	FileAttachment(filepath, filename string)                                   // send file attachment
 	FileFromFS(filePath string, fs http.FileSystem)                             // send file from FS
@@ -65,6 +68,9 @@ type Ctx interface {
 	Query(key string, def ...string) string                                     // get request query string like ?id=12345
 	Querys(key string, def ...[]string) []string                                // like query, but return []string values
 	FormValue(key string, def ...string) string                                 // like Query support old version
+	FromValueInt(key string, def ...int) int                                    // parse form value to int
+	FromValueUid(key string, def ...uid.UID) uid.UID                            // parse form value to uid
+	FromValueUUID(key string, def ...UUID) UUID                                 // parse form value to uuid
 	FormValues(key string, def ...[]string) []string                            // like Querys
 	Flush(data any, statusCode ...int) error                                    // flush
 	Accepts(offers ...string) string                                            // Accepts checks if the specified extensions or content types are acceptable.
@@ -72,8 +78,8 @@ type Ctx interface {
 	AcceptsEncodings(offers ...string) string                                   // AcceptsEncodings checks if the specified encoding is acceptable.
 	AcceptsLanguages(offers ...string) string                                   // AcceptsLanguages checks if the specified language is acceptable.
 	Format(body any) error                                                      // Format performs content-negotiation on the Accept HTTP header. It uses Accepts to select a proper format. If the header is not specified or there is no proper format, text/plain is used.
-	Type(extension string, charset ...string) Ctx
-	XML(data any) error // output xml
+	Type(extension string, charset ...string) Ctx                               // 发送 response content-type
+	XML(data any) error                                                         // output xml
 	Set(key string, val any)
 	Get(key string) (val any, ok bool)
 	GetString(key string, def ...string) (value string)
@@ -268,6 +274,7 @@ func (c *BaseCtx) RemoteIP() net.IP {
 	return remoteIP
 }
 
+// set locals var
 func (c *BaseCtx) Set(key string, val any) {
 	c.mu.Lock()
 	c.vars[key] = val
@@ -316,7 +323,7 @@ func (c *BaseCtx) GetInt(key string, def ...int) (i int) {
 	if len(def) > 0 {
 		return def[0]
 	}
-	return
+	return -1
 }
 
 // GetInt64 returns the value associated with the key as an integer.
@@ -329,7 +336,7 @@ func (c *BaseCtx) GetInt64(key string, def ...int64) (i int64) {
 	if len(def) > 0 {
 		return def[0]
 	}
-	return
+	return 01
 }
 
 // GetUint returns the value associated with the key as an integer.
@@ -538,6 +545,46 @@ func (c *BaseCtx) Query(key string, def ...string) string {
 // FormValue support old version
 func (c *BaseCtx) FormValue(key string, def ...string) string {
 	return c.Query(key, def...)
+}
+
+func (c *BaseCtx) FromValueInt(key string, def ...int) int {
+	val := c.Query(key)
+	if val != "" {
+		if v, err := strconv.Atoi(val); err == nil {
+			return v
+		}
+	}
+	if len(def) > 0 {
+		return def[0]
+	}
+	return -1
+}
+
+func (c *BaseCtx) FromValueUid(key string, def ...uid.UID) uid.UID {
+	val := c.Query(key)
+	if val != "" {
+		if v, err := uid.FromString(val); err == nil && !v.IsEmpty() {
+			return v
+		}
+	}
+	if len(def) > 0 {
+		return def[0]
+	}
+	return uid.Nil
+}
+
+func (c *BaseCtx) FromValueUUID(key string, def ...UUID) UUID {
+	val := c.Query(key)
+	if val != "" {
+		if v, err := UUIDFromString(val); err == nil {
+			return v
+		}
+	}
+
+	if len(def) > 0 {
+		return def[0]
+	}
+	return UuidNil
 }
 
 // FormValues returns a slice of strings for a given query key.
@@ -858,6 +905,7 @@ func (c *BaseCtx) Params(key string, defaultValue ...string) string {
 	return defaultString("", defaultValue)
 }
 
+// ParamsUid get uid.UID param, return uid.Nil if failed
 func (c *BaseCtx) ParamsUid(key string, defaultValue ...uid.UID) (uid.UID, error) {
 	value, err := uid.FromString(c.Params(key))
 	if err != nil {
@@ -869,15 +917,38 @@ func (c *BaseCtx) ParamsUid(key string, defaultValue ...uid.UID) (uid.UID, error
 	return value, nil
 }
 
+// ParamsUid get uid.UID param, return uid.Nil if failed
+func (c *BaseCtx) ParamsUuid(key string, defaultValue ...UUID) (UUID, error) {
+	value, err := UUIDFromString(c.Params(key))
+	if err != nil {
+		if len(defaultValue) > 0 {
+			return defaultValue[0], nil
+		}
+		return UuidNil, fmt.Errorf("failed to convert: %w", err)
+	}
+	return value, nil
+}
+
+// ParamsInt get int param, return -1 if failed
 func (c *BaseCtx) ParamsInt(key string, defaultValue ...int) (int, error) {
 	value, err := strconv.Atoi(c.Params(key))
 	if err != nil {
 		if len(defaultValue) > 0 {
 			return defaultValue[0], nil
 		}
-		return 0, fmt.Errorf("failed to convert: %w", err)
+		return -1, fmt.Errorf("failed to convert: %w", err)
 	}
 	return value, nil
+}
+
+// GetParamInt get int param, return -1 if failed
+func (c *BaseCtx) GetParamInt(key string, defaultValue ...int) (int, error) {
+	return c.ParamsInt(key, defaultValue...)
+}
+
+// GetParamUid get uid.UID param, return uid.Nil if failed
+func (c *BaseCtx) GetParamUid(key string, defaultValue ...uid.UID) (uid.UID, error) {
+	return c.ParamsUid(key, defaultValue...)
 }
 
 func (c *BaseCtx) SetHeader(key string, value string) {
@@ -1049,7 +1120,7 @@ func (c *BaseCtx) Format(body any) error {
 	// Get accepted content type
 	accept := c.Accepts("html", "json", "txt", "xml")
 	// Set accepted content type
-	c.Type(accept)
+	c.Type(accept, CharsetUTF8)
 	// Type convert provided body
 	var b string
 	switch val := body.(type) {
