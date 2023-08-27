@@ -973,7 +973,7 @@ func (c *BaseCtx) SendStatus(code int, msg ...string) error {
 }
 
 func (c *BaseCtx) SendString(str ...any) error {
-	c.SetHeader(HeaderContentType, MIMETextPlainCharsetUTF8)
+	// c.SetHeader(HeaderContentType, MIMETextPlainCharsetUTF8)
 	buf := ""
 	if len(str) == 1 {
 		buf = fmt.Sprint(str...)
