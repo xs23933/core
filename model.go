@@ -101,53 +101,6 @@ func UUIDFromString(s string) (UUID, error) {
 	return UUID{uu}, nil
 }
 
-/*
-// Value implements sql.Valuer so that UUIDs can be written to databases
-// transparently. Currently, UUIDs map to strings. Please consult
-// database-specific driver documentation for matching types.
-func (u UUID) Value() (driver.Value, error) {
-	return hex.EncodeToString(u.UUID[:]), nil
-}
-
-func (uu *UUID) Scan(src any) error {
-	switch src := src.(type) {
-	case nil:
-		return nil
-
-	case string:
-		// if an empty UUID comes from a table, we return a null UUID
-		if src == "" {
-			return nil
-		}
-
-		// see Parse for required string format
-		u, err := uuid.Parse(src)
-		if err != nil {
-			return fmt.Errorf("Scan: %v", err)
-		}
-
-		*uu = UUID{u}
-
-	case []byte:
-		// if an empty UUID comes from a table, we return a null UUID
-		if len(src) == 0 {
-			return nil
-		}
-
-		// assumes a simple slice of bytes if 16 bytes
-		// otherwise attempts to parse
-		if len(src) != 16 {
-			return uu.Scan(string(src))
-		}
-		copy((uu.UUID)[:], src)
-
-	default:
-		return fmt.Errorf("Scan: unable to scan type %T into UUID", src)
-	}
-	return nil
-}
-*/
-
 type Models struct {
 	ID        UUID            `gorm:"primaryKey" json:"id,omitempty"`
 	CreatedAt time.Time       `json:"created_at" gorm:"<-:create"`
@@ -155,7 +108,7 @@ type Models struct {
 	DeletedAt *gorm.DeletedAt `json:"deleted_at,omitempty" gorm:"index"`
 }
 
-func (m *Models) BeforeCreate(tx *core.DB) error {
+func (m *Models) BeforeCreate(tx *DB) error {
 	if m.ID.IsEmpty() {
 		m.ID = NewUUID()
 	}
