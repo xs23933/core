@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/xs23933/core"
 	"github.com/xs23933/uid"
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
@@ -67,7 +66,7 @@ type Model struct {
 	DeletedAt *gorm.DeletedAt `json:"deleted_at,omitempty" gorm:"index"`
 }
 
-func (m *Model) BeforeCreate(tx *core.DB) error {
+func (m *Model) BeforeCreate(tx *DB) error {
 	if m.ID.IsEmpty() {
 		m.ID = uid.New()
 	}
@@ -144,6 +143,37 @@ func FindPage(whr *Map, out any, db ...*DB) (result Pages, err error) {
 	return
 }
 
+type NextPages struct {
+	P    int  `json:"p"`
+	L    int  `json:"l"`
+	Next bool `json:"next"`
+	Prev bool `json:"prev"`
+	Data any  `json:"data"`
+}
+
+func FindNext(whr *Map, out any, db ...*DB) (result NextPages, err error) {
+	var (
+		lmt = 20
+		pos = 1
+		tx  *DB
+	)
+	if len(db) > 0 {
+		tx, pos, lmt = Where(whr, db[0])
+	} else {
+		tx, pos, lmt = Where(whr)
+	}
+	act := tx.Limit(lmt + 1).Find(out)
+	rows := act.RowsAffected
+	err = act.Error
+	result = NextPages{
+		P: pos, L: lmt,
+		Next: rows > int64(lmt),
+		Prev: pos > 1,
+		Data: out,
+	}
+	return
+}
+
 // Find find all data record max 10000
 func Find(out any, args ...any) error {
 	wher := make(Map)
@@ -200,6 +230,9 @@ func Where(whr *Map, db ...*DB) (*DB, int, int) {
 			pos = v
 		case float64:
 			pos = int(v)
+		}
+		if pos < 1 {
+			pos = 1
 		}
 		tx = tx.Offset((pos - 1) * lmt)
 	}

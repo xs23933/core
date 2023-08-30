@@ -55,13 +55,15 @@ func (Handler) Get_id(c core.Ctx) {
 }
 
 func (Handler) Get(c core.Ctx) {
-	// c.ToJSON(models.UserPage())
+	pos := c.FromValueInt("p", 1)
+	lmt := c.FromValueInt("l", 10)
+	c.ToJSON(models.UserPage(pos, lmt))
 	// c.Type("json")
-	c.Render("index", core.Map{
-		"success": true,
-		"msg":     "success",
-		"data":    "good",
-	})
+	// c.Render("index", core.Map{
+	// 	"success": true,
+	// 	"msg":     "success",
+	// 	"data":    "good",
+	// })
 }
 
 func init() {
@@ -70,11 +72,10 @@ func init() {
 }
 
 func main() {
-
 	app := core.New(core.LoadConfigFile("config.yaml"))
 	var view view.IEngine = html.NewHtmlView("./views", ".html", app.Debug)
 	app.Use(view)
 	app.Use(requestid.New())
-	// models.InitDB()
+	models.InitDB()
 	app.Listen()
 }

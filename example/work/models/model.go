@@ -19,10 +19,17 @@ func UserById(id core.UUID) (user User, err error) {
 	return
 }
 
-func UserPage() (any, error) {
+func UserPage(pos, lmt int) (any, error) {
 	result := make([]User, 0)
-	err := core.Find(&result)
-	return result, err
+	whr := &core.Map{
+		"p": pos,
+		"l": lmt,
+	}
+	out, err := core.FindNext(whr, &result)
+	if out.Next {
+		out.Data = result[:len(result)-1]
+	}
+	return out, err
 }
 
 func InitDB() {
