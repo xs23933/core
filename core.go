@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/xs23933/core/v2/middleware/view"
 	"github.com/xs23933/core/v2/reuseport"
 	"golang.org/x/sync/errgroup"
 )
@@ -54,6 +55,7 @@ type Core struct {
 	MaxMultipartMemory int64
 	enablePrefork      bool
 	networkProto       string
+	Views              view.IEngine
 }
 
 // core implements Router.
@@ -276,9 +278,11 @@ func (app *Core) runProcess() {
 	app.buildTree()
 }
 func (app *Core) Use(fn ...any) Router {
-	prefixes, handlers := anyToHandlers(fn...)
-	for _, prefix := range prefixes {
-		app.AddHandle([]string{MethodUse}, prefix, nil, nil, app.processedHandler(handlers)...)
+	prefixes, handlers := anyToHandlers(app, fn...)
+	if len(handlers) > 0 {
+		for _, prefix := range prefixes {
+			app.AddHandle([]string{MethodUse}, prefix, nil, nil, app.processedHandler(handlers)...)
+		}
 	}
 	return app
 }
@@ -386,14 +390,14 @@ func (app *Core) Group(prefix string, handlers ...any) Router {
 		Prefix: prefix,
 		Core:   app,
 	}
-	_, handlers = anyToHandlers(handlers...)
+	_, handlers = anyToHandlers(app, handlers...)
 	if len(handlers) > 0 {
 		app.AddHandle([]string{MethodUse}, prefix, g, nil, app.processedHandler(handlers)...)
 	}
 	return g
 }
 
-func anyToHandlers(fn ...any) (prefixes []string, handlers []any) {
+func anyToHandlers(app *Core, fn ...any) (prefixes []string, handlers []any) {
 	var (
 		prefix string
 	)
@@ -405,12 +409,14 @@ func anyToHandlers(fn ...any) (prefixes []string, handlers []any) {
 			prefix = arg
 		case []string:
 			prefixes = arg
+		case view.IEngine:
+			app.Views = arg
 		case HandlerFun, HandlerFunc, http.HandlerFunc, http.Handler:
 			handlers = append(handlers, arg)
 		case HandlerFuncs:
 			handlers = append(handlers, arg)
 		default:
-			panic(fmt.Sprintf("use: invalid middware %v\n", reflect.TypeOf(arg)))
+			panic(fmt.Sprintf("use: invalid middleware %v\n", reflect.TypeOf(arg)))
 		}
 	}
 

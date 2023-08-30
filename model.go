@@ -89,6 +89,10 @@ func (u UUID) IsEmpty() bool {
 	return UUID{uuid.Nil} == u
 }
 
+func (u UUID) ToString() string {
+	return strings.Replace(u.String(), "-", "", -1)
+}
+
 func UUIDFromString(s string) (UUID, error) {
 	uu, err := uuid.Parse(s)
 	if err != nil {
@@ -105,7 +109,7 @@ func (u UUID) Value() (driver.Value, error) {
 	return hex.EncodeToString(u.UUID[:]), nil
 }
 
-func (uu *UUID) Scan(src interface{}) error {
+func (uu *UUID) Scan(src any) error {
 	switch src := src.(type) {
 	case nil:
 		return nil
@@ -167,7 +171,7 @@ type Pages struct {
 }
 
 // FindPage Gorm find to page process whr
-func FindPage(whr *Map, out interface{}, db ...*DB) (result Pages, err error) {
+func FindPage(whr *Map, out any, db ...*DB) (result Pages, err error) {
 	var (
 		total    int64
 		tx       *DB
@@ -188,7 +192,7 @@ func FindPage(whr *Map, out interface{}, db ...*DB) (result Pages, err error) {
 }
 
 // Find find all data record max 10000
-func Find(out interface{}, args ...interface{}) error {
+func Find(out any, args ...any) error {
 	wher := make(Map)
 	db := Conn()
 	for _, arg := range args {

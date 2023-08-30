@@ -61,8 +61,9 @@ func methodPos(method string) int {
 }
 
 var (
-	ErrDataTypeNotSupport = errors.New("dataType does not support")
-	ErrNoConfig           = errors.New("field global configuration not found")
+	ErrDataTypeNotSupport       = errors.New("dataType does not support")
+	ErrNoConfig                 = errors.New("field global configuration not found")
+	ErrLayoutCalledUnexpectedly = errors.New("layout called unexpectedly")
 )
 
 // An InvalidUnmarshalError describes an invalid argument passed to Unmarshal.
@@ -624,6 +625,11 @@ func init() {
 	}
 	commonInitialismsReplacer = strings.NewReplacer(commonInitialismsForReplacer...)
 }
+
+const (
+	DefaultDateFormat     = "2006-01-02"
+	DefaultDateTimeFormat = "2006-01-02 15:04"
+)
 
 const CoreHeader = `
  _____                

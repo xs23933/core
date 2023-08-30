@@ -3,8 +3,9 @@ package main
 import (
 	"github.com/xs23933/core/v2"
 	"github.com/xs23933/core/v2/example/work/models"
-	"github.com/xs23933/core/v2/middware/favicon"
-	"github.com/xs23933/core/v2/middware/requestid"
+	"github.com/xs23933/core/v2/middleware/requestid"
+	"github.com/xs23933/core/v2/middleware/view"
+	"github.com/xs23933/core/v2/middleware/view/html"
 )
 
 type Handler struct {
@@ -54,7 +55,13 @@ func (Handler) Get_id(c core.Ctx) {
 }
 
 func (Handler) Get(c core.Ctx) {
-	c.ToJSON(models.UserPage())
+	// c.ToJSON(models.UserPage())
+	// c.Type("json")
+	c.Render("index", core.Map{
+		"success": true,
+		"msg":     "success",
+		"data":    "good",
+	})
 }
 
 func init() {
@@ -65,11 +72,9 @@ func init() {
 func main() {
 
 	app := core.New(core.LoadConfigFile("config.yaml"))
+	var view view.IEngine = html.NewHtmlView("./views", ".html", app.Debug)
+	app.Use(view)
 	app.Use(requestid.New())
-	app.Use(favicon.New(favicon.Config{
-		File: "tmp/favicon.ico",
-		Url:  "/favicon.ico",
-	}))
-	models.InitDB()
+	// models.InitDB()
 	app.Listen()
 }

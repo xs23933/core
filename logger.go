@@ -88,7 +88,7 @@ func requestLog(debug bool, code int, method, path, ts string) {
 
 type Writers struct{}
 
-func (Writers) Printf(f string, args ...interface{}) {
+func (Writers) Printf(f string, args ...any) {
 	Log(f, args...)
 }
 
@@ -107,16 +107,16 @@ func D(f string, args ...any) {
 }
 
 // Dump 打印数据信息
-func Dump(v ...interface{}) {
+func Dump(v ...any) {
 	spew.Dump(v...)
 }
 
-func Log(f string, args ...interface{}) {
+func Log(f string, args ...any) {
 	golog.Printf(f, args...)
 }
 
 // info logger
-func Info(f string, args ...interface{}) {
+func Info(f string, args ...any) {
 	var color, rst string
 	if isTerm || forceColor {
 		color = green
@@ -129,7 +129,7 @@ func Info(f string, args ...interface{}) {
 }
 
 // warning logger
-func Warn(f string, args ...interface{}) {
+func Warn(f string, args ...any) {
 	var color, rst string
 	if isTerm || forceColor {
 		color = yellow
@@ -142,7 +142,7 @@ func Warn(f string, args ...interface{}) {
 }
 
 // error logger
-func Erro(f string, args ...interface{}) {
+func Erro(f string, args ...any) {
 	var color, rst string
 	if isTerm || forceColor {
 		color = red
@@ -253,7 +253,7 @@ var (
 )
 
 // RecoveryFunc defines the function passable to CustomRecovery.
-type RecoveryFunc func(c Ctx, err interface{})
+type RecoveryFunc func(c Ctx, err any)
 
 // Recovery returns a middleware that recovers from any panics and writes a 500 if there was one.
 func Recovery() HandlerFunc {
@@ -321,7 +321,7 @@ func CustomRecoveryWithWriter(out io.Writer, handle RecoveryFunc) HandlerFunc {
 	}
 }
 
-func defaultHandleRecovery(c Ctx, err interface{}) {
+func defaultHandleRecovery(c Ctx, err any) {
 	c.Abort(http.StatusInternalServerError)
 }
 

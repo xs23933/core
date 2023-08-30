@@ -153,7 +153,7 @@ func LoadConfigFile(file string, opts ...Options) Options {
 	return conf
 }
 
-func SaveConfigFile(conf map[string]interface{}) error {
+func SaveConfigFile(conf map[string]any) error {
 	yml, err := yaml.Marshal(conf)
 	if err != nil {
 		return err

@@ -96,6 +96,9 @@ type Ctx interface {
 	GetMapString(key string, def ...map[string]string) (value map[string]string)
 	GetMapStringSlice(key string, def ...map[string][]string) (value map[string][]string)
 	GetAs(key string, v any) error
+	Stream(step func(w io.Writer) bool) bool
+	ViewReload() // set view reload
+	Render(f string, bind ...any) error
 }
 
 type BaseCtx struct {
@@ -113,6 +116,7 @@ type BaseCtx struct {
 	pathOriginal  string            // Original HTTP path
 	values        [maxParams]string // Route parameter values
 	matched       bool              // Non use route matched
+	theme         string
 	W             ResponseWriter
 	R             *http.Request
 	ctx           context.Context
@@ -124,11 +128,66 @@ type BaseCtx struct {
 }
 
 // decoderPool helps to improve ReadBody's and QueryParser's performance
-var decoderPool = &sync.Pool{New: func() interface{} {
+var decoderPool = &sync.Pool{New: func() any {
 	var decoder = schema.NewDecoder()
 	decoder.IgnoreUnknownKeys(true)
 	return decoder
 }}
+
+// ViewTheme 使用模版风格
+func (c *BaseCtx) ViewTheme(theme string) {
+	c.theme = theme
+}
+
+func (c *BaseCtx) ViewReload() {
+	c.app.Views.Reload()
+}
+
+func (c *BaseCtx) Render(f string, bind ...any) error {
+	var err error
+	var binding any
+	if len(bind) > 0 {
+		binding = bind[0]
+	} else {
+		c.mu.RLock()
+		binding = c.vars
+		c.mu.RUnlock()
+	}
+
+	if c.app.Views == nil {
+		err = fmt.Errorf("Render: Not Initial Views")
+		Erro(err.Error())
+		return err
+	}
+	if c.theme != "" {
+		c.app.Views.SetTheme(c.theme)
+	}
+
+	err = c.app.Views.Execute(c.W, f, binding)
+	if err != nil {
+		c.SendStatus(StatusInternalServerError, err.Error())
+	}
+	return err
+}
+
+// Stream sends a streaming response and returns a boolean
+// indicates "Is client disconnected in middle of stream"
+func (c *BaseCtx) Stream(step func(w io.Writer) bool) bool {
+	w := c.W
+	ctx := c.ctx
+	for {
+		select {
+		case <-ctx.Done():
+			return true
+		default:
+			keepOpen := step(w)
+			w.Flush()
+			if !keepOpen {
+				return false
+			}
+		}
+	}
+}
 
 // ReadBody binds the request body to a struct.
 // It supports decoding the following content types based on the Content-Type header:
