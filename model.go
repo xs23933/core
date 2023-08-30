@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/google/uuid"
 	"github.com/xs23933/uid"
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
@@ -28,6 +29,48 @@ type Model struct {
 	CreatedAt time.Time       `json:"created_at"`
 	UpdatedAt time.Time       `json:"updated_at"`
 	DeletedAt *gorm.DeletedAt `json:"deleted_at,omitempty"`
+}
+
+type UUID struct {
+	uuid.UUID
+}
+
+var UuidNil = UUID{uuid.Nil}
+
+func NewUUID() UUID {
+	uuid.EnableRandPool()
+	return UUID{uuid.New()}
+}
+
+func (u UUID) IsEmpty() bool {
+	return UUID{uuid.Nil} == u
+}
+
+func (u UUID) ToString() string {
+	return strings.Replace(u.String(), "-", "", -1)
+}
+
+func UUIDFromString(s string) (UUID, error) {
+	uu, err := uuid.Parse(s)
+	if err != nil {
+		return UuidNil, err
+	}
+	return UUID{uu}, nil
+}
+
+type Models struct {
+	ID        UUID            `gorm:"primaryKey" json:"id,omitempty"`
+	CreatedAt time.Time       `json:"created_at" gorm:"<-:create"`
+	UpdatedAt time.Time       `json:"updated_at"`
+	DeletedAt *gorm.DeletedAt `json:"deleted_at,omitempty" gorm:"index"`
+}
+
+func (m *Models) BeforeCreate(tx *DB) error {
+	if m.ID.IsEmpty() {
+		m.ID = NewUUID()
+	}
+	m.ID.Value()
+	return nil
 }
 
 func (m *Model) BeforeCreate(tx *DB) error {

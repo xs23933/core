@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/davecgh/go-spew/spew"
 )
 
@@ -231,9 +232,6 @@ func (ve *ViewEngine) Load() error {
 		if err != nil {
 			return err
 		}
-		if err != nil {
-			return err
-		}
 
 		if ve.debug {
 			D("Views: load template: %s\n", name)
@@ -366,6 +364,11 @@ var templateHelpers = template.FuncMap{
 	},
 	"rawjson": func(src interface{}) template.HTML {
 		v, _ := json.MarshalIndent(src, "", "  ")
+		return template.HTML(v)
+	},
+
+	"json": func(src any) template.HTML {
+		v, _ := sonic.Marshal(src)
 		return template.HTML(v)
 	},
 	// Skips sanitation on the parameter.  Do not use with dynamic data.
