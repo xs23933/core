@@ -9,7 +9,6 @@ require (
 	github.com/gorilla/schema v1.2.0
 	github.com/mattn/go-isatty v0.0.19
 	github.com/stretchr/testify v1.8.4
-	github.com/xs23933/core v1.9.30
 	github.com/xs23933/uid v1.0.3
 	golang.org/x/sync v0.3.0
 	golang.org/x/sys v0.7.0
@@ -30,8 +29,10 @@ require (
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect
 	github.com/klauspost/cpuid/v2 v2.0.9 // indirect
+	github.com/kr/text v0.2.0 // indirect
 	github.com/mattn/go-sqlite3 v1.14.17 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
+	github.com/rogpeppe/go-internal v1.10.0 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	golang.org/x/arch v0.0.0-20210923205945-b76863e36670 // indirect
 	golang.org/x/crypto v0.8.0 // indirect
