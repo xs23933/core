@@ -101,6 +101,37 @@ func FindPage(whr *Map, out interface{}, db ...*DB) (result Pages, err error) {
 	return
 }
 
+type NextPages struct {
+	P    int  `json:"p"`
+	L    int  `json:"l"`
+	Next bool `json:"next"`
+	Prev bool `json:"prev"`
+	Data any  `json:"data"`
+}
+
+func FindNext(whr *Map, out any, db ...*DB) (result NextPages, err error) {
+	var (
+		lmt = 20
+		pos = 1
+		tx  *DB
+	)
+	if len(db) > 0 {
+		tx, pos, lmt = Where(whr, db[0])
+	} else {
+		tx, pos, lmt = Where(whr)
+	}
+	act := tx.Limit(lmt + 1).Find(out)
+	rows := act.RowsAffected
+	err = act.Error
+	result = NextPages{
+		P: pos, L: lmt,
+		Next: rows > int64(lmt),
+		Prev: pos > 1,
+		Data: out,
+	}
+	return
+}
+
 // Find find all data record max 10000
 func Find(out interface{}, args ...interface{}) error {
 	wher := make(Map)
