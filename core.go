@@ -190,12 +190,13 @@ func (app *Core) Listen(port ...any) error {
 func (app *Core) Serve(ln net.Listener) error {
 
 	port := strings.TrimPrefix(ln.Addr().String(), "[::]")
+	port = strings.TrimPrefix(port, "0.0.0.0:")
 	if !strings.Contains(ln.Addr().String(), "127.0.0.1") {
-		D("Listen: http://127.0.0.1%s\n", port)
+		D("Listen: http://127.0.0.1:%s\n", port)
 
 		localIP, err := LocalIP()
 		if err == nil {
-			D("Listen: http://%s%s\n", localIP.String(), port)
+			D("Listen: http://%s:%s\n", localIP.String(), port)
 		}
 	} else {
 		D("Listen: http://%s\n", port)
