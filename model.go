@@ -120,6 +120,7 @@ type Pages struct {
 	L     int   `json:"l"`
 	Total int64 `json:"total"`
 	Data  any   `json:"data"`
+	Extra any   `json:"extra,omitempty"`
 }
 
 // FindPage Gorm find to page process whr
