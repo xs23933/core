@@ -1,6 +1,10 @@
 package core
 
 import (
+	"bytes"
+	"database/sql/driver"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -88,8 +92,176 @@ func (u UUID) IsEmpty() bool {
 	return UUID{uuid.Nil} == u
 }
 
-func (u UUID) ToString() string {
-	return strings.Replace(u.String(), "-", "", -1)
+func (u UUID) String() string {
+	var js [32]byte
+	encodeHex(js[:], u)
+	if js == nullUUID {
+		return ""
+	}
+	return string(js[:])
+}
+
+// Scan implements sql.Scanner so UUIDs can be read from databases transparently.
+// Currently, database types that map to string and []byte are supported. Please
+// consult database-specific driver documentation for matching types.
+func (uuid *UUID) Scan(src any) error {
+	switch src := src.(type) {
+	case nil:
+		return nil
+
+	case string:
+		// if an empty UUID comes from a table, we return a null UUID
+		if src == "" {
+			return nil
+		}
+
+		// see Parse for required string format
+		u, err := UUIDFromString(src)
+		if err != nil {
+			return fmt.Errorf("Scan: %v", err)
+		}
+
+		*uuid = u
+
+	case []byte:
+		// if an empty UUID comes from a table, we return a null UUID
+		if len(src) == 0 {
+			return nil
+		}
+
+		// assumes a simple slice of bytes if 16 bytes
+		// otherwise attempts to parse
+		if len(src) != 16 {
+			return uuid.Scan(string(src))
+		}
+		copy((uuid.UUID)[:], src)
+
+	default:
+		return fmt.Errorf("Scan: unable to scan type %T into UUID", src)
+	}
+
+	return nil
+}
+
+// Value implements sql.Valuer so that UUIDs can be written to databases
+// transparently. Currently, UUIDs map to strings. Please consult
+// database-specific driver documentation for matching types.
+func (uuid UUID) Value() (driver.Value, error) {
+	return uuid.String(), nil
+}
+
+// xvalues returns the value of a byte as a hexadecimal digit or 255.
+var xvalues = [256]byte{
+	255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+	255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+	255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+	0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 255, 255, 255, 255, 255, 255,
+	255, 10, 11, 12, 13, 14, 15, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+	255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+	255, 10, 11, 12, 13, 14, 15, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+	255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+	255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+	255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+	255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+	255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+	255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+	255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+	255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+	255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+}
+
+// xtob converts hex characters x1 and x2 into a byte.
+func xtob(x1, x2 byte) (byte, bool) {
+	b1 := xvalues[x1]
+	b2 := xvalues[x2]
+	return (b1 << 4) | b2, b1 != 255 && b2 != 255
+}
+
+type invalidLengthError struct{ len int }
+
+func (err invalidLengthError) Error() string {
+	return fmt.Sprintf("invalid UUID length: %d", err.len)
+}
+
+// IsInvalidLengthError is matcher function for custom error invalidLengthError
+func IsInvalidLengthError(err error) bool {
+	_, ok := err.(invalidLengthError)
+	return ok
+}
+
+var nullUUID = [32]byte{
+	0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30,
+	0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30,
+	0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30,
+	0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30,
+}
+
+func encodeHex(dst []byte, uuid UUID) {
+	hex.Encode(dst, uuid.UUID[:])
+}
+
+// ParseBytes is like Parse, except it parses a byte slice instead of a string.
+func ParseBytes(b []byte) (UUID, error) {
+	var uuid UUID
+	switch len(b) {
+	case 36: // xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+	case 36 + 9: // urn:uuid:xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+		if !bytes.Equal(bytes.ToLower(b[:9]), []byte("urn:uuid:")) {
+			return uuid, fmt.Errorf("invalid urn prefix: %q", b[:9])
+		}
+		b = b[9:]
+	case 36 + 2: // {xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}
+		b = b[1:]
+	case 32: // xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+		var ok bool
+		for i := 0; i < 32; i += 2 {
+			uuid.UUID[i/2], ok = xtob(b[i], b[i+1])
+			if !ok {
+				return uuid, errors.New("invalid UUID format")
+			}
+		}
+		return uuid, nil
+	default:
+		return uuid, invalidLengthError{len(b)}
+	}
+	// s is now at least 36 bytes long
+	// it must be of the form  xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+	if b[8] != '-' || b[13] != '-' || b[18] != '-' || b[23] != '-' {
+		return uuid, errors.New("invalid UUID format")
+	}
+	for i, x := range [16]int{
+		0, 2, 4, 6,
+		9, 11,
+		14, 16,
+		19, 21,
+		24, 26, 28, 30, 32, 34} {
+		v, ok := xtob(b[x], b[x+1])
+		if !ok {
+			return uuid, errors.New("invalid UUID format")
+		}
+		uuid.UUID[i] = v
+	}
+	return uuid, nil
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (id UUID) MarshalText() ([]byte, error) {
+	var js [32]byte
+	encodeHex(js[:], id)
+	if js == nullUUID {
+		return nil, nil
+	}
+	return js[:], nil
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (uuid *UUID) UnmarshalText(data []byte) error {
+	id, err := ParseBytes(data)
+	if err != nil {
+		return err
+	}
+	*uuid = id
+	return nil
 }
 
 func UUIDFromString(s string) (UUID, error) {
@@ -111,7 +283,6 @@ func (m *Models) BeforeCreate(tx *DB) error {
 	if m.ID.IsEmpty() {
 		m.ID = NewUUID()
 	}
-	m.ID.Value()
 	return nil
 }
 
