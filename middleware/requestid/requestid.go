@@ -20,7 +20,7 @@ func New(conf ...Config) core.HandlerFunc {
 		cfg = conf[0]
 	}
 	return func(c core.Ctx) error {
-		rid := c.GetHeader(cfg.Header, core.NewUUID().ToString())
+		rid := c.GetHeader(cfg.Header, core.NewUUID().String())
 		c.SetHeader(cfg.Header, rid)
 		c.Set(cfg.ContextKey, rid)
 		return c.Next()
