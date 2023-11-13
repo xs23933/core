@@ -98,10 +98,6 @@ func New(options ...Options) *Core {
 		}
 		app.assets = app.Conf.GetMap("static")
 
-		for k, v := range app.assets {
-			prefix := fmt.Sprintf("/%s", k)
-			app.Static(prefix, v.(string))
-		}
 		app.modName = app.Conf.GetString("mod_prefix", "mod")
 
 		if log := app.Conf.GetString("log", ""); log != "" {
@@ -165,6 +161,12 @@ func New(options ...Options) *Core {
 	if !IsChild() {
 		Log(CoreHeader, VERSION)
 	}
+
+	for k, v := range app.assets {
+		prefix := fmt.Sprintf("/%s", k)
+		app.Static(prefix, v.(string))
+	}
+
 	return app
 }
 
