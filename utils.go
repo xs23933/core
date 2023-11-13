@@ -479,7 +479,7 @@ func MakePath(name, dst string, args ...any) (string, string, error) {
 	pathArr := []string{dst, mon}
 	root := ""
 	rename := false
-	rName := strings.ToLower(uid.New().String())
+	rName := strings.ToLower(NewUUID().String())
 	for _, arg := range args {
 		switch a := arg.(type) {
 		case int, int64, uint, uint64:
