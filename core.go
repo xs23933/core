@@ -97,6 +97,11 @@ func New(options ...Options) *Core {
 			app.addr = fmt.Sprintf(":%s", app.addr)
 		}
 		app.assets = app.Conf.GetMap("static")
+
+		for k, v := range app.assets {
+			prefix := fmt.Sprintf("/%s", k)
+			app.Static(prefix, v.(string))
+		}
 		app.modName = app.Conf.GetString("mod_prefix", "mod")
 
 		if log := app.Conf.GetString("log", ""); log != "" {
