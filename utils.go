@@ -301,8 +301,8 @@ func (d *Map) Scan(src any) error {
 	return fmt.Errorf("not support %s", src)
 }
 
-func (d *Map) Contains(k string) bool {
-	_, ok := (*d)[k]
+func (d Map) Contains(k string) bool {
+	_, ok := d[k]
 	return ok
 }
 
