@@ -301,6 +301,11 @@ func (d *Map) Scan(src any) error {
 	return fmt.Errorf("not support %s", src)
 }
 
+func (d *Map) Contains(k string) bool {
+	_, ok := (*d)[k]
+	return ok
+}
+
 // GormDataType schema.Field DataType
 func (Map) GormDataType() string {
 	return "text"
