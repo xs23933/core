@@ -101,6 +101,10 @@ func (u UUID) String() string {
 	return string(js[:])
 }
 
+func (u UUID) Bytes() []byte {
+	return u.UUID[:]
+}
+
 // Scan implements sql.Scanner so UUIDs can be read from databases transparently.
 // Currently, database types that map to string and []byte are supported. Please
 // consult database-specific driver documentation for matching types.
