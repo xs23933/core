@@ -75,8 +75,8 @@ func New(config ...Config) core.HandlerFunc {
 		c.Vary(core.HeaderOrigin)
 		c.Vary(core.HeaderAccessControlRequestMethod)
 		c.Vary(core.HeaderAccessControlRequestHeaders)
-		c.Vary(core.HeaderAccessControlAllowOrigin, allowOrigin)
-		c.Vary(core.HeaderAccessControlAllowMethods, allowMethods)
+		c.SetHeader(core.HeaderAccessControlAllowOrigin, allowOrigin)
+		c.SetHeader(core.HeaderAccessControlAllowMethods, allowMethods)
 
 		if cfg.AllowCredentials {
 			c.SetHeader(core.HeaderAccessControlAllowCredentials, "true")
@@ -84,11 +84,11 @@ func New(config ...Config) core.HandlerFunc {
 
 		// Set Allow-Headers if not empty
 		if allowHeaders != "" {
-			c.Set(core.HeaderAccessControlAllowHeaders, allowHeaders)
+			c.SetHeader(core.HeaderAccessControlAllowHeaders, allowHeaders)
 		} else {
 			h := c.GetHeader(core.HeaderAccessControlRequestHeaders)
 			if h != "" {
-				c.Set(core.HeaderAccessControlAllowHeaders, h)
+				c.SetHeader(core.HeaderAccessControlAllowHeaders, h)
 			}
 		}
 		return c.SendStatus(core.StatusNoContent)
