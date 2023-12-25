@@ -41,6 +41,11 @@ func (app *Core) addHandler(h handler) {
 type canStart interface {
 	Start(*Core) error
 }
+
+type canShutdown interface {
+	Stop(*Core) error
+}
+
 type Mod interface {
 	Init()
 }
@@ -98,6 +103,15 @@ func (app *Core) loadMods() {
 		<-app.Ctx.Done()
 		return nil
 	})
+}
+
+func (app *Core) shutdown() {
+	for _, m := range app.getModules(app.modName) {
+		mo := m.Instance()
+		if mod, ok := mo.(canShutdown); ok {
+			mod.Stop(app)
+		}
+	}
 }
 
 func (app *Core) getModules(scope string) []ModuleInfo {

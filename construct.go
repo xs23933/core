@@ -34,7 +34,7 @@ var (
 		"HEAD",
 		"PUT",
 		"DELETE",
-		"OPTION",
+		"OPTIONS",
 		"CONNECT",
 		"TRACE",
 		"PATCH",

@@ -145,12 +145,17 @@ func New(options ...Options) *Core {
 
 	c := make(chan os.Signal, 1)
 	const SIGUSR2 = syscall.Signal(0x1f)
+	// SIGINT  中断信号通常 Ctrl+c
+	// SIGTERM 终止信号, 系统使用它来请求进程正常终止
+	// SIGHUP  终端控制关闭时发生
+	// SIGQUIT 终止信号, 无法被捕获
+	// signal.Notify(c, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	signal.Notify(c, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM,
 		syscall.SIGQUIT, SIGUSR2)
 	go func() {
-		for range c {
-			cancel()
-		}
+		<-c
+		app.shutdown()
+		cancel()
 	}()
 
 	app.Use(Logger(LoggerConfig{ForceColor: colorful, App: app, Debug: app.Debug, Output: out}), Recovery())
