@@ -124,7 +124,7 @@ func New(options ...Options) *Core {
 	}
 	Conf = app.Conf
 
-	app.RequestMethods = Conf.GetStrings("methods", Methods[:len(Methods)-2])
+	app.RequestMethods = Conf.GetStrings("methods", Methods[:len(Methods)-1])
 
 	app.ErrorHandler = DefaultErrorHandler
 

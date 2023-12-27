@@ -152,7 +152,9 @@ func (ve *TextEngine) Load() error {
 		}
 		// Skip file if it does not equal the given template Extension
 		if len(ve.Ext) >= len(path) || path[len(path)-len(ve.Ext):] != ve.Ext {
-			return nil
+			if !strings.HasSuffix(path, "index.html") { // 如果是 index.html
+				return nil
+			}
 		}
 
 		rel, err := filepath.Rel(ve.Directory, path) // get the relative file path
