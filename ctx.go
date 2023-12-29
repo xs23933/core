@@ -49,7 +49,7 @@ type Ctx interface {
 	Abort(args ...any) Ctx                                                      // Deprecated: As of v2.0.0, this function simply calls Ctx.Format.
 	JSON(any) error                                                             // send json
 	JSONP(data any, callback ...string) error                                   // send jsonp
-	ToJSON(any, error) error                                                    // send json with status
+	ToJSON(data any, msg ...any) error                                          // send json with status
 	ToJSONCode(data any, msg ...any) error                                      // send have code to json
 	StartAt(t ...time.Time) time.Time                                           // set ctx start time if t set, else get start at
 	Params(key string, defaultValue ...string) string                           // get Param data e.g c.Param("param")
@@ -96,6 +96,7 @@ type Ctx interface {
 	GetMapString(key string, def ...map[string]string) (value map[string]string)
 	GetMapStringSlice(key string, def ...map[string][]string) (value map[string][]string)
 	GetAs(key string, v any) error
+	Vars() Map
 	Stream(step func(w io.Writer) bool) bool
 	ViewReload() // set view reload
 	Render(f string, bind ...any) error
@@ -347,6 +348,13 @@ func (c *BaseCtx) Get(key string) (val any, ok bool) {
 	val, ok = c.vars[key]
 	c.mu.RUnlock()
 	return
+}
+
+func (c *BaseCtx) Vars() Map {
+	c.mu.RLock()
+	vars := c.vars
+	c.mu.RUnlock()
+	return vars
 }
 
 // GetString returns the value associated with the key as a string.
@@ -889,15 +897,25 @@ func (c *BaseCtx) ToJSONCode(data any, msg ...any) error {
 	}
 	return c.JSON(dat)
 }
-func (c *BaseCtx) ToJSON(data any, err error) error {
+func (c *BaseCtx) ToJSON(data any, msg ...any) error {
 	dat := Map{}
 	dat[c.respJsonKeys.Data] = data
 	dat[c.respJsonKeys.Message] = "ok"
 	dat[c.respJsonKeys.Status] = true
 
-	if err != nil {
-		dat[c.respJsonKeys.Status] = false
-		dat[c.respJsonKeys.Message] = err.Error()
+	for _, v := range msg {
+		switch d := v.(type) {
+		case int, int32, int16, int8:
+			dat[c.respJsonKeys.Status] = d
+		case string:
+			dat[c.respJsonKeys.Message] = d
+		case error:
+			dat[c.respJsonKeys.Status] = false
+			dat[c.respJsonKeys.Message] = d.Error()
+		case Error:
+			dat[c.respJsonKeys.Status] = d.Code
+			dat[c.respJsonKeys.Message] = d.Message
+		}
 	}
 	return c.JSON(dat)
 }
