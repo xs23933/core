@@ -114,7 +114,7 @@ func New(options ...Options) *Core {
 		if app.Conf.GetBool("colorful") {
 			colorful = true
 		}
-		if app.Conf.GetBool("prefork") {
+		if app.Conf.GetBool("prefork", false) {
 			app.enablePrefork = true
 		}
 
