@@ -162,7 +162,7 @@ func (uuid UUID) Value() (driver.Value, error) {
 
 // GormDataType gorm common data type
 func (uuid UUID) GormDataType() string {
-	return "uuid"
+	return "CHAR(32)"
 }
 
 func (UUID) GormDBDataType(db *gorm.DB, field *schema.Field) string {
@@ -377,7 +377,7 @@ type Int int64
 
 // GormDataType schema.Field DataType
 func (Int) GormDataType() string {
-	return "int"
+	return "INT"
 }
 
 // 转换结果为标准的 int64
