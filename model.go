@@ -64,7 +64,7 @@ func NewModel(conf Options, debug, colorful bool) (*DB, error) {
 }
 
 type Model struct {
-	ID        uid.UID         `gorm:"primaryKey" json:"id,omitempty"`
+	ID        uid.UID         `gorm:"size:12;primaryKey" json:"id,omitempty"`
 	CreatedAt time.Time       `json:"created_at" gorm:"<-:create"`
 	UpdatedAt time.Time       `json:"updated_at"`
 	DeletedAt *gorm.DeletedAt `json:"deleted_at,omitempty" gorm:"index"`
@@ -281,7 +281,7 @@ func UUIDFromString(s string) (UUID, error) {
 }
 
 type Models struct {
-	ID        UUID            `gorm:"primaryKey" json:"id,omitempty"`
+	ID        UUID            `json:"id,omitempty" gorm:"size:32;primaryKey"`
 	CreatedAt time.Time       `json:"created_at" gorm:"<-:create"`
 	UpdatedAt time.Time       `json:"updated_at"`
 	DeletedAt *gorm.DeletedAt `json:"deleted_at,omitempty" gorm:"index"`
