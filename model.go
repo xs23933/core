@@ -2,10 +2,14 @@ package core
 
 import (
 	"bytes"
+	"context"
 	"database/sql/driver"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,7 +19,9 @@ import (
 	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 	"gorm.io/gorm/logger"
+	"gorm.io/gorm/schema"
 )
 
 func NewModel(conf Options, debug, colorful bool) (*DB, error) {
@@ -152,6 +158,253 @@ func (uuid *UUID) Scan(src any) error {
 // database-specific driver documentation for matching types.
 func (uuid UUID) Value() (driver.Value, error) {
 	return uuid.String(), nil
+}
+
+// GormDataType gorm common data type
+func (uuid UUID) GormDataType() string {
+	return "uuid"
+}
+
+func (UUID) GormDBDataType(db *gorm.DB, field *schema.Field) string {
+	// use field.Tag, field.TagSettings gets field's tags
+	// checkout https://github.com/go-gorm/gorm/blob/master/schema/field.go for all options
+
+	// returns different database type based on driver name
+	switch db.Dialector.Name() {
+	case "mysql":
+		return "CHAR(32)"
+	case "sqlite":
+		return "TEXT"
+	case "postgres":
+		return "CHAR(32)"
+	}
+	return ""
+}
+
+type JSON json.RawMessage
+
+// Scan scan value into Jsonb, implements sql.Scanner interface
+func (j *JSON) Scan(value interface{}) error {
+	if value == nil {
+		*j = JSON("null")
+		return nil
+	}
+	var bytes []byte
+	switch v := value.(type) {
+	case []byte:
+		if len(v) > 0 {
+			bytes = make([]byte, len(v))
+			copy(bytes, v)
+		}
+	case string:
+		bytes = []byte(v)
+	default:
+		return errors.New(fmt.Sprint("Failed to unmarshal JSONB value:", value))
+	}
+
+	result := json.RawMessage(bytes)
+	*j = JSON(result)
+	return nil
+}
+
+// Value return json value, implement driver.Valuer interface
+func (j JSON) Value() (driver.Value, error) {
+	if len(j) == 0 {
+		return nil, nil
+	}
+	return string(j), nil
+}
+
+// MarshalJSON to output non base64 encoded []byte
+func (j JSON) MarshalJSON() ([]byte, error) {
+	return json.RawMessage(j).MarshalJSON()
+}
+
+// UnmarshalJSON to deserialize []byte
+func (j *JSON) UnmarshalJSON(b []byte) error {
+	result := json.RawMessage{}
+	err := result.UnmarshalJSON(b)
+	*j = JSON(result)
+	return err
+}
+
+func (j JSON) String() string {
+	return string(j)
+}
+
+// GormDataType gorm common data type
+func (JSON) GormDataType() string {
+	return "json"
+}
+func (JSON) GormDBDataType(db *gorm.DB, field *schema.Field) string {
+	// use field.Tag, field.TagSettings gets field's tags
+	// checkout https://github.com/go-gorm/gorm/blob/master/schema/field.go for all options
+
+	// returns different database type based on driver name
+	switch db.Dialector.Name() {
+	case "mysql", "sqlite":
+		return "JSON"
+	case "postgres":
+		return "JSONB"
+	}
+	return ""
+}
+
+func (js JSON) GormValue(ctx context.Context, db *gorm.DB) clause.Expr {
+	if len(js) == 0 {
+		return gorm.Expr("NULL")
+	}
+
+	data, _ := js.MarshalJSON()
+
+	switch db.Dialector.Name() {
+	case "mysql":
+		if v, ok := db.Dialector.(*mysql.Dialector); ok && !strings.Contains(v.ServerVersion, "MariaDB") {
+			return gorm.Expr("CAST(? AS JSON)", string(data))
+		}
+	}
+
+	return gorm.Expr("?", string(data))
+}
+
+type Money float64
+
+// ToFixed 保留几位小数
+// Param fraction int
+// return float64
+func (m Money) ToFixed(fraction ...int) Money {
+	places := 2
+	if len(fraction) > 0 {
+		places = fraction[0]
+	}
+	shift := math.Pow(10, float64(places))
+	fv := 0.0000000001 + float64(m) //对浮点数产生.xxx999999999 计算不准进行处理
+	return Money(math.Floor(fv*shift) / shift)
+}
+
+// ToFloor 保留 p 位小数, 向下取整
+func (m Money) ToFloor(p int) Money {
+	base := math.Pow(10, float64(p))
+	return Money(math.Floor(float64(m)*base) / base)
+}
+
+// ToRound 保留 p 位小数,四舍五入
+func (m Money) ToRound(p int) Money {
+	base := math.Pow(10, float64(p))
+	return Money(math.Round(float64(m)*base) / base)
+}
+
+func (m Money) IsEqual(x Money, fixed ...int) bool {
+	fix := 3
+	if len(fixed) > 0 {
+		fix = fixed[0]
+	}
+	return m.ToFixed(fix) == x.ToFixed(fix)
+}
+
+// DivInt 除以整数
+// m / in
+// fraction in 保留小数位
+func (m Money) DivInt(in int, fraction ...int) Money {
+	out := m / Money(float64(in))
+	if len(fraction) > 0 {
+		return out.ToFixed(fraction...)
+	}
+	return out
+}
+
+// MulInt 乘以整数
+// m * in
+// fraction in 保留小数位
+func (m Money) MulInt(in int, fraction ...int) Money {
+	out := m * Money(float64(in))
+	if len(fraction) > 0 {
+		return out.ToFixed(fraction...)
+	}
+	return out
+}
+
+// AddInt 加整数
+// m + in
+// fraction in 保留小数位
+func (m Money) AddInt(in int, fraction ...int) Money {
+	out := m + Money(float64(in))
+	if len(fraction) > 0 {
+		return out.ToFixed(fraction...)
+	}
+	return out
+}
+
+// SubInt 减整数
+// m - in
+// fraction in 保留小数位
+func (m Money) SubInt(in int, fraction ...int) Money {
+	out := m - Money(float64(in))
+	if len(fraction) > 0 {
+		return out.ToFixed(fraction...)
+	}
+	return out
+}
+
+// Float64 输出 float64
+func (m Money) Float64() float64 {
+	return float64(m)
+}
+
+// GormDataType schema.Field DataType
+func (Money) GormDataType() string {
+	return "DOUBLE"
+}
+
+func (m *Money) UnmarshalJSON(data []byte) error {
+	str := string(data)
+	var err error
+	if bytes.HasPrefix(data, []byte{'"'}) {
+		str, err = strconv.Unquote(str)
+		if err != nil {
+			return err
+		}
+	}
+	tmp, err := strconv.ParseFloat(str, 64)
+	if err != nil {
+		return err
+	}
+	*m = Money(tmp)
+	return nil
+}
+
+type Int int64
+
+// GormDataType schema.Field DataType
+func (Int) GormDataType() string {
+	return "int"
+}
+
+// 转换结果为标准的 int64
+func (m Int) Int64() int64 {
+	return int64(m)
+}
+
+// 转换结果为标准的 int
+func (m Int) Int() int {
+	return int(m)
+}
+
+func (m *Int) UnmarshalJSON(data []byte) error {
+	str := string(data)
+	var err error
+	if bytes.HasPrefix(data, []byte{'"'}) {
+		str, err = strconv.Unquote(str)
+		if err != nil {
+			return err
+		}
+	}
+	tmp, err := strconv.Atoi(str)
+	if err != nil {
+		return err
+	}
+	*m = Int(tmp)
+	return nil
 }
 
 // xvalues returns the value of a byte as a hexadecimal digit or 255.
