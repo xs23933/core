@@ -577,11 +577,12 @@ func FindPage(whr *Map, out any, db ...*DB) (result Pages, err error) {
 }
 
 type NextPages struct {
-	P    int  `json:"p"`
-	L    int  `json:"l"`
-	Next bool `json:"next"`
-	Prev bool `json:"prev"`
-	Data any  `json:"data"`
+	P     int  `json:"p"`
+	L     int  `json:"l"`
+	Next  bool `json:"next"`
+	Prev  bool `json:"prev"`
+	Data  any  `json:"data"`
+	Extra any  `json:"extra,omitempty"`
 }
 
 func FindNext(whr *Map, out any, db ...*DB) (result NextPages, err error) {
