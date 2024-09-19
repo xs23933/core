@@ -377,7 +377,7 @@ type Int int64
 
 // GormDataType schema.Field DataType
 func (Int) GormDataType() string {
-	return "INT"
+	return "BIGINT"
 }
 
 // 转换结果为标准的 int64
