@@ -71,6 +71,7 @@ func (r *Route) match(detectionPath, path string, params *[maxParams]string) boo
 
 func (app *Core) processedHandler(hand any) HandlerFuncs {
 	hands := make(HandlerFuncs, 0)
+
 	switch h := hand.(type) {
 	case HandlerFunc:
 		hands = append(hands, h)
@@ -108,51 +109,66 @@ func (app *Core) processedHandler(hand any) HandlerFuncs {
 	return hands
 }
 
-func (app *Core) AddHandle(methods []string, uri string, group *Group, handler any, middware ...HandlerFunc) Router {
-	handlers := middware
-	if handler != nil {
-		handlers = append(handlers, app.processedHandler(handler)...)
+// 检查 HTTP 方法是否合法
+func (app *Core) validateMethod(method string) error {
+	if method != MethodUse && methodPos(method) == -1 {
+		return fmt.Errorf("add: invalid http method %s", method)
 	}
+	return nil
+}
+
+// 确保路径以 "/" 开头
+func (app *Core) preparePath(uri string) string {
+	if uri == "" {
+		return "/"
+	}
+	if uri[0] != '/' {
+		return "/" + uri
+	}
+	return uri
+}
+
+// 根据配置调整路径大小写
+func (app *Core) adjustPathCase(uri string) string {
+	uriPretty := uri
+	if !Conf.GetBool("case-sensitive", false) {
+		uriPretty = strings.ToLower(uriPretty)
+	}
+	if !Conf.GetBool("strict-routing", false) && len(uriPretty) > 1 {
+		uriPretty = strings.TrimRight(uriPretty, "/")
+	}
+	return uriPretty
+}
+
+func (app *Core) AddHandle(methods []string, uri string, group *Group, handler any, middleware ...HandlerFunc) Router {
+	// handlers := middware
+	// if handler != nil {
+	// 	handlers = append(handlers, app.processedHandler(handler)...)
+	// }
+	// 合并中间件和处理器
+	handlers := append(middleware, app.processedHandler(handler)...)
+	if len(handlers) == 0 {
+		panic(fmt.Sprintf("missing handler/middleware in route: %s\n", uri))
+	}
+
+	// 确保路径格式
+	uri = app.preparePath(uri)
+	uriPretty := app.adjustPathCase(uri)
+
+	// 是否为星号和根路径
+	isStar := uri == "/*"
+	isRoot := uri == "/"
+	parsedUri := parseRoute(uri)
+	parsedPretty := parseRoute(uriPretty)
 
 	for _, method := range methods {
 		method := strings.ToUpper(method)
-		if method != MethodUse && methodPos(method) == -1 {
-			panic(fmt.Sprintf("add: invalid http method %s\n", method))
+		if err := app.validateMethod(method); err != nil {
+			panic(err)
 		}
-		if len(handlers) == 0 {
-			panic(fmt.Sprintf("missing handler/middleware in route: %s\n", uri))
-		}
-
-		// Cannot have an empty path
-		if uri == "" {
-			uri = "/"
-		}
-		// Path always start with a '/'
-		if uri[0] != '/' {
-			uri = "/" + uri
-		}
-
-		uriPretty := uri
-
-		if !Conf.GetBool("case-sensitive", false) {
-			uriPretty = strings.ToLower(uriPretty)
-		}
-		if !Conf.GetBool("strict-routing", false) && len(uriPretty) > 1 {
-			uriPretty = strings.TrimRight(uriPretty, "/")
-		}
-
-		// Is layer a middleware ?
-		isUse := method == MethodUse
-		// Is path a direct wildcard ?
-		isStar := uri == "/*"
-		// Is path a root slash?
-		isRoot := uri == "/"
-
-		parsedUri := parseRoute(uri)
-		parsedPretty := parseRoute(uriPretty)
 
 		route := Route{
-			use:  isUse,
+			use:  method == MethodUse,
 			star: isStar,
 			root: isRoot,
 
@@ -173,7 +189,7 @@ func (app *Core) AddHandle(methods []string, uri string, group *Group, handler a
 		atomic.AddUint32(&app.handlersCount, uint32(len(handlers)))
 
 		// Middleware route matches all HTTP methods
-		if isUse {
+		if route.use {
 			// Add route to all HTTP methods stack
 			for _, m := range app.RequestMethods {
 				r := route
@@ -197,18 +213,26 @@ func (app *Core) addRoute(method string, route *Route, isMounted ...bool) {
 	// Get unique HTTP method identifier
 	m := methodPos(method)
 	// prevent identically route registeration
-	l := len(app.stack[m])
-	if l > 0 && app.stack[m][l-1].Path == route.Path && route.use == app.stack[m][l-1].use {
-		preRoute := app.stack[m][l-1]
-		preRoute.Handlers = append(preRoute.Handlers, route.Handlers...)
-	} else {
-		// Increment global route position
-		route.pos = atomic.AddUint32(&app.routesCount, 1)
-		route.Method = method
-		// Add route to the stack
-		app.stack[m] = append(app.stack[m], route)
-		app.routesRefreshed = true
+	l := len(app.stack[m]) - 1
+	if l > 0 {
+		lastRoute := app.stack[m][l]
+		if lastRoute.Path == route.Path && lastRoute.use == route.use {
+			lastRoute.Handlers = append(lastRoute.Handlers, route.Handlers...)
+			// Execute onRoute hooks & change latestRoute if not adding mounted route
+			if !mounted {
+				app.mutex.Lock()
+				app.latestRoute = route
+				app.mutex.Unlock()
+			}
+			return
+		}
 	}
+	// Increment global route position
+	route.pos = atomic.AddUint32(&app.routesCount, 1)
+	route.Method = method
+	// Add route to the stack
+	app.stack[m] = append(app.stack[m], route)
+	app.routesRefreshed = true
 
 	// Execute onRoute hooks & change latestRoute if not adding mounted route
 	if !mounted {
@@ -216,6 +240,11 @@ func (app *Core) addRoute(method string, route *Route, isMounted ...bool) {
 		app.latestRoute = route
 		app.mutex.Unlock()
 	}
+
+	// 排序
+	sort.SliceStable(app.stack[m], func(i, j int) bool {
+		return app.stack[m][i].pos < app.stack[m][j].pos
+	})
 }
 
 func (app *Core) buildTree() *Core {

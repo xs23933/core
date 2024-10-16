@@ -199,6 +199,10 @@ func (app *Core) Listen(port ...any) error {
 	return app.Serve(ln)
 }
 
+func (app *Core) Run(port ...any) error {
+	return app.Listen(port...)
+}
+
 func (app *Core) Serve(ln net.Listener) error {
 
 	port := strings.TrimPrefix(ln.Addr().String(), "[::]")

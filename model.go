@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
 	"github.com/xs23933/uid"
 	"gorm.io/driver/mysql"
@@ -768,3 +769,61 @@ var (
 )
 
 type DB = gorm.DB
+
+func Expr(expr string, args ...any) clause.Expr {
+	return gorm.Expr(expr, args...)
+}
+
+type Enum interface {
+	~uint8
+}
+
+// EnumString
+//
+//	func (s TypeX) String() string {
+//		return EnumString(s, TypeXMap)
+//	}
+func EnumString[T Enum](val T, mapping []string) string {
+	return mapping[val]
+}
+
+// EnumFromString
+//
+//	func TypeXFromString(str string) TypeX {
+//		return EnumFromString[TypeX](str, TypeXMap)
+//	}
+func EnumFromString[T Enum](str string, mapping []string) T {
+	for i, s := range mapping {
+		if s == str {
+			return T(i)
+		}
+	}
+	return T(0)
+}
+
+// EnumMarshalJSON
+//
+//	func (s TypeX)MarshalJSON() ([]byte, error) {
+//		return EnumMarshalJSON(s, TypeX)
+//	}
+func EnumMarshalJSON[T Enum](val T, mapping []string) ([]byte, error) {
+	return sonic.Marshal(mapping[val])
+}
+
+// EnumUnmarshalJSON
+//
+//	func (s *TypeX) UnmarshalJSON(data []byte) error {
+//		val, err := EnumUnmarshalJSON[TypeX](data, TypeXMap)
+//		if err != nil {
+//			return err
+//		}
+//		*s = val
+//		return nil
+//	}
+func EnumUnmarshalJSON[T Enum](data []byte, mapping []string) (T, error) {
+	var strData string
+	if err := sonic.Unmarshal(data, &strData); err != nil {
+		return T(0), err
+	}
+	return EnumFromString[T](strData, mapping), nil
+}
