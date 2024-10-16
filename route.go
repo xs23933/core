@@ -141,12 +141,12 @@ func (app *Core) adjustPathCase(uri string) string {
 }
 
 func (app *Core) AddHandle(methods []string, uri string, group *Group, handler any, middleware ...HandlerFunc) Router {
-	// handlers := middware
-	// if handler != nil {
-	// 	handlers = append(handlers, app.processedHandler(handler)...)
-	// }
+	handlers := middleware
+	if handler != nil {
+		handlers = append(handlers, app.processedHandler(handler)...)
+	}
 	// 合并中间件和处理器
-	handlers := append(middleware, app.processedHandler(handler)...)
+	// handlers := append(middleware, app.processedHandler(handler)...)
 	if len(handlers) == 0 {
 		panic(fmt.Sprintf("missing handler/middleware in route: %s\n", uri))
 	}
