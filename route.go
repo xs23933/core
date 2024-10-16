@@ -323,7 +323,7 @@ func (app *Core) next(c *BaseCtx) (bool, error) {
 	if !c.matched && app.methodExist(c) {
 		// If no match, scan stack again if other methods match the request
 		// Moved from app.handler because middleware may break the route chain
-		err = ErrMethodNotAllowed
+		err = ErrNotFound
 	}
 	return false, err
 }
