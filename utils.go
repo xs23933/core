@@ -121,6 +121,11 @@ type Error struct {
 	Message string `json:"message"`
 }
 
+type Errors interface {
+	Error() string
+	Errors() (int, string)
+}
+
 // NewError creates a new Error instance with an optional message
 func NewError(code int, message ...string) *Error {
 	err := &Error{
@@ -131,6 +136,10 @@ func NewError(code int, message ...string) *Error {
 		err.Message = message[0]
 	}
 	return err
+}
+
+func (e *Error) Errors() (int, string) {
+	return e.Code, e.Message
 }
 
 // Error makes it compatible with the `error` interface.

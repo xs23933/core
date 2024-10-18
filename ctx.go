@@ -884,13 +884,15 @@ func (c *BaseCtx) JSON(data any) error {
 func (c *BaseCtx) ToJSONCode(data any, msg ...any) error {
 	dat := Map{}
 	dat[c.respJsonKeys.Data] = data
-	dat[c.respJsonKeys.Status] = c.respJsonKeys.Code
+	dat["code"] = c.respJsonKeys.Code
 	for _, v := range msg {
 		switch d := v.(type) {
 		case int, int32, int16, int8:
-			dat[c.respJsonKeys.Status] = d
+			dat["code"] = d
 		case string:
 			dat[c.respJsonKeys.Message] = d
+		case Errors:
+			dat["code"], dat[c.respJsonKeys.Message] = d.Errors()
 		case error:
 			dat[c.respJsonKeys.Message] = d.Error()
 		}

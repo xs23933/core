@@ -11,7 +11,6 @@ func main() {
 	app.Use(cros.New())
 
 	app.Use(func(c core.Ctx) error {
-		c.SendString("preload")
 		return c.Next()
 	})
 
@@ -20,10 +19,10 @@ func main() {
 	})
 
 	app.Get("/what", func(c core.Ctx) {
-		c.SendString("fuck man body")
+		c.ToJSONCode(nil, core.NewError(12312, "asfasdf"))
 	})
 
-	if err := app.Listen(8080); err != nil {
+	if err := app.Listen(8081); err != nil {
 		panic(err)
 	}
 }
