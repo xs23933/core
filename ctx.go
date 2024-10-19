@@ -2,6 +2,7 @@ package core
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/xml"
 	"fmt"
@@ -88,6 +89,7 @@ type Ctx interface {
 	GetInt64(key string, def ...int64) (i int64)
 	GetUint(key string, def ...uint) (i uint)
 	GetUint64(key string, def ...uint64) (i uint64)
+	GetUUID(key string, def ...UUID) (v UUID)
 	GetFloat64(key string, def ...float64) (value float64)
 	GetTime(key string) (t time.Time)
 	GetDuration(key string) (d time.Duration)
@@ -211,6 +213,7 @@ func (c *BaseCtx) ReadBody(out any) error {
 		if err != nil {
 			return err
 		}
+		c.R.Body = io.NopCloser(bytes.NewBuffer(body))
 		return sonic.Unmarshal(body, out)
 	case strings.HasPrefix(ctype, MIMEApplicationForm):
 		schemaDecoder.SetAliasTag("form")
@@ -230,6 +233,7 @@ func (c *BaseCtx) ReadBody(out any) error {
 		if err != nil {
 			return err
 		}
+		c.R.Body = io.NopCloser(bytes.NewBuffer(body))
 		return xml.Unmarshal(body, out)
 	}
 	// No suitable content type found
@@ -430,6 +434,20 @@ func (c *BaseCtx) GetUint64(key string, def ...uint64) (i uint64) {
 		return def[0]
 	}
 	return
+}
+
+func (c *BaseCtx) GetUUID(key string, def ...UUID) (v UUID) {
+	if val, ok := c.Get(key); ok && val != nil {
+		if value, ok := val.(string); ok {
+			if v, err := UUIDFromString(value); err == nil {
+				return v
+			}
+		}
+	}
+	if len(def) > 0 {
+		return def[0]
+	}
+	return NewUUID()
 }
 
 // GetFloat64 returns the value associated with the key as a float64.
