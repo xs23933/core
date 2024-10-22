@@ -381,13 +381,22 @@ func (m *Money) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-func MoneyFromString(s string) (Money, error) {
-	s = strings.ReplaceAll(s, ",", "")
-	value, err := strconv.ParseFloat(s, 64)
-	if err != nil {
-		return 0, err
+func ParseMoney(val any) Money {
+	switch v := val.(type) {
+	case string:
+		v = strings.ReplaceAll(v, ",", "")
+		f, _ := strconv.ParseFloat(v, 64)
+		return Money(f)
+	case float64:
+		return Money(v)
+	case int:
+		return Money(v)
+	case int64:
+		return Money(v)
+	default:
+		f, _ := strconv.ParseFloat(fmt.Sprintf("%v", v), 64)
+		return Money(f)
 	}
-	return Money(value), nil
 }
 
 type Int int64
