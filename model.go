@@ -352,6 +352,10 @@ func (m Money) Float64() float64 {
 	return float64(m)
 }
 
+func (m Money) Int() Int {
+	return Int(int64(math.Floor(m.Float64())))
+}
+
 // GormDataType schema.Field DataType
 func (Money) GormDataType() string {
 	return "DOUBLE"
@@ -366,12 +370,24 @@ func (m *Money) UnmarshalJSON(data []byte) error {
 			return err
 		}
 	}
+	// 移除千分位逗号
+	str = strings.ReplaceAll(str, ",", "")
+
 	tmp, err := strconv.ParseFloat(str, 64)
 	if err != nil {
 		return err
 	}
 	*m = Money(tmp)
 	return nil
+}
+
+func MoneyFromString(s string) (Money, error) {
+	s = strings.ReplaceAll(s, ",", "")
+	value, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0, err
+	}
+	return Money(value), nil
 }
 
 type Int int64
