@@ -19,6 +19,10 @@ import (
 	"github.com/davecgh/go-spew/spew"
 	"github.com/xs23933/core/v2"
 	view "github.com/xs23933/core/v2/middleware/view"
+	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/extension"
+	"github.com/yuin/goldmark/parser"
+	"github.com/yuin/goldmark/renderer/html"
 )
 
 type HtmlEngine struct {
@@ -155,8 +159,22 @@ func (ve *HtmlEngine) Load() error {
 		if info == nil || info.IsDir() { // Skip file if it's a directory or has no file info
 			return nil
 		}
+		found := false
+		md := false
+		for _, it := range []string{ve.Ext, ".md"} {
+			ext := path[len(path)-len(it):]
+			if ext == it {
+				if it == ".md" {
+					md = true
+				} else {
+					md = false
+				}
+				found = true
+				break
+			}
+		}
 		// Skip file if it does not equal the given template Extension
-		if len(ve.Ext) >= len(path) || path[len(path)-len(ve.Ext):] != ve.Ext {
+		if !found {
 			return nil
 		}
 
@@ -167,12 +185,33 @@ func (ve *HtmlEngine) Load() error {
 
 		name := filepath.ToSlash(rel)           // Reverse slashes '\' -> '/' and e.g part\head.html -> part/head.html
 		name = strings.TrimSuffix(name, ve.Ext) // Remove ext from name 'index.html' -> 'index'
+		name = strings.TrimSuffix(name, ".md")
 
 		buf, err := view.ReadFile(path, ve.FileSystem)
 		if err != nil {
 			return err
 		}
 
+		if md {
+			// 转换markdown 为 html
+			markdown := goldmark.New(
+				goldmark.WithExtensions(extension.GFM),
+				goldmark.WithParserOptions(
+					parser.WithAutoHeadingID(),
+				),
+				goldmark.WithRendererOptions(
+					html.WithHardWraps(),
+					html.WithXHTML(),
+				),
+			)
+			var buff bytes.Buffer
+			markdown.Convert(buf, &buff)
+			replacer := strings.NewReplacer(
+				"{{", `{{"{{"}}`,
+				"}}", `{{"}}"}}`,
+			)
+			buf = []byte(replacer.Replace(buff.String()))
+		}
 		// Create new template associated with the current one
 		// This enable use to invoke other templates {{ template .. }}
 		_, err = ve.Templates.New(name).Parse(string(buf))
@@ -235,6 +274,26 @@ var templateHelpers = template.FuncMap{
 	"json": func(src any) template.HTML {
 		v, _ := sonic.MarshalString(src)
 		return template.HTML(v)
+	},
+	"markdown": func(src string) template.HTML {
+		md := goldmark.New(
+			goldmark.WithExtensions(extension.GFM),
+			goldmark.WithParserOptions(
+				parser.WithAutoHeadingID(),
+			),
+			goldmark.WithRendererOptions(
+				html.WithHardWraps(),
+				html.WithXHTML(),
+			),
+		)
+		var buf bytes.Buffer
+		md.Convert([]byte(src), &buf)
+		replacer := strings.NewReplacer(
+			"{{", "{\\{",
+			"{{", "}\\}",
+		)
+		str := replacer.Replace(buf.String())
+		return template.HTML(str)
 	},
 	// Skips sanitation on the parameter.  Do not use with dynamic data.
 	"raw": func(text string) template.HTML {

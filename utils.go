@@ -19,19 +19,6 @@ import (
 	"github.com/xs23933/uid"
 )
 
-func Index[S ~[]E, E comparable](s S, v E) int {
-	for i := range s {
-		if v == s[i] {
-			return i
-		}
-	}
-	return -1
-}
-
-func Contains[S ~[]E, E comparable](s S, v E) bool {
-	return Index(s, v) >= 0
-}
-
 func lastChar(str string) uint8 {
 	if str == "" {
 		panic("The length of the string can't be 0")
@@ -598,4 +585,26 @@ func watchMaster() {
 			os.Exit(1) //nolint:revive // Calling os.Exit is fine here in the prefork
 		}
 	}
+}
+
+func Index[S ~[]E, E comparable](s S, v E) int {
+	for i := range s {
+		if v == s[i] {
+			return i
+		}
+	}
+	return -1
+}
+
+func Contains[S ~[]E, E comparable](s S, v E) bool {
+	return Index(s, v) >= 0
+}
+
+// 删除指定元素
+func Remove[T comparable](elems []T, v T) []T {
+	idx := Index(elems, v)
+	if idx > -1 {
+		elems = append(elems[:idx], elems[idx+1:]...)
+	}
+	return elems
 }
