@@ -161,10 +161,10 @@ func (ve *HtmlEngine) Load() error {
 		}
 		found := false
 		md := false
-		for _, it := range []string{ve.Ext, ".md"} {
+		for _, it := range []string{ve.Ext, ".http"} {
 			ext := path[len(path)-len(it):]
 			if ext == it {
-				if it == ".md" {
+				if it == ".http" {
 					md = true
 				} else {
 					md = false
@@ -185,7 +185,7 @@ func (ve *HtmlEngine) Load() error {
 
 		name := filepath.ToSlash(rel)           // Reverse slashes '\' -> '/' and e.g part\head.html -> part/head.html
 		name = strings.TrimSuffix(name, ve.Ext) // Remove ext from name 'index.html' -> 'index'
-		name = strings.TrimSuffix(name, ".md")
+		name = strings.TrimSuffix(name, ".http")
 
 		buf, err := view.ReadFile(path, ve.FileSystem)
 		if err != nil {
