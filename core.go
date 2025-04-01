@@ -56,6 +56,7 @@ type Core struct {
 	enablePrefork      bool
 	networkProto       string
 	Views              view.IEngine
+	TextEngine         view.ITextEngine
 }
 
 // core implements Router.
@@ -426,6 +427,8 @@ func anyToHandlers(app *Core, fn ...any) (prefixes []string, handlers []any) {
 			prefix = arg
 		case []string:
 			prefixes = arg
+		case view.ITextEngine:
+			app.TextEngine = arg
 		case view.IEngine:
 			app.Views = arg
 		case HandlerFun, HandlerFunc, http.HandlerFunc, http.Handler:

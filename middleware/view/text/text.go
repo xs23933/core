@@ -100,6 +100,10 @@ func NewTextEngine(directory any, extension string, args ...any) *TextEngine {
 	return engine
 }
 
+func (ve *TextEngine) Text() string {
+	return "text"
+}
+
 func (ve *TextEngine) Execute(out io.Writer, tpl string, binding any, layout ...string) error {
 	if !ve.Loaded || ve.Verbose {
 		if err := ve.Load(); err != nil {
@@ -156,7 +160,6 @@ func (ve *TextEngine) Load() error {
 				return nil
 			}
 		}
-
 		rel, err := filepath.Rel(ve.Directory, path) // get the relative file path
 		if err != nil {
 			return err
@@ -178,7 +181,7 @@ func (ve *TextEngine) Load() error {
 			return err
 		}
 		if ve.Verbose {
-			core.D("Views: load template: %s\n", name)
+			core.D("TextEngine: load template: %s\n", name)
 		}
 		return err
 	}
@@ -199,7 +202,7 @@ func (ve *TextEngine) lookup(tpl string) *template.Template {
 		tmpl := ve.Templates.Lookup(themeTpl)
 		if tmpl != nil {
 			if ve.Verbose {
-				core.D("Views: load template: %s%s", themeTpl, ve.Ext)
+				core.D("TextEngine: load template: %s%s", themeTpl, ve.Ext)
 			}
 			return tmpl
 		}
@@ -210,7 +213,7 @@ func (ve *TextEngine) lookup(tpl string) *template.Template {
 				tmpl = ve.Templates.Lookup(themeTpl)
 				if tmpl != nil {
 					if ve.Verbose {
-						core.D("Views: load template: %s%s", themeTpl, ve.Ext)
+						core.D("TextEngine: load template: %s%s", themeTpl, ve.Ext)
 					}
 					return tmpl
 				}
@@ -218,7 +221,6 @@ func (ve *TextEngine) lookup(tpl string) *template.Template {
 		}
 	}
 	// the default theme template will be presented if not found
-	core.D("Views: load template: %s%s", tpl, ve.Ext)
 	return ve.Templates.Lookup(tpl)
 }
 

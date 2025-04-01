@@ -14,6 +14,12 @@ type IEngine interface {
 	IEngineView
 	Execute(out io.Writer, tpl string, binding any, layout ...string) error
 }
+
+type ITextEngine interface {
+	IEngine
+	Text() string
+}
+
 type IEngineView interface {
 	AddFunc(name string, fn any)
 	AddFuncMap(m map[string]any)

@@ -102,6 +102,8 @@ type Ctx interface {
 	Stream(step func(w io.Writer) bool) bool
 	ViewReload() // set view reload
 	Render(f string, bind ...any) error
+	TextBytes(out io.Writer, f string, bind ...any) error
+	TextRender(f string, bind ...any) error
 }
 
 type BaseCtx struct {
@@ -171,6 +173,54 @@ func (c *BaseCtx) Render(f string, bind ...any) error {
 		c.SendStatus(StatusInternalServerError, err.Error())
 	}
 	return err
+}
+
+func (c *BaseCtx) TextRender(f string, bind ...any) error {
+	var err error
+	var binding any
+	if len(bind) > 0 {
+		binding = bind[0]
+	} else {
+		c.mu.RLock()
+		binding = c.vars
+		c.mu.RUnlock()
+	}
+
+	if c.app.TextEngine == nil {
+		err = fmt.Errorf("Render: Not Initial TextEngine")
+		Erro(err.Error())
+		return err
+	}
+	if c.theme != "" {
+		c.app.TextEngine.SetTheme(c.theme)
+	}
+	err = c.app.TextEngine.Execute(c.W, f, binding)
+	if err != nil {
+		c.SendStatus(StatusInternalServerError, err.Error())
+	}
+	return err
+}
+
+func (c *BaseCtx) TextBytes(out io.Writer, f string, bind ...any) error {
+	var err error
+	var binding any
+	if len(bind) > 0 {
+		binding = bind[0]
+	} else {
+		c.mu.RLock()
+		binding = c.vars
+		c.mu.RUnlock()
+	}
+
+	if c.app.TextEngine == nil {
+		err = fmt.Errorf("Render: Not Initial TextEngine")
+		Erro(err.Error())
+		return err
+	}
+	if c.theme != "" {
+		c.app.TextEngine.SetTheme(c.theme)
+	}
+	return c.app.TextEngine.Execute(out, f, binding)
 }
 
 // Stream sends a streaming response and returns a boolean
