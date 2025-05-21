@@ -309,31 +309,31 @@ func (app *Core) Use(fn ...any) Router {
 // of the specified resource. Requests using GET should only retrieve data.
 //
 
-func (app *Core) Get(path string, handler any, middleware ...any) Router {
+func (app *Core) GET(path string, handler any, middleware ...any) Router {
 	return app.Add([]string{MethodGet}, path, handler, middleware...)
 }
-func (app *Core) Head(path string, handler any, middleware ...any) Router {
+func (app *Core) HEAD(path string, handler any, middleware ...any) Router {
 	return app.Add([]string{MethodHead}, path, handler, middleware...)
 }
-func (app *Core) Post(path string, handler any, middleware ...any) Router {
+func (app *Core) POST(path string, handler any, middleware ...any) Router {
 	return app.Add([]string{MethodPost}, path, handler, middleware...)
 }
-func (app *Core) Put(path string, handler any, middleware ...any) Router {
+func (app *Core) PUT(path string, handler any, middleware ...any) Router {
 	return app.Add([]string{MethodPut}, path, handler, middleware...)
 }
-func (app *Core) Delete(path string, handler any, middleware ...any) Router {
+func (app *Core) DELETE(path string, handler any, middleware ...any) Router {
 	return app.Add([]string{MethodDelete}, path, handler, middleware...)
 }
-func (app *Core) Connect(path string, handler any, middleware ...any) Router {
+func (app *Core) CONNECT(path string, handler any, middleware ...any) Router {
 	return app.Add([]string{MethodConnect}, path, handler, middleware...)
 }
-func (app *Core) Options(path string, handler any, middleware ...any) Router {
+func (app *Core) OPTIONS(path string, handler any, middleware ...any) Router {
 	return app.Add([]string{MethodOptions}, path, handler, middleware...)
 }
-func (app *Core) Trace(path string, handler any, middleware ...any) Router {
+func (app *Core) TRACE(path string, handler any, middleware ...any) Router {
 	return app.Add([]string{MethodTrace}, path, handler, middleware...)
 }
-func (app *Core) Patch(path string, handler any, middleware ...any) Router {
+func (app *Core) PATCH(path string, handler any, middleware ...any) Router {
 	return app.Add([]string{MethodPatch}, path, handler, middleware...)
 }
 
@@ -347,8 +347,8 @@ func (app *Core) StaticFS(relativePath string, fs http.FileSystem) Router {
 	}
 	handle := app.staticHandler(relativePath, fs)
 	uri := path.Join(relativePath, "*")
-	app.Get(uri, handle)
-	app.Head(uri, handle)
+	app.GET(uri, handle)
+	app.HEAD(uri, handle)
 	return app
 }
 
@@ -376,8 +376,8 @@ func (app *Core) staticFileHandler(relativePath string, handler HandlerFunc) Rou
 	if strings.Contains(relativePath, ":") || strings.Contains(relativePath, "*") {
 		panic("URL parameters can not be used when serving a static file")
 	}
-	app.Get(relativePath, handler)
-	app.Head(relativePath, handler)
+	app.GET(relativePath, handler)
+	app.HEAD(relativePath, handler)
 	return app
 }
 

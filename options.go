@@ -147,7 +147,7 @@ func LoadConfigFile(file string, opts ...Options) Options {
 		yml, _ := yaml.Marshal(conf)
 		os.WriteFile(file, yml, 0644)
 	} else if err = yaml.Unmarshal(buf, &conf); err != nil {
-		log.Fatalf(err.Error())
+		log.Println(err.Error())
 	}
 	confFile = file
 	return conf

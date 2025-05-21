@@ -13,6 +13,15 @@ import (
 type Router interface {
 	Use(args ...any) Router
 	core() *Core
+	GET(path string, handler any, middleware ...any) Router
+	HEAD(path string, handler any, middleware ...any) Router
+	POST(path string, handler any, middleware ...any) Router
+	PUT(path string, handler any, middleware ...any) Router
+	DELETE(path string, handler any, middleware ...any) Router
+	CONNECT(path string, handler any, middleware ...any) Router
+	OPTIONS(path string, handler any, middleware ...any) Router
+	TRACE(path string, handler any, middleware ...any) Router
+	PATCH(path string, handler any, middleware ...any) Router
 }
 
 type Route struct {

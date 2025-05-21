@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/go-playground/validator/v10"
 	"github.com/gorilla/schema"
 	"github.com/xs23933/uid"
 )
@@ -34,6 +35,8 @@ type Ctx interface {
 	Cookie(cookie *http.Cookie)                                                 // set cookie with cookie object
 	Cookies(name string) (string, error)                                        // get some cookie
 	ReadBody(out any) error                                                     // read put post any request body to struct or map
+	BodyParser(out any) error                                                   // read put post form data to struct or map
+	Validate(out any) error                                                     // validate struct or map
 	Next() error                                                                // next HandlerFunc
 	Path() string                                                               // return http.Request.URI.path
 	init(*Core, http.ResponseWriter, *http.Request)                             // Core call
@@ -48,7 +51,7 @@ type Ctx interface {
 	Status(code int) Ctx                                                        // set response status
 	Core() *Core                                                                // return app(*Core)
 	Abort(args ...any) Ctx                                                      // Deprecated: As of v2.0.0, this function simply calls Ctx.Format.
-	JSON(any) error                                                             // send json
+	JSON(any, ...int) error                                                     // send json
 	JSONP(data any, callback ...string) error                                   // send jsonp
 	ToJSON(data any, msg ...any) error                                          // send json with status
 	ToJSONCode(data any, msg ...any) error                                      // send have code to json
@@ -56,6 +59,7 @@ type Ctx interface {
 	Params(key string, defaultValue ...string) string                           // get Param data e.g c.Param("param")
 	ParamsUid(key string, defaultValue ...uid.UID) (uid.UID, error)             // get Param UID type, return uid.Nil if failed
 	ParamsUuid(key string, defaultValue ...UUID) (UUID, error)                  // get Param UID type, return uid.Nil if failed
+	ParamUUID(key string, defaultValue ...UUID) UUID                            // get Param UUID type, return uid.Nil if failed
 	ParamsInt(key string, defaultValue ...int) (int, error)                     // get Param int type, return -1 if failed
 	GetParamUid(key string, defaultValue ...uid.UID) (uid.UID, error)           // get param uid.UID, return uid.Nil if failed
 	GetParamInt(key string, defaultValue ...int) (int, error)                   // get param int, return -1 if failed
@@ -67,6 +71,7 @@ type Ctx interface {
 	SaveFile(key, dst string, args ...any) (relpath, abspath string, err error) // upload some one file
 	SaveFiles(key, dst string, args ...any) (rel Array, err error)              // upload multi-file
 	Query(key string, def ...string) string                                     // get request query string like ?id=12345
+	QueryInt(key string, def ...int) int                                        // parse form value to int
 	Querys(key string, def ...[]string) []string                                // like query, but return []string values
 	FormValue(key string, def ...string) string                                 // like Query support old version
 	FromValueInt(key string, def ...int) int                                    // parse form value to int
@@ -288,6 +293,35 @@ func (c *BaseCtx) ReadBody(out any) error {
 	}
 	// No suitable content type found
 	return ErrUnprocessableEntity
+}
+
+// BodyParser parses the request body into the provided 'out' parameter.
+// It delegates the actual parsing to the ReadBody method.
+func (c *BaseCtx) BodyParser(out any) error {
+	return c.ReadBody(out)
+}
+
+// 全局验证器实例
+// 自定义错误类型
+var (
+	ErrInvalidValidationType = NewError(400, "验证类型必须是结构体指针")
+	validate                 = validator.New()
+)
+
+// Validate 验证传入的结构体
+func (c *BaseCtx) Validate(out any) error {
+	// 检查是否是结构体指针
+	val := reflect.ValueOf(out)
+	if val.Kind() != reflect.Ptr || val.Elem().Kind() != reflect.Struct {
+		return ErrInvalidValidationType
+	}
+
+	// 执行验证
+	if err := validate.Struct(out); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // Cookie
@@ -677,6 +711,19 @@ func (c *BaseCtx) Query(key string, def ...string) string {
 	return defaultString("", def)
 }
 
+func (c *BaseCtx) QueryInt(key string, def ...int) int {
+	val := c.Query(key)
+	if val != "" {
+		if v, err := strconv.Atoi(val); err == nil {
+			return v
+		}
+	}
+	if len(def) > 0 {
+		return def[0]
+	}
+	return -1
+}
+
 // FormValue support old version
 func (c *BaseCtx) FormValue(key string, def ...string) string {
 	return c.Query(key, def...)
@@ -939,10 +986,14 @@ func (c *BaseCtx) StartAt(t ...time.Time) time.Time {
 	}
 	return c.startAt
 }
-func (c *BaseCtx) JSON(data any) error {
+func (c *BaseCtx) JSON(data any, code ...int) error {
+
 	raw, err := sonic.Marshal(data)
 	if err != nil {
 		return err
+	}
+	if len(code) > 0 {
+		c.W.WriteHeader(code[0])
 	}
 	c.W.Header().Set(HeaderContentType, MIMEApplicationJSONCharsetUTF8)
 	_, err = c.W.Write(raw)
@@ -1074,6 +1125,11 @@ func (c *BaseCtx) ParamsUuid(key string, defaultValue ...UUID) (UUID, error) {
 		return UuidNil, fmt.Errorf("failed to convert: %w", err)
 	}
 	return value, nil
+}
+
+func (c *BaseCtx) ParamUUID(key string, defaultValue ...UUID) UUID {
+	ret, _ := c.ParamsUuid(key, defaultValue...)
+	return ret
 }
 
 // ParamsInt get int param, return -1 if failed

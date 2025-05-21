@@ -84,33 +84,33 @@ func (g *Group) Use(fn ...any) Router {
 
 // Get registers a route for GET methods that requests a representation
 // of the specified resource. Requests using GET should only retrieve data.
-func (g *Group) Get(path string, handler any, middleware ...any) Router {
+func (g *Group) GET(path string, handler any, middleware ...any) Router {
 	return g.Add([]string{MethodGet}, path, handler, middleware...)
 }
 
-func (g *Group) Head(path string, handler any, middleware ...any) Router {
+func (g *Group) HEAD(path string, handler any, middleware ...any) Router {
 	return g.Add([]string{MethodHead}, path, handler, middleware...)
 }
 
-func (g *Group) Post(path string, handler any, middleware ...any) Router {
+func (g *Group) POST(path string, handler any, middleware ...any) Router {
 	return g.Add([]string{MethodPost}, path, handler, middleware...)
 }
-func (g *Group) Put(path string, handler any, middleware ...any) Router {
+func (g *Group) PUT(path string, handler any, middleware ...any) Router {
 	return g.Add([]string{MethodPut}, path, handler, middleware...)
 }
-func (g *Group) Delete(path string, handler any, middleware ...any) Router {
+func (g *Group) DELETE(path string, handler any, middleware ...any) Router {
 	return g.Add([]string{MethodDelete}, path, handler, middleware...)
 }
-func (g *Group) Connect(path string, handler any, middleware ...any) Router {
+func (g *Group) CONNECT(path string, handler any, middleware ...any) Router {
 	return g.Add([]string{MethodConnect}, path, handler, middleware...)
 }
-func (g *Group) Options(path string, handler any, middleware ...any) Router {
+func (g *Group) OPTIONS(path string, handler any, middleware ...any) Router {
 	return g.Add([]string{MethodOptions}, path, handler, middleware...)
 }
-func (g *Group) Trace(path string, handler any, middleware ...any) Router {
+func (g *Group) TRACE(path string, handler any, middleware ...any) Router {
 	return g.Add([]string{MethodTrace}, path, handler, middleware...)
 }
-func (g *Group) Patch(path string, handler any, middleware ...any) Router {
+func (g *Group) PATCH(path string, handler any, middleware ...any) Router {
 	return g.Add([]string{MethodPatch}, path, handler, middleware...)
 }
 

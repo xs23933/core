@@ -17,16 +17,27 @@ func main() {
 		return c.Next()
 	})
 
-	app.Get("/", func(c core.Ctx) {
+	app.GET("/", func(c core.Ctx) {
 		c.SendString("what happend")
 	})
 
-	app.Get("/what", func(c core.Ctx) {
+	app.GET("/what", func(c core.Ctx) {
 		c.ToJSONCode(nil, core.NewError(12312, "asfasdf"))
 	})
 
-	app.Get("/md", func(c core.Ctx) {
+	app.GET("/md", func(c core.Ctx) {
 		c.Render("test")
+	})
+
+	app.POST("/test", func(c core.Ctx) {
+		c.SendString("what happend post 1")
+	})
+	api := app.Group("/api")
+	api.GET("/test", func(c core.Ctx) {
+		c.SendString("test")
+	})
+	api.POST("test2", func(c core.Ctx) {
+		c.SendString("what happend post")
 	})
 
 	if err := app.Listen(8081); err != nil {
