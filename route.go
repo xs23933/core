@@ -22,6 +22,7 @@ type Router interface {
 	OPTIONS(path string, handler any, middleware ...any) Router
 	TRACE(path string, handler any, middleware ...any) Router
 	PATCH(path string, handler any, middleware ...any) Router
+	ALL(path string, handler any, middleware ...any) Router
 }
 
 type Route struct {

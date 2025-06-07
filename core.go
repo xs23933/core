@@ -337,6 +337,10 @@ func (app *Core) PATCH(path string, handler any, middleware ...any) Router {
 	return app.Add([]string{MethodPatch}, path, handler, middleware...)
 }
 
+func (app *Core) ALL(path string, handler any, middleware ...any) Router {
+	return app.ALL(path, handler, middleware...)
+}
+
 func (app *Core) Static(relativePath, root string) Router {
 	return app.StaticFS(relativePath, Dir(root, false))
 }

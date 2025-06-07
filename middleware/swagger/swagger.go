@@ -187,7 +187,7 @@ func Handler(configFns ...func(*Config)) core.HandlerFunc {
 	// create a template with name
 	index, _ := template.New("swagger_index.html").Parse(indexTempl)
 
-	re := regexp.MustCompile(`^(.*/)([^?].*)?[?|.]*$`)
+	re := regexp.MustCompile(`(.*)(index\.html|doc\.json|favicon-16x16\.png|favicon-32x32\.png|/oauth2-redirect\.html|swagger-ui\.css|swagger-ui\.css\.map|swagger-ui\.js|swagger-ui\.js\.map|swagger-ui-bundle\.js|swagger-ui-bundle\.js\.map|swagger-ui-standalone-preset\.js|swagger-ui-standalone-preset\.js\.map)[?|.]*`)
 
 	return func(c core.Ctx) error {
 		if c.Method() != http.MethodGet {
@@ -195,10 +195,8 @@ func Handler(configFns ...func(*Config)) core.HandlerFunc {
 			return nil
 		}
 
-		matches := re.FindStringSubmatch(c.Request().RequestURI)
-
+		matches := re.FindStringSubmatch(c.Path())
 		path := matches[2]
-
 		switch filepath.Ext(path) {
 		case ".html":
 			c.SetHeader(core.HeaderContentType, core.MIMETextHTMLCharsetUTF8)
@@ -221,7 +219,6 @@ func Handler(configFns ...func(*Config)) core.HandlerFunc {
 				c.SendStatus(http.StatusInternalServerError, "Internal Server Error")
 				return nil
 			}
-
 			_ = c.SendString(doc)
 		case "":
 			c.Redirect(matches[1]+"index.html", http.StatusMovedPermanently)
