@@ -1,4 +1,4 @@
-package httpSwagger
+package swagger
 
 import (
 	"html/template"
@@ -89,6 +89,10 @@ func Plugins(plugins []string) func(*Config) {
 }
 
 // UIConfig specifies additional SwaggerUIBundle config object properties.
+// UIConfig returns a function that configures the swagger UI with custom properties.
+// The input props map is converted to use template.JS type for both keys and values
+// to ensure safe usage in HTML templates. The returned function sets these properties
+// in the provided Config's UIConfig field.
 func UIConfig(props map[string]string) func(*Config) {
 	return func(c *Config) {
 		vs := make(map[template.JS]template.JS, len(props))
