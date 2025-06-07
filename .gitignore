@@ -11,4 +11,3 @@ dat
 *_test.go
 *.http
 *debug*
-*.sum
