@@ -10,7 +10,7 @@ require (
 	github.com/gorilla/schema v1.4.1
 	github.com/mattn/go-isatty v0.0.20
 	github.com/stretchr/testify v1.9.0
-	github.com/swaggo/files/v2 v2.0.2
+	github.com/swaggo/files/v2 v2.0.44
 	github.com/swaggo/swag v1.16.4
 	github.com/xs23933/uid v1.0.3
 	github.com/yuin/goldmark v1.7.8
