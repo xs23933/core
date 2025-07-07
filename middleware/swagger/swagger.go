@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"regexp"
+	"strings"
 
 	swaggerFiles "github.com/swaggo/files/v2"
 	"github.com/swaggo/swag"
@@ -31,6 +32,7 @@ type Config struct {
 	Layout                   SwaggerLayout
 	DefaultModelsExpandDepth ModelsExpandDepthType
 	ShowExtensions           bool
+	Dir                      string
 }
 
 // URL presents the url pointing to API definition (normally swagger.json or swagger.yaml).
@@ -166,6 +168,7 @@ func newConfig(configFns ...func(*Config)) *Config {
 		Layout:                   StandaloneLayout,
 		DefaultModelsExpandDepth: ShowModel,
 		ShowExtensions:           false,
+		Dir:                      "/swagger",
 	}
 
 	for _, fn := range configFns {
@@ -195,9 +198,19 @@ func Handler(configFns ...func(*Config)) core.HandlerFunc {
 			return nil
 		}
 
-		matches := re.FindStringSubmatch(c.Path())
-		path := matches[2]
-		switch filepath.Ext(path) {
+		uri := c.Path()
+		// 查询 uri 必须有 2 个 /
+		if !re.MatchString(uri) {
+			c.Redirect(uri + "/index.html")
+		}
+		matches := re.FindStringSubmatch(uri)
+		indexFile := "index.html"
+
+		if len(matches) >= 2 {
+			indexFile = matches[2]
+			config.Dir = strings.TrimSuffix(matches[1], "/")
+		}
+		switch filepath.Ext(indexFile) {
 		case ".html":
 			c.SetHeader(core.HeaderContentType, core.MIMETextHTMLCharsetUTF8)
 		case ".css":
@@ -210,7 +223,7 @@ func Handler(configFns ...func(*Config)) core.HandlerFunc {
 			c.SetHeader(core.HeaderContentType, core.MIMEApplicationJSONCharsetUTF8)
 		}
 
-		switch path {
+		switch indexFile {
 		case "index.html":
 			_ = index.Execute(c.Response(), config)
 		case "doc.json":
@@ -220,12 +233,10 @@ func Handler(configFns ...func(*Config)) core.HandlerFunc {
 				return nil
 			}
 			_ = c.SendString(doc)
-		case "":
-			c.Redirect(matches[1]+"index.html", http.StatusMovedPermanently)
 		default:
 			var err error
 			r := c.Request()
-			r.URL, err = url.Parse(matches[2])
+			r.URL, err = url.Parse(indexFile)
 			if err != nil {
 				c.SendStatus(http.StatusInternalServerError, "Internal Server Error")
 				return nil
@@ -242,9 +253,9 @@ const indexTempl = `<!-- HTML for static distribution bundle build -->
 <head>
   <meta charset="UTF-8">
   <title>Swagger UI</title>
-  <link rel="stylesheet" type="text/css" href="./swagger-ui.css" >
-  <link rel="icon" type="image/png" href="./favicon-32x32.png" sizes="32x32" />
-  <link rel="icon" type="image/png" href="./favicon-16x16.png" sizes="16x16" />
+  <link rel="stylesheet" type="text/css" href="{{.Dir}}/swagger-ui.css" >
+  <link rel="icon" type="image/png" href="{{.Dir}}/favicon-32x32.png" sizes="32x32" />
+  <link rel="icon" type="image/png" href="{{.Dir}}/favicon-16x16.png" sizes="16x16" />
   <style>
     html
     {
@@ -302,8 +313,8 @@ const indexTempl = `<!-- HTML for static distribution bundle build -->
 
 <div id="swagger-ui"></div>
 
-<script src="./swagger-ui-bundle.js"> </script>
-<script src="./swagger-ui-standalone-preset.js"> </script>
+<script src="{{.Dir}}/swagger-ui-bundle.js"> </script>
+<script src="{{.Dir}}/swagger-ui-standalone-preset.js"> </script>
 <script>
 window.onload = function() {
   {{- if .BeforeScript}}

@@ -162,7 +162,9 @@ func New(options ...Options) *Core {
 	app.Use(Logger(LoggerConfig{ForceColor: colorful, App: app, Debug: app.Debug, Output: out}), Recovery())
 
 	if conf := Conf.GetMap("database"); conf != nil {
-		NewModel(conf, app.Debug, colorful)
+		if _, err := NewModel(conf, app.Debug, colorful); err != nil {
+			panic(err)
+		}
 	}
 	if !IsChild() {
 		Log(CoreHeader, VERSION)

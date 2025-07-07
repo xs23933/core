@@ -34,7 +34,7 @@ type Ctx interface {
 	RemoveCookie(name, path string, dom ...string)                              // remove some cookie
 	Cookie(cookie *http.Cookie)                                                 // set cookie with cookie object
 	Cookies(name string) (string, error)                                        // get some cookie
-	ReadBody(out any) error                                                     // read put post any request body to struct or map
+	ReadBody(out any, debug ...bool) error                                      // read put post any request body to struct or map
 	BodyParser(out any) error                                                   // read put post form data to struct or map
 	Validate(out any) error                                                     // validate struct or map
 	Next() error                                                                // next HandlerFunc
@@ -253,23 +253,40 @@ func (c *BaseCtx) Stream(step func(w io.Writer) bool) bool {
 // If none of the content types above are matched, it will return a ErrUnprocessableEntity error
 //
 //	out any MIMEApplicationForm MIMEMultipartForm MIMETextXML must struct
-func (c *BaseCtx) ReadBody(out any) error {
+func (c *BaseCtx) ReadBody(out any, debug ...bool) error {
 	// Get decoder from pool
 	schemaDecoder := decoderPool.Get().(*schema.Decoder)
 	defer decoderPool.Put(schemaDecoder)
 
 	// Get content-type
 	ctype := strings.ToLower(c.R.Header.Get(HeaderContentType))
-
 	switch {
 	case strings.HasPrefix(ctype, MIMEApplicationJSON):
 		schemaDecoder.SetAliasTag("json")
 		body, err := io.ReadAll(c.R.Body)
 		if err != nil {
+			if c.app.Debug || len(debug) > 0 && debug[0] {
+				Warn("header")
+				for v := range c.R.Header {
+					Warn("  %s:\t\t%s", v, c.GetHeader(v))
+				}
+				Erro("body: %s\nerr: %s", body, err.Error())
+			}
 			return err
 		}
+
 		c.R.Body = io.NopCloser(bytes.NewBuffer(body))
-		return sonic.Unmarshal(body, out)
+		if err = sonic.Unmarshal(body, out); err != nil {
+			if c.app.Debug || len(debug) > 0 && debug[0] {
+				Warn("header")
+				for v := range c.R.Header {
+					Warn("  %s:\t\t%s", v, c.GetHeader(v))
+				}
+
+				Erro("body: \n%s\nerr: %s", body, err.Error())
+			}
+		}
+		return err
 	case strings.HasPrefix(ctype, MIMEApplicationForm):
 		schemaDecoder.SetAliasTag("form")
 		if err := c.R.ParseForm(); err != nil {

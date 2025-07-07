@@ -9,6 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"reflect"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
@@ -16,6 +18,7 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
 	"github.com/xs23933/uid"
+	"gorm.io/driver/clickhouse"
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"
@@ -44,6 +47,10 @@ func NewModel(conf Options, debug, colorful bool) (*DB, error) {
 		dial = postgres.Open(dsn)
 	case "sqlite", "sqlite3":
 		dial = sqlite.Open(dsn)
+	case "clickhouse":
+		dial = clickhouse.Open(dsn)
+	default:
+		Erro("Unknown database type: %s", tp)
 	}
 	if !debug {
 		db, err = gorm.Open(dial)
@@ -73,7 +80,7 @@ func NewModel(conf Options, debug, colorful bool) (*DB, error) {
 type Model struct {
 	ID        uid.UID         `gorm:"size:12;primaryKey" json:"id,omitempty"`
 	CreatedAt time.Time       `json:"created_at" gorm:"<-:create"`
-	UpdatedAt time.Time       `json:"updated_at"`
+	UpdatedAt time.Time       `json:"updated_at" gorm:"autoUpdateTime"`
 	DeletedAt *gorm.DeletedAt `json:"deleted_at,omitempty" gorm:"index"`
 }
 
@@ -562,7 +569,7 @@ func UUIDFromString(s string) (UUID, error) {
 type Models struct {
 	ID        UUID            `json:"id,omitempty" gorm:"size:32;primaryKey"`
 	CreatedAt time.Time       `json:"created_at" gorm:"<-:create"`
-	UpdatedAt time.Time       `json:"updated_at"`
+	UpdatedAt time.Time       `json:"updated_at" gorm:"autoUpdateTime"`
 	DeletedAt *gorm.DeletedAt `json:"deleted_at,omitempty" gorm:"index"`
 }
 
@@ -847,8 +854,39 @@ func EnumMarshalJSON[T Enum](val T, mapping []string) ([]byte, error) {
 //	}
 func EnumUnmarshalJSON[T Enum](data []byte, mapping []string) (T, error) {
 	var strData string
-	if err := sonic.Unmarshal(data, &strData); err != nil {
+	if err := sonic.Unmarshal(data, &strData); err == nil {
+		return EnumFromString[T](strData, mapping), nil
+	}
+
+	var num float64
+	if err := sonic.Unmarshal(data, &num); err != nil {
 		return T(0), err
 	}
-	return EnumFromString[T](strData, mapping), nil
+	if !math.IsInf(num, 0) && num == math.Trunc(num) {
+		val := T(uint8(num))
+		if val >= 0 && val < T(len(mapping)) {
+			return val, nil
+		}
+	}
+	tType := reflect.TypeOf((*T)(nil)).Elem().Name()
+	return T(0), fmt.Errorf("invalid %v value: %v ", tType, data)
+}
+
+// WithTransaction
+//
+//	func (s *TypeX) WithTransaction(fn func(tx *core.DB) error) error {
+//		return WithTransaction(s.DB, fn)
+//	}
+func WithTransaction(tx *DB, fn func(tx *DB) error) error {
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+			Erro("WithTransaction error: %v, %s", r, debug.Stack())
+		}
+	}()
+	if err := fn(tx); err != nil {
+		tx.Rollback()
+		return err
+	}
+	return tx.Commit().Error
 }
