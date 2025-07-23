@@ -343,6 +343,13 @@ func (m Money) AddInt(in int, fraction ...int) Money {
 	return out
 }
 
+func (m Money) Abs() Money {
+	if m < 0 {
+		return -m
+	}
+	return m
+}
+
 // SubInt 减整数
 // m - in
 // fraction in 保留小数位

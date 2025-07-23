@@ -262,34 +262,68 @@ func (app *Core) buildTree() *Core {
 		return app
 	}
 
-	// loop all the methods and stacks and create the previously registered routes
-	for m := range app.RequestMethods {
+	for _, method := range app.RequestMethods {
+		m := methodPos(method) // ✅ 显式计算方法位置
+		if m == -1 {
+			continue
+		}
+
 		tsMap := make(map[string][]*Route)
 		for _, route := range app.stack[m] {
 			treePath := ""
 			if len(route.routeParser.segs) > 0 && len(route.routeParser.segs[0].Const) >= 3 {
 				treePath = route.routeParser.segs[0].Const[:3]
 			}
-			// create tree stack
 			tsMap[treePath] = append(tsMap[treePath], route)
 		}
 		app.treeStack[m] = tsMap
 	}
 
-	// loop the methods and tree stacks and add global stack and sort everything
-	for m := range app.RequestMethods {
+	for _, method := range app.RequestMethods {
+		m := methodPos(method)
+		if m == -1 {
+			continue
+		}
+
 		tsMap := app.treeStack[m]
 		for treePart := range tsMap {
 			if treePart != "" {
-				// merge glbal tree routes in current tree stack
 				tsMap[treePart] = uniqueRouteStack(append(tsMap[treePart], tsMap[""]...))
 			}
-			// sort tree slices with the positions
 			slc := tsMap[treePart]
 			sort.Slice(slc, func(i, j int) bool { return slc[i].pos < slc[j].pos })
 		}
 	}
 	app.routesRefreshed = false
+
+	// // loop all the methods and stacks and create the previously registered routes
+	// for m := range app.RequestMethods {
+	// 	tsMap := make(map[string][]*Route)
+	// 	for _, route := range app.stack[m] {
+	// 		treePath := ""
+	// 		if len(route.routeParser.segs) > 0 && len(route.routeParser.segs[0].Const) >= 3 {
+	// 			treePath = route.routeParser.segs[0].Const[:3]
+	// 		}
+	// 		// create tree stack
+	// 		tsMap[treePath] = append(tsMap[treePath], route)
+	// 	}
+	// 	app.treeStack[m] = tsMap
+	// }
+
+	// // loop the methods and tree stacks and add global stack and sort everything
+	// for m := range app.RequestMethods {
+	// 	tsMap := app.treeStack[m]
+	// 	for treePart := range tsMap {
+	// 		if treePart != "" {
+	// 			// merge glbal tree routes in current tree stack
+	// 			tsMap[treePart] = uniqueRouteStack(append(tsMap[treePart], tsMap[""]...))
+	// 		}
+	// 		// sort tree slices with the positions
+	// 		slc := tsMap[treePart]
+	// 		sort.Slice(slc, func(i, j int) bool { return slc[i].pos < slc[j].pos })
+	// 	}
+	// }
+	// app.routesRefreshed = false
 	return app
 }
 

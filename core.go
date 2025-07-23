@@ -161,7 +161,7 @@ func New(options ...Options) *Core {
 
 	app.Use(Logger(LoggerConfig{ForceColor: colorful, App: app, Debug: app.Debug, Output: out}), Recovery())
 
-	if conf := Conf.GetMap("database"); conf != nil {
+	if conf := Conf.GetMap("database"); conf != nil && conf.GetString("type", "") != "" {
 		if _, err := NewModel(conf, app.Debug, colorful); err != nil {
 			panic(err)
 		}

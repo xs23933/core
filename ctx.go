@@ -290,6 +290,7 @@ func (c *BaseCtx) ReadBody(out any, debug ...bool) error {
 	case strings.HasPrefix(ctype, MIMEApplicationForm):
 		schemaDecoder.SetAliasTag("form")
 		if err := c.R.ParseForm(); err != nil {
+			Erro("ParseForm err: %s", err.Error())
 			return err
 		}
 		return schemaDecoder.Decode(out, c.R.PostForm)
