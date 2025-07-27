@@ -9,6 +9,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -354,6 +355,19 @@ func (d Map) GetBool(k string) (value bool) {
 		}
 	}
 	return false
+}
+
+func (d Map) GetAs(k string, v any) error {
+	if val, ok := d[k]; ok && val != nil {
+		rv := reflect.ValueOf(v)
+		if rv.Kind() != reflect.Ptr || rv.IsNil() {
+			return &InvalidUnmarshalError{reflect.TypeOf(v)}
+		}
+		rv = rv.Elem()
+		rv.Set(reflect.ValueOf(val).Convert(rv.Type()))
+		return nil
+	}
+	return ErrDataTypeNotSupport
 }
 
 // Array 数组类型
