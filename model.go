@@ -387,6 +387,11 @@ func (m *Money) UnmarshalJSON(data []byte) error {
 	// 移除千分位逗号
 	str = strings.ReplaceAll(str, ",", "")
 
+	if str == "null" {
+		*m = Money(0.0)
+		return nil
+	}
+
 	tmp, err := strconv.ParseFloat(str, 64)
 	if err != nil {
 		return err
