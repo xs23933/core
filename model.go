@@ -28,13 +28,33 @@ import (
 	"gorm.io/gorm/schema"
 )
 
-func NewModel(conf Options, debug, colorful bool) (*DB, error) {
-	var (
-		db  *DB
-		err error
-	)
+func NewModel(conf Options, debug, colorful bool) (map[string]*DB, error) {
+	if conf.GetString("type") != "" && conf.GetString("dsn") != "" {
+		db, err := openDB(conf, debug, colorful)
+		if err != nil {
+			return nil, err
+		}
+		conns["default"] = db
+		dbsType["default"] = conf.GetString("type")
+		return conns, nil
+	}
+
+	confs := Conf.GetMap("database")
+	for name, cfg := range confs {
+		c := cfg.(Options)
+		db, err := openDB(c, debug, colorful)
+		if err != nil {
+			return nil, fmt.Errorf("db %s init failed: %w", name, err)
+		}
+		dbsType[name] = c.GetString("type")
+		conns[name] = db
+		D("Opened database connection %s %s", dbsType[name], name)
+	}
+	return conns, nil
+}
+
+func openDB(conf Options, debug, colorful bool) (db *DB, err error) {
 	tp := conf.GetString("type")
-	dbType = tp
 	dsn := conf.GetString("dsn")
 	if dsn == "" {
 		return nil, ErrNoConfig
@@ -73,7 +93,6 @@ func NewModel(conf Options, debug, colorful bool) (*DB, error) {
 		db = db.Debug()
 	}
 	D("%s Connected", tp)
-	conn = db
 	return db, err
 }
 
@@ -361,6 +380,11 @@ func (m Money) SubInt(in int, fraction ...int) Money {
 	return out
 }
 
+func (m Money) EmvAmount() string {
+	amt := m.MulInt(100).ToFixed(0)
+	return fmt.Sprintf("%012d", int(amt))
+}
+
 // Float64 输出 float64
 func (m Money) Float64() float64 {
 	return float64(m)
@@ -578,6 +602,54 @@ func UUIDFromString(s string) (UUID, error) {
 	return UUID{uu}, nil
 }
 
+type Date struct {
+	time.Time
+}
+
+func (d *Date) UnmarshalJSON(b []byte) error {
+	s := strings.Trim(string(b), `"`)
+	if s == "" || s == "null" {
+		return nil
+	}
+	// 解析日期(只到天)
+	t, err := time.Parse("2006-01-02", s)
+	if err != nil {
+		return err
+	}
+	d.Time = t
+	return nil
+}
+
+func (d Date) MarshalJSON() ([]byte, error) {
+	str := d.Format("2006-01-02")
+	return []byte(str), nil
+}
+
+func (d Date) String() string {
+	str := d.Format("2006-01-02")
+	return str
+}
+
+func (d Date) Value() (driver.Value, error) {
+	return d.Format("2006-01-02T15:04:05"), nil
+}
+
+func (d *Date) Scan(value interface{}) error {
+	switch t := value.(type) {
+	case string:
+		t2, _ := time.Parse("2006-01-02", t)
+		*d = Date{Time: t2}
+	case []byte:
+		t2, _ := time.Parse("2006-01-02", string(t))
+		*d = Date{Time: t2}
+	case time.Time:
+		*d = Date{Time: t}
+	default:
+		return fmt.Errorf("can not convert %v to Date", value)
+	}
+	return nil
+}
+
 type Models struct {
 	ID        UUID            `json:"id,omitempty" gorm:"size:32;primaryKey"`
 	CreatedAt time.Time       `json:"created_at" gorm:"<-:create"`
@@ -682,7 +754,7 @@ func Where(whr *Map, db ...*DB) (*DB, int, int) {
 	if len(db) > 0 {
 		tx = db[0]
 	} else {
-		tx = conn
+		tx = Conn()
 	}
 
 	wher := map[string]any(*whr)
@@ -795,21 +867,32 @@ func Where(whr *Map, db ...*DB) (*DB, int, int) {
 	return tx, pos, lmt
 }
 
-func Conn() *DB {
-	if conn != nil {
-		return conn
+func Conn(name ...string) *DB {
+	key := "default"
+	if len(name) > 0 {
+		key = name[0]
 	}
-	Erro("database connect failed")
+	if db, ok := conns[key]; ok {
+		return db
+	}
+	Erro("Database connect failed: %s", key)
 	return nil
 }
 
-func DBType() string {
-	return dbType
+func DBType(name ...string) string {
+	key := "default"
+	if len(name) > 0 {
+		key = name[0]
+	}
+	if key, ok := dbsType[key]; ok {
+		return key
+	}
+	return ""
 }
 
 var (
-	conn   *DB
-	dbType string
+	conns   = make(map[string]*DB)
+	dbsType = make(map[string]string)
 )
 
 type DB = gorm.DB

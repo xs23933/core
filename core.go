@@ -154,16 +154,17 @@ func New(options ...Options) *Core {
 	signal.Notify(c, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM,
 		syscall.SIGQUIT, SIGUSR2)
 	go func() {
-		<-c
+		s := <-c
+		Info("Received signal: %v, shutting down...", s)
 		app.shutdown()
 		cancel()
 	}()
 
 	app.Use(Logger(LoggerConfig{ForceColor: colorful, App: app, Debug: app.Debug, Output: out}), Recovery())
 
-	if conf := Conf.GetMap("database"); conf != nil && conf.GetString("type", "") != "" {
+	if conf := Conf.GetMap("database"); conf != nil {
 		if _, err := NewModel(conf, app.Debug, colorful); err != nil {
-			panic(err)
+			Erro("disconnect %s: %w", conf.GetString("dsn"), err)
 		}
 	}
 	if !IsChild() {
@@ -340,7 +341,7 @@ func (app *Core) PATCH(path string, handler any, middleware ...any) Router {
 }
 
 func (app *Core) ALL(path string, handler any, middleware ...any) Router {
-	return app.ALL(path, handler, middleware...)
+	return app.Add([]string{MethodGet, MethodHead, MethodPost, MethodPut, MethodDelete, MethodConnect, MethodOptions, MethodTrace, MethodPatch}, path, handler, middleware...)
 }
 
 func (app *Core) Static(relativePath, root string) Router {

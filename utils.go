@@ -115,13 +115,15 @@ type Errors interface {
 }
 
 // NewError creates a new Error instance with an optional message
-func NewError(code int, message ...string) *Error {
+func NewError(code int, args ...any) *Error {
 	err := &Error{
 		Code:    code,
 		Message: StatusMessage(code),
 	}
-	if len(message) > 0 {
-		err.Message = message[0]
+	if len(args) > 1 {
+		err.Message = fmt.Sprintf(args[0].(string), args[1:]...)
+	} else if len(args) == 1 {
+		err.Message = args[0].(string)
 	}
 	return err
 }
@@ -366,6 +368,14 @@ func (d Map) GetAs(k string, v any) error {
 		rv = rv.Elem()
 		rv.Set(reflect.ValueOf(val).Convert(rv.Type()))
 		return nil
+	}
+	return ErrDataTypeNotSupport
+}
+
+func (d Map) UnmarshalTo(k string, v any) error {
+	if val, ok := d[k]; ok && val != nil {
+		buf, _ := sonic.Marshal(val)
+		return sonic.Unmarshal(buf, v)
 	}
 	return ErrDataTypeNotSupport
 }

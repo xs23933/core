@@ -12,8 +12,10 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/mattn/go-isatty"
 )
@@ -30,7 +32,11 @@ func Logger(conf ...LoggerConfig) HandlerFunc {
 	if len(conf) > 0 {
 		forceColor = conf[0].ForceColor
 		if conf[0].Output != nil {
-			logout = conf[0].Output
+			// logout = conf[0].Output
+			logout = &HookWriter{
+				Writer:  conf[0].Output,
+				Monitor: LogHub,
+			}
 			debug = conf[0].Debug
 			conf[0].App.ErrorHandler = ErrorHandler(func(c Ctx, err error) error {
 				st := c.StartAt()
@@ -326,4 +332,231 @@ func defaultHandleRecovery(c Ctx, err any) {
 }
 
 // DefaultErrorWriter is the default io.Writer used by Gin to debug errors
-var DefaultErrorWriter io.Writer = os.Stderr
+var (
+	DefaultErrorWriter io.Writer = os.Stderr
+	LogHub                       = NewLogMonitor()
+)
+
+type HookWriter struct {
+	Writer  io.Writer
+	Monitor *LogMonitor
+}
+
+func (h *HookWriter) Write(p []byte) (n int, err error) {
+	if h.Monitor != nil {
+		h.Monitor.Broadcast(string(p))
+	}
+
+	n, err = h.Writer.Write(p)
+	if err != nil {
+		return n, err
+	}
+	return n, nil
+}
+
+type LogMonitor struct {
+	mu      sync.RWMutex
+	clients map[chan string]struct{}
+}
+
+func NewLogMonitor() *LogMonitor {
+	return &LogMonitor{
+		clients: make(map[chan string]struct{}),
+	}
+}
+
+func (m *LogMonitor) Register(c chan string) {
+	m.mu.Lock()
+	m.clients[c] = struct{}{}
+	m.mu.Unlock()
+}
+
+func (m *LogMonitor) UnRegister(c chan string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.clients[c]; ok {
+		delete(m.clients, c)
+		close(c)
+	}
+}
+
+func (m *LogMonitor) Broadcast(msg string) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if len(m.clients) == 0 {
+		return
+	}
+	for c := range m.clients {
+		select {
+		case c <- msg:
+			continue
+		default:
+			// 丢弃阻塞客户端,避免影响整体
+		}
+	}
+}
+
+type EventData struct {
+	Event string `json:"event"`
+	Data  any    `json:"data"`
+}
+
+func (h EventData) String() string {
+	if h.Event == "" {
+		return fmt.Sprintf("data: %v\n\n", h.ToString())
+	}
+	return fmt.Sprintf("event: %s\ndata: %v\n\n", h.Event, h.ToString())
+}
+
+func (h *EventData) ToString() string {
+	switch v := h.Data.(type) {
+	case string:
+		return v
+	case []byte:
+		return string(v)
+	case int, int8, int16, int32, int64, Int:
+		return fmt.Sprint(v)
+	case uint, uint8, uint16, uint32, uint64:
+		return fmt.Sprint(v)
+	case float32, float64:
+		return fmt.Sprint(v)
+	default:
+		dat, _ := sonic.MarshalString(v)
+		return dat
+	}
+}
+
+type EventHub struct {
+	mu       sync.RWMutex
+	clients  map[chan EventData]struct{}
+	queue    chan EventData
+	interval time.Duration
+}
+
+func NewEventHub(interval ...time.Duration) *EventHub {
+	itv := time.Millisecond * 1000
+	if len(interval) > 0 {
+		itv = interval[0]
+	}
+	h := &EventHub{
+		clients:  make(map[chan EventData]struct{}),
+		queue:    make(chan EventData, 1000), // 缓存,避免阻塞
+		interval: itv,
+	}
+
+	go h.start()
+	return h
+}
+
+func (h *EventHub) start() {
+	Info("event hub run with %ds batch interval", h.interval.Seconds())
+	ticker := time.NewTicker(h.interval)
+	defer ticker.Stop()
+
+	var buffer []EventData
+	for {
+		select {
+		case data, ok := <-h.queue:
+			if !ok {
+				return
+			}
+			buffer = append(buffer, data)
+		case <-ticker.C:
+			if len(buffer) == 0 {
+				continue
+			}
+
+			if len(buffer) == 1 {
+				h.broadcast(buffer[0])
+			} else {
+				// 打包成一个批次事件
+				batch := EventData{
+					Event: "batch",
+					Data:  buffer,
+				}
+				h.broadcast(batch)
+			}
+			buffer = nil
+		}
+	}
+}
+
+func (h *EventHub) Register(c chan EventData) {
+	h.mu.Lock()
+	h.clients[c] = struct{}{}
+	h.mu.Unlock()
+}
+
+func (h *EventHub) UnRegister(c chan EventData) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if _, ok := h.clients[c]; ok {
+		delete(h.clients, c)
+		close(c)
+	}
+}
+
+func (h *EventHub) broadcast(data EventData) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for c := range h.clients {
+		select {
+		case c <- data:
+			continue
+		default:
+		}
+	}
+}
+
+func (h *EventHub) Broadcast(data EventData) {
+	select {
+	case h.queue <- data:
+		return
+	default:
+	}
+}
+
+func (h *EventHub) Get(c Ctx) {
+	c.SetHeader("Content-Type", "text/event-stream;charset=utf-8")
+	c.SetHeader("Cache-Control", "no-cache")
+	c.SetHeader("Connection", "keep-alive")
+
+	ch := make(chan EventData, 100)
+	h.Register(ch)
+	defer h.UnRegister(ch)
+
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	c.Stream(func(w io.Writer) bool {
+		_, _ = fmt.Fprint(w, "event: touch\ndata: hi\n\n")
+		return false
+	})
+
+	c.Stream(func(w io.Writer) bool {
+		select {
+		case msg, ok := <-ch:
+			if !ok {
+				return false
+			}
+			if _, err := fmt.Fprint(w, msg.String()); err != nil {
+				return false
+			}
+		case <-ticker.C:
+			if _, err := fmt.Fprintf(w, ":\n\n"); err != nil { // SSE 心跳标识 ping
+				return false
+			}
+		}
+		return true
+	})
+}
+
+func (h *EventHub) PostData(c Ctx) {
+	data := EventData{}
+	if err := c.ReadBody(&data); err != nil {
+		c.ToJSON(nil, err)
+		return
+	}
+	go h.Broadcast(data)
+	c.ToJSON(data, nil)
+}
