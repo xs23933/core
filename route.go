@@ -46,12 +46,12 @@ type Route struct {
 
 func (r *Route) match(detectionPath, path string, params *[maxParams]string) bool {
 	// root detectionPath check
-	if r.root && detectionPath == "/" {
+	if r.root && len(path) == 1 && detectionPath[0] == '/' {
 		return true
 		// '*' wildcard matches any detectionPath
 	} else if r.star {
 		if len(path) > 1 {
-			params[0] = path[1:]
+			params[0] = path
 		} else {
 			params[0] = ""
 		}
@@ -166,8 +166,9 @@ func (app *Core) AddHandle(methods []string, uri string, group *Group, handler a
 	uriPretty := app.adjustPathCase(uri)
 
 	// 是否为星号和根路径
-	isStar := uri == "/*"
+	isStar := uri == "/*" || uri == "*" || strings.HasPrefix(uri, "/*")
 	isRoot := uri == "/"
+
 	parsedUri := parseRoute(uri)
 	parsedPretty := parseRoute(uriPretty)
 
@@ -222,6 +223,7 @@ func (app *Core) addRoute(method string, route *Route, isMounted ...bool) {
 
 	// Get unique HTTP method identifier
 	m := methodPos(method)
+
 	// prevent identically route registeration
 	l := len(app.stack[m]) - 1
 	if l > 0 {
@@ -257,27 +259,15 @@ func (app *Core) addRoute(method string, route *Route, isMounted ...bool) {
 	})
 }
 
+func (app *Core) Build() *Core {
+	return app.buildTree()
+}
+
 func (app *Core) buildTree() *Core {
 	if !app.routesRefreshed {
 		return app
 	}
-
-	for _, method := range app.RequestMethods {
-		m := methodPos(method) // ✅ 显式计算方法位置
-		if m == -1 {
-			continue
-		}
-
-		tsMap := make(map[string][]*Route)
-		for _, route := range app.stack[m] {
-			treePath := ""
-			if len(route.routeParser.segs) > 0 && len(route.routeParser.segs[0].Const) >= 3 {
-				treePath = route.routeParser.segs[0].Const[:3]
-			}
-			tsMap[treePath] = append(tsMap[treePath], route)
-		}
-		app.treeStack[m] = tsMap
-	}
+	app.routesRefreshed = false
 
 	for _, method := range app.RequestMethods {
 		m := methodPos(method)
@@ -285,89 +275,137 @@ func (app *Core) buildTree() *Core {
 			continue
 		}
 
-		tsMap := app.treeStack[m]
-		for treePart := range tsMap {
-			if treePart != "" {
-				tsMap[treePart] = uniqueRouteStack(append(tsMap[treePart], tsMap[""]...))
+		tsMap := make(map[string][]*Route)
+
+		// 按前缀分桶 - 修复分类逻辑
+		for _, route := range app.stack[m] {
+			treePath := ""
+
+			// 通配路由放在 "" 桶
+			if route.star {
+				treePath = ""
+			} else if route.root {
+				treePath = ""
+			} else if len(route.routeParser.segs) > 0 && len(route.routeParser.segs[0].Const) >= 3 {
+				// 普通路由按前3个字符分桶
+				treePath = route.routeParser.segs[0].Const[:3]
+			} else {
+				// 其他情况也放到 "" 桶
+				treePath = ""
 			}
-			slc := tsMap[treePart]
-			sort.Slice(slc, func(i, j int) bool { return slc[i].pos < slc[j].pos })
+			tsMap[treePath] = append(tsMap[treePath], route)
 		}
+
+		// 确保通配路由在所有桶中都存在
+		if starRoutes, ok := tsMap[""]; ok && len(starRoutes) > 0 {
+			for k := range tsMap {
+				if k != "" {
+					// 合并并去重
+					merged := make([]*Route, len(tsMap[k]))
+					copy(merged, tsMap[k])
+
+					for _, starRoute := range starRoutes {
+						// 只添加通配路由
+						if starRoute.star && !containsRoute(merged, starRoute) {
+							merged = append(merged, starRoute)
+						}
+					}
+					tsMap[k] = merged
+				}
+			}
+		}
+
+		// 排序每个桶 - 确保通配路由在最后
+		for k := range tsMap {
+			sort.Slice(tsMap[k], func(i, j int) bool {
+				// 通配路由放在最后
+				if tsMap[k][i].star && !tsMap[k][j].star {
+					return false
+				}
+				if !tsMap[k][i].star && tsMap[k][j].star {
+					return true
+				}
+				// 中间件路由放在前面
+				if tsMap[k][i].use && !tsMap[k][j].use {
+					return true
+				}
+				if !tsMap[k][i].use && tsMap[k][j].use {
+					return false
+				}
+				// 普通路由按位置排序
+				return tsMap[k][i].pos < tsMap[k][j].pos
+			})
+		}
+
+		app.treeStack[m] = tsMap
 	}
-	app.routesRefreshed = false
 
-	// // loop all the methods and stacks and create the previously registered routes
-	// for m := range app.RequestMethods {
-	// 	tsMap := make(map[string][]*Route)
-	// 	for _, route := range app.stack[m] {
-	// 		treePath := ""
-	// 		if len(route.routeParser.segs) > 0 && len(route.routeParser.segs[0].Const) >= 3 {
-	// 			treePath = route.routeParser.segs[0].Const[:3]
-	// 		}
-	// 		// create tree stack
-	// 		tsMap[treePath] = append(tsMap[treePath], route)
-	// 	}
-	// 	app.treeStack[m] = tsMap
-	// }
-
-	// // loop the methods and tree stacks and add global stack and sort everything
-	// for m := range app.RequestMethods {
-	// 	tsMap := app.treeStack[m]
-	// 	for treePart := range tsMap {
-	// 		if treePart != "" {
-	// 			// merge glbal tree routes in current tree stack
-	// 			tsMap[treePart] = uniqueRouteStack(append(tsMap[treePart], tsMap[""]...))
-	// 		}
-	// 		// sort tree slices with the positions
-	// 		slc := tsMap[treePart]
-	// 		sort.Slice(slc, func(i, j int) bool { return slc[i].pos < slc[j].pos })
-	// 	}
-	// }
-	// app.routesRefreshed = false
 	return app
 }
 
+// 辅助函数：检查路由是否已存在
+func containsRoute(routes []*Route, route *Route) bool {
+	for _, r := range routes {
+		if r == route {
+			return true
+		}
+	}
+	return false
+}
+
 func (app *Core) next(c *BaseCtx) (bool, error) {
-	// Get stack length
+	if app.routesRefreshed {
+		app.buildTree()
+	}
+	// 获取当前方法的路由树
 	tree, ok := app.treeStack[c.methodInt][c.treePath]
 	if !ok {
 		tree = app.treeStack[c.methodInt][""]
 	}
 	lenr := len(tree) - 1
 
-	// Loop over the route stack starting from previous index
+	// 遍历路由栈
 	for c.indexRoute < lenr {
 		c.indexRoute++
-
-		// Get *Route
 		route := tree[c.indexRoute]
 
-		// Check if it matches the request path
+		// 检查是否匹配请求路径
 		match := route.match(c.detectionPath, c.path, &c.values)
+
 		if !match {
-			// No match, next route
 			continue
 		}
-		// Pass route reference and param values
-		c.route = route
 
-		// Non use handler matched
+		// 匹配成功
+		c.route = route
 		if !c.matched && !route.use {
 			c.matched = true
 		}
 
-		// Execute first handler of route
+		// 执行第一个处理器
 		c.indexHandler = 0
 		err := route.Handlers[0](c)
-		return match, err // Stop scanning the stack
+		return true, err
 	}
 
-	// If c.Next() does not match, return 404
-	err := NewError(StatusNotFound, c.method+" "+c.path+" "+"Not found")
+	// 检查是否有通配路由
+	for _, route := range tree {
+		if route.star {
+			match := route.match(c.detectionPath, c.path, &c.values)
+			if match {
+				c.route = route
+				c.matched = true
+				c.indexHandler = 0
+				err := route.Handlers[0](c)
+				return true, err
+			}
+		}
+	}
+
+	// 没有找到匹配的路由
+	err := NewError(StatusNotFound, c.method+" "+c.path+" Not found")
 	if !c.matched && app.methodExist(c) {
-		// If no match, scan stack again if other methods match the request
-		// Moved from app.handler because middleware may break the route chain
-		err = ErrNotFound
+		err = ErrMethodNotAllowed
 	}
 	return false, err
 }

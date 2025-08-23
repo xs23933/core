@@ -44,11 +44,32 @@ func (opt *Options) GetMap(k string, def ...Options) Options {
 
 func (opt *Options) GetAs(k string, v any) error {
 	if val, ok := (*opt)[k]; ok && val != nil {
+
 		rv := reflect.ValueOf(v)
 		if rv.Kind() != reflect.Ptr || rv.IsNil() {
 			return &InvalidUnmarshalError{reflect.TypeOf(v)}
 		}
 		rv = rv.Elem()
+
+		// 关于 slice
+
+		if rv.Type().Kind() == reflect.Slice && rv.Type().Elem().Kind() == reflect.Map {
+			slice, ok := val.([]any)
+			if !ok {
+				return fmt.Errorf("cannot convert %T to slice", val)
+			}
+			result := reflect.MakeSlice(rv.Type(), len(slice), len(slice))
+			for i, item := range slice {
+				m, ok := item.(Options)
+				if !ok {
+					return fmt.Errorf("cannot convert %T to map", item)
+				}
+				result.Index(i).Set(reflect.ValueOf(m))
+			}
+			rv.Set(result)
+			return nil
+		}
+
 		rv.Set(reflect.ValueOf(val).Convert(rv.Type()))
 		return nil
 	}
@@ -59,6 +80,13 @@ func (opt *Options) GetStrings(k string, def ...[]string) []string {
 	if val, ok := (*opt)[k]; ok && val != nil {
 		if v, ok := val.([]string); ok {
 			return v
+		}
+		if v, ok := val.([]any); ok {
+			s := make([]string, len(v))
+			for i, v := range v {
+				s[i] = fmt.Sprintf("%v", v)
+			}
+			return s
 		}
 	}
 	if len(def) > 0 {
