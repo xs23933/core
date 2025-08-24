@@ -3,6 +3,7 @@ package core
 import (
 	"bytes"
 	"database/sql/driver"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -631,4 +632,20 @@ func Remove[T comparable](elems []T, v T) []T {
 		elems = append(elems[:idx], elems[idx+1:]...)
 	}
 	return elems
+}
+
+func PrintJSON(v any, tags ...any) {
+	buf, _ := json.MarshalIndent(v, "", " ")
+	if len(tags) > 0 {
+		format := fmt.Sprint(tags[0])
+		if len(tags) > 1 {
+			args := tags[1:]
+			tagStr := fmt.Sprintf(format, args...) // 展开参数
+			Warn("[%s]\n%s", tagStr, string(buf))
+			return
+		}
+		Warn("[%s]\n%s", format, string(buf))
+		return
+	}
+	Warn("%s", buf)
 }
