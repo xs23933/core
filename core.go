@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log"
@@ -21,6 +22,9 @@ import (
 
 	"github.com/xs23933/core/v2/middleware/view"
 	"github.com/xs23933/core/v2/reuseport"
+	"golang.org/x/crypto/acme"
+	"golang.org/x/crypto/acme/autocert"
+	"golang.org/x/net/http2"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -57,6 +61,8 @@ type Core struct {
 	networkProto       string
 	Views              view.IEngine
 	TextEngine         view.ITextEngine
+	// acme
+	certManager *autocert.Manager
 }
 
 // core implements Router.
@@ -120,6 +126,21 @@ func New(options ...Options) *Core {
 		}
 
 		app.networkProto = app.Conf.GetString("network", "tcp4")
+
+		acme := Options{}
+		if err := app.Conf.GetAs("acme", &acme); err == nil {
+			domains := acme.GetStrings("domains", []string{})
+			email := acme.GetString("email", "")
+			if len(domains) > 0 {
+				app.certManager = &autocert.Manager{
+					Prompt:     autocert.AcceptTOS,
+					Email:      email,
+					HostPolicy: autocert.HostWhitelist(domains...),
+					Cache:      autocert.DirCache(acme.GetString("cache", "./certs")),
+				}
+				app.addr = ":https"
+			}
+		}
 
 		app.MaxMultipartMemory = app.Conf.GetInt64("max_multipart_memory", defaultMultipartMemory)
 	}
@@ -193,10 +214,12 @@ func (app *Core) Listen(port ...any) error {
 	if app.enablePrefork {
 		return app.prefork()
 	}
+
 	ln, err := reuseport.Listen(app.networkProto, app.addr)
 	if err != nil {
 		return err
 	}
+
 	if tcpLn, ok := ln.(*net.TCPListener); ok {
 		ln = tcpKeepAliveListener{TCPListener: tcpLn}
 	}
@@ -222,9 +245,44 @@ func (app *Core) Serve(ln net.Listener) error {
 		D("Listen: http://%s\n", port)
 	}
 	app.runProcess()
+
+	if app.certManager != nil {
+		app.Server.TLSConfig = &tls.Config{
+			MinVersion:     tls.VersionTLS12,
+			GetCertificate: app.certManager.GetCertificate,
+			NextProtos:     []string{"h2", "http/1.1", acme.ALPNProto},
+		}
+		http2.ConfigureServer(app.Server, &http2.Server{})
+
+		app.GET("/.well-known/acme-challenge/*", app.certManager.HTTPHandler(nil))
+		app.GET("/.health", func(c Ctx) {
+			c.SendStatus(200, "ok")
+		})
+		Info("ACME Enabled, serving HTTPS on :443")
+		go func() {
+			mux := http.NewServeMux()
+			mux.Handle("/.well-known/acme-challenge/", app.certManager.HTTPHandler(nil))
+			mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+				target := "https://" + r.Host + r.URL.String()
+				http.Redirect(w, r, target, http.StatusMovedPermanently)
+			})
+			httpSrv := &http.Server{Handler: mux}
+			if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				Erro("HTTP server error: %v", err)
+			}
+		}()
+
+		if err := app.Server.ServeTLS(ln, "", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			Erro(" ACME Error: %v", err)
+			return err
+		}
+		return nil
+	}
+	Info("Serving HTTP on %s", ln.Addr().String())
 	if err := app.Server.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
+
 	return nil
 }
 
@@ -268,7 +326,7 @@ func (app *Core) prefork() error {
 	}()
 
 	var pids []string
-	for i := 0; i < max; i++ {
+	for range max {
 		cmd := exec.Command(os.Args[0], os.Args[1:]...) // nolint:gosec
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr

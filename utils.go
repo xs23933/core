@@ -326,6 +326,10 @@ func (d Map) GetInt(k string, defaultValue ...int) (value int) {
 			value = int(v)
 			return
 		}
+		if v, ok := val.(int); ok {
+			value = v
+			return
+		}
 	}
 	if len(defaultValue) > 0 {
 		return defaultValue[0]
@@ -379,6 +383,14 @@ func (d Map) UnmarshalTo(k string, v any) error {
 		return sonic.Unmarshal(buf, v)
 	}
 	return ErrDataTypeNotSupport
+}
+
+func (d Map) MarshalBinary() (data []byte, err error) {
+	return sonic.Marshal(d)
+}
+
+func (d *Map) UnmarshalBinary(data []byte) error {
+	return sonic.Unmarshal(data, d)
 }
 
 // Array 数组类型
@@ -442,6 +454,14 @@ func (d Array) StringsJoin(sp string) string {
 // GormDataType schema.Field DataType
 func (Array) GormDataType() string {
 	return "text"
+}
+
+func (d Array) MarshalBinary() (data []byte, err error) {
+	return sonic.Marshal(d)
+}
+
+func (d *Array) UnmarshalBinary(data []byte) error {
+	return sonic.Unmarshal(data, d)
 }
 
 // 空字符串 存入数据库 存 NULL ，这样会跳过数据库唯一索引的检查
@@ -648,4 +668,79 @@ func PrintJSON(v any, tags ...any) {
 		return
 	}
 	Warn("%s", buf)
+}
+
+// RemoveDuplicates 去重函数，适用于任何类型的切片
+func RemoveDuplicates[T comparable](slice []T) []T {
+	// 使用 map 来记录已经出现过的元素
+	seen := make(map[T]struct{})
+	result := []T{}
+
+	for _, v := range slice {
+		if _, ok := seen[v]; !ok {
+			// 如果没有出现过，加入到结果中
+			result = append(result, v)
+			seen[v] = struct{}{}
+		}
+	}
+
+	return result
+}
+
+// ParseAndDeduplicate 将输入字符串按逗号分割，去除空字段及重复值
+func ParseAndDeduplicate(s string) Array {
+	parts := strings.Split(s, ",") // 分割字符串
+	uniqueMap := make(map[string]struct{})
+	var result Array
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part) // 去除空白字符
+		if trimmed == "" {
+			continue // 过滤空字符串
+		}
+		if _, exists := uniqueMap[trimmed]; !exists {
+			uniqueMap[trimmed] = struct{}{}
+			result = append(result, trimmed)
+		}
+	}
+	return result
+}
+
+func ContainsAny(elems Array, v any) bool {
+	for _, s := range elems {
+		switch val := s.(type) {
+		case string:
+			if str, ok := v.(string); ok && val == str {
+				return true
+			}
+		case int:
+			if num, ok := v.(int); ok && val == num {
+				return true
+			}
+		case int64:
+			if num, ok := v.(int64); ok && val == num {
+				return true
+			}
+		case float64:
+			if num, ok := v.(float64); ok && val == num {
+				return true
+			}
+		case bool:
+			if num, ok := v.(bool); ok && val == num {
+				return true
+			}
+		case time.Time:
+			if num, ok := v.(time.Time); ok && val == num {
+				return true
+			}
+		case []byte:
+			if num, ok := v.([]byte); ok && bytes.Equal(val, num) {
+				return true
+			}
+		default:
+			if reflect.DeepEqual(s, v) {
+				return true
+			}
+		}
+	}
+	return false
 }

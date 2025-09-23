@@ -114,6 +114,19 @@ type UUID struct {
 	uuid.UUID
 }
 
+func (u UUID) MarshalBinary() (data []byte, err error) {
+	return []byte(u.String()), nil
+}
+
+func (u *UUID) UnmarshalBinary(data []byte) error {
+	if len(data) != 36 {
+		return errors.New("invalid uuid")
+	}
+	var err error
+	*u, err = UUIDFromString(string(data))
+	return err
+}
+
 var UuidNil = UUID{uuid.Nil}
 
 func NewUUID() UUID {
@@ -136,6 +149,86 @@ func (u UUID) String() string {
 
 func (u UUID) Bytes() []byte {
 	return u.UUID[:]
+}
+
+// ToStrings 把任意实现了 fmt.Stringer 的类型切片转换成 []string
+//
+//	e.g: core.ToStrings(uuids)
+func ToStrings[T fmt.Stringer](items []T) []string {
+	ret := make([]string, len(items))
+	for i, v := range items {
+		ret[i] = v.String()
+	}
+	return ret
+}
+
+// ToAny 把任意类型切片转换成 []any
+//
+//	e.g: core.ToAny(uuids)
+func ToAny[T any](items []T) []any {
+	ret := make([]any, len(items))
+	for i, v := range items {
+		ret[i] = v
+	}
+	return ret
+}
+
+// ToStringsFromAny 把 []any 转换成 []string
+func ToStringsFromAny(items []any) []string {
+	ret := make([]string, len(items))
+	for i, v := range items {
+		ret[i] = fmt.Sprint(v) // 等价于 v.(string) 但更安全
+	}
+	return ret
+}
+
+// ToUUIDsFromAny 把 []any 转换成 []UUID
+func ToUUIDsFromAny(items []any) []UUID {
+	ret := make([]UUID, 0, len(items))
+	for _, v := range items {
+		switch val := v.(type) {
+		case string:
+			ret = append(ret, MustUUID(val)) // 你的 UUID 解析函数
+		case []byte:
+			ret = append(ret, MustUUID(string(val)))
+		default:
+			// 如果传进来不是 string/[]byte，就 fmt.Sprint 转换
+			ret = append(ret, MustUUID(fmt.Sprint(val)))
+		}
+	}
+	return ret
+}
+
+// SafeToUUIDs
+func SafeToUUIDs(items any) []UUID {
+	switch vv := items.(type) {
+	case []any:
+		return ToUUIDsFromAny(vv)
+	case string:
+		arr := make([]string, 0)
+		if err := sonic.UnmarshalString(vv, &arr); err == nil {
+			return ToUUIDsFromAny(ToAny(arr))
+		}
+		return ToUUIDsFromAny(ToAny(strings.Split(vv, ",")))
+	case []string:
+		return ToUUIDsFromAny(ToAny(vv))
+	case []UUID:
+		return vv
+	default:
+		return nil
+	}
+}
+
+type HasUUID interface {
+	GetUUID() UUID
+}
+
+func ExtractUUIDs[T HasUUID](items []T) []UUID {
+	ids := make([]UUID, 0, len(items))
+	for _, item := range items {
+		ids = append(ids, item.GetUUID())
+	}
+	return ids
 }
 
 // Scan implements sql.Scanner so UUIDs can be read from databases transparently.
@@ -299,14 +392,25 @@ type Money float64
 // ToFixed 保留几位小数
 // Param fraction int
 // return float64
+//
+//	func (m Money) ToFixed(fraction ...int) Money {
+//		places := 2
+//		if len(fraction) > 0 {
+//			places = fraction[0]
+//		}
+//		shift := math.Pow(10, float64(places))
+//		fv := 0.0000000001 + float64(m) //对浮点数产生.xxx999999999 计算不准进行处理
+//		return Money(math.Floor(fv*shift) / shift)
+//	}
 func (m Money) ToFixed(fraction ...int) Money {
 	places := 2
 	if len(fraction) > 0 {
 		places = fraction[0]
 	}
-	shift := math.Pow(10, float64(places))
-	fv := 0.0000000001 + float64(m) //对浮点数产生.xxx999999999 计算不准进行处理
-	return Money(math.Floor(fv*shift) / shift)
+
+	str := strconv.FormatFloat(float64(m), 'f', places, 64)
+	f, _ := strconv.ParseFloat(str, 64)
+	return Money(f)
 }
 
 // ToFloor 保留 p 位小数, 向下取整
@@ -322,11 +426,13 @@ func (m Money) ToRound(p int) Money {
 }
 
 func (m Money) IsEqual(x Money, fixed ...int) bool {
-	fix := 3
+	fix := 2
 	if len(fixed) > 0 {
 		fix = fixed[0]
 	}
-	return m.ToFixed(fix) == x.ToFixed(fix)
+	eps := 1 / math.Pow10(fix)
+	return math.Abs(float64(m-x)) < eps
+	// return m.ToFixed(fix) == x.ToFixed(fix)
 }
 
 // DivInt 除以整数
@@ -395,8 +501,24 @@ func (m Money) Int() Int {
 }
 
 // GormDataType schema.Field DataType
-func (Money) GormDataType() string {
-	return "DOUBLE"
+// func (Money) GormDataType() string {
+// 	return "DECIMAL(18,6)"
+// }
+
+// GormDBDataType gorm 方言映射 (不同数据库可指定不同字段类型)
+func (Money) GormDBDataType(db *gorm.DB, field *schema.Field) string {
+	switch db.Dialector.Name() {
+	case "clickhouse":
+		return "DOUBLE"
+	case "mysql":
+		return "DECIMAL(18,6)"
+	case "postgres":
+		return "DECIMAL(18,6)"
+	case "sqlite":
+		return "DECIMAL(18,6)"
+	default:
+		return "DECIMAL(18,6)"
+	}
 }
 
 func (m *Money) UnmarshalJSON(data []byte) error {
@@ -424,6 +546,11 @@ func (m *Money) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+func (m Money) MarshalJSON() ([]byte, error) {
+	str := strconv.FormatFloat(float64(m), 'f', 2, 64) // 保留两位小数
+	return []byte(str), nil
+}
+
 func ParseMoney(val any) Money {
 	switch v := val.(type) {
 	case string:
@@ -440,6 +567,198 @@ func ParseMoney(val any) Money {
 		f, _ := strconv.ParseFloat(fmt.Sprintf("%v", v), 64)
 		return Money(f)
 	}
+}
+
+type IntMoney int64
+
+// NewIntMoneyFromFloat 创建 IntMoney（内部存储分）
+func NewIntMoneyFromFloat(f float64) IntMoney {
+	return IntMoney(math.Round(f * 100)) // 四舍五入取整
+}
+
+// Float64 转换为 float64 元
+func (m IntMoney) Float64() float64 {
+	return float64(m) / 100
+}
+
+// String 格式化输出
+func (m IntMoney) String() string {
+	return fmt.Sprintf("%.2f", m.Float64())
+}
+
+// ToFixed 保留 fraction 位小数（默认 2 位）
+func (m IntMoney) ToFixed(fraction ...int) float64 {
+	places := 2
+	if len(fraction) > 0 {
+		places = fraction[0]
+	}
+	shift := math.Pow(10, float64(places))
+	fv := m.Float64()
+	return math.Floor(fv*shift+0.0000001) / shift
+}
+
+// IsEqual 比较是否相等，允许指定小数位比较
+func (m IntMoney) IsEqual(x IntMoney, fraction ...int) bool {
+	return m.ToFixed(fraction...) == x.ToFixed(fraction...)
+}
+
+// 基础加减乘除运算（返回 IntMoney）
+
+// 加法
+func (m IntMoney) Add(x IntMoney) IntMoney { return m + x }
+
+// 减法
+func (m IntMoney) Sub(x IntMoney) IntMoney { return m - x }
+
+// 乘法
+func (m IntMoney) MulInt(n int64) IntMoney { return m * IntMoney(n) }
+
+// 除法
+func (m IntMoney) DivInt(n int64) IntMoney {
+	if n == 0 {
+		return 0
+	}
+	return m / IntMoney(n)
+}
+func (m IntMoney) Abs() IntMoney {
+	if m < 0 {
+		return -m
+	}
+	return m
+}
+func (m IntMoney) EmvAmount() string { return fmt.Sprintf("%012d", m) }
+func (m IntMoney) Int64() int64      { return int64(m) }
+
+// ---------------- JSON 解析 ----------------
+
+// UnmarshalJSON 反序列化
+func (m *IntMoney) UnmarshalJSON(data []byte) error {
+	str := string(data)
+	var err error
+	if bytes.HasPrefix(data, []byte{'"'}) {
+		str, err = strconv.Unquote(str)
+		if err != nil {
+			return err
+		}
+	}
+
+	str = strings.ReplaceAll(str, ",", "")
+	if str == "null" || str == "" {
+		*m = 0
+		return nil
+	}
+
+	f, err := strconv.ParseFloat(str, 64)
+	if err != nil {
+		return err
+	}
+	*m = NewIntMoneyFromFloat(f)
+	return nil
+}
+
+// MarshalJSON 序列化
+func (m IntMoney) MarshalJSON() ([]byte, error) {
+	return []byte(fmt.Sprintf("%.2f", m.Float64())), nil
+}
+
+// ParseIntMoney 通用解析
+func ParseIntMoney(val any) IntMoney {
+	switch v := val.(type) {
+	case string:
+		v = strings.ReplaceAll(v, ",", "")
+		f, _ := strconv.ParseFloat(v, 64)
+		return NewIntMoneyFromFloat(f)
+	case float64:
+		return NewIntMoneyFromFloat(v)
+	case int:
+		return IntMoney(v * 100)
+	case int64:
+		return IntMoney(v * 100)
+	default:
+		f, _ := strconv.ParseFloat(fmt.Sprintf("%v", v), 64)
+		return NewIntMoneyFromFloat(f)
+	}
+}
+
+// ---------------- SQL/数据库接口 ----------------
+
+// Value 实现 driver.Valuer (写入数据库时存储为分)
+func (m IntMoney) Value() (driver.Value, error) {
+	return int64(m), nil
+}
+
+// Scan 实现 sql.Scanner (数据库读取时转为 IntMoney) 不做 100 倍转换
+func IntMoneyFromRedisString(s string) IntMoney {
+	if s == "" || s == "null" {
+		return 0
+	}
+	v, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return IntMoney(v)
+}
+
+// Scan 实现 sql.Scanner (数据库读取时转为 IntMoney)
+// 支持 int64 / float64 / string
+func (m *IntMoney) Scan(value any) error {
+	if value == nil {
+		*m = 0
+		return nil
+	}
+	switch v := value.(type) {
+	case int64:
+		*m = IntMoney(v)
+	case float64:
+		*m = NewIntMoneyFromFloat(v)
+	case []byte:
+		f, err := strconv.ParseFloat(string(v), 64)
+		if err != nil {
+			return err
+		}
+		*m = NewIntMoneyFromFloat(f)
+	case string:
+		f, err := strconv.ParseFloat(v, 64)
+		if err != nil {
+			return err
+		}
+		*m = NewIntMoneyFromFloat(f)
+	default:
+		return fmt.Errorf("unsupported Scan type for IntMoney: %T", value)
+	}
+	return nil
+}
+
+// ---------------- GORM 接口 ----------------
+
+// GormDataType gorm 通用数据类型 (用于生成表结构)
+func (IntMoney) GormDataType() string {
+	return "bigint"
+}
+
+// GormDBDataType gorm 方言映射 (不同数据库可指定不同字段类型)
+func (IntMoney) GormDBDataType(db *gorm.DB, field *schema.Field) string {
+	switch db.Dialector.Name() {
+	case "clickhouse":
+		return "Int64"
+	case "mysql":
+		return "BIGINT"
+	case "postgres":
+		return "BIGINT"
+	case "sqlite":
+		return "INTEGER"
+	default:
+		return "BIGINT"
+	}
+}
+
+func (m IntMoney) MarshalBinary() (data []byte, err error) {
+	return []byte(fmt.Sprintf("%d", m)), nil
+}
+
+func (m *IntMoney) UnmarshalBinary(data []byte) error {
+	*m = IntMoneyFromRedisString(string(data))
+	return nil
 }
 
 type Int int64
@@ -595,11 +914,23 @@ func (uuid *UUID) UnmarshalText(data []byte) error {
 }
 
 func UUIDFromString(s string) (UUID, error) {
+	if s == "" {
+		return UuidNil, nil
+	}
 	uu, err := uuid.Parse(s)
 	if err != nil {
 		return UuidNil, err
 	}
 	return UUID{uu}, nil
+}
+
+func MustUUID(s string) UUID {
+	u, err := UUIDFromString(s)
+	if err != nil {
+		Erro("invalid UUID: %s", s)
+		return UuidNil
+	}
+	return u
 }
 
 type Date struct {
@@ -924,6 +1255,10 @@ func EnumFromString[T Enum](str string, mapping []string) T {
 		if s == str {
 			return T(i)
 		}
+	}
+	// 如果 str 是数字，尝试转换
+	if num, err := strconv.ParseUint(str, 10, 8); err == nil {
+		return T(num)
 	}
 	return T(0)
 }

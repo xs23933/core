@@ -1237,14 +1237,12 @@ func (app *Core) ReleaseCtx(c Ctx) {
 func (c *BaseCtx) Next() error {
 	// Increment handler index
 	c.indexHandler++
-	var err error
 	// Did we executed all route handlers?
 	if c.indexHandler < len(c.route.Handlers) {
 		// Continue route stack
-		err = c.route.Handlers[c.indexHandler](c)
-	} else {
-		_, err = c.app.next(c)
+		return c.route.Handlers[c.indexHandler](c)
 	}
+	_, err := c.app.next(c)
 	return err
 }
 

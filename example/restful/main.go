@@ -11,7 +11,7 @@ func main() {
 
 	app.Use(html.NewHtmlView("views", ".html"))
 
-	app.Use(cros.New())
+	app.Use(cros.New(app))
 
 	app.Use(func(c core.Ctx) error {
 		return c.Next()
