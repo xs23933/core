@@ -1,7 +1,6 @@
 package cros
 
 import (
-	"strconv"
 	"strings"
 
 	"github.com/xs23933/core/v2"
@@ -17,7 +16,7 @@ type Config struct {
 var defaultConfig = Config{
 	AllowOrigins:     "*",
 	AllowHeaders:     "",
-	AllowCredentials: true,
+	AllowCredentials: false,
 	AllowMethods: strings.Join([]string{
 		core.MethodGet,
 		core.MethodPost,
@@ -28,7 +27,7 @@ var defaultConfig = Config{
 	}, ","),
 }
 
-func New(co *core.Core, config ...Config) core.HandlerFunc {
+func New(config ...Config) core.HandlerFunc {
 	cfg := defaultConfig
 
 	if len(config) > 0 {
@@ -42,57 +41,59 @@ func New(co *core.Core, config ...Config) core.HandlerFunc {
 	// Strip white spaces
 	allowMethods := strings.ReplaceAll(cfg.AllowMethods, " ", "")
 	allowHeaders := strings.ReplaceAll(cfg.AllowHeaders, " ", "")
-	allowCredentials := "false"
-	if cfg.AllowCredentials {
-		allowCredentials = "true"
-	}
-
-	// 显式注册OPTIONS路由处理预检请求
-	co.OPTIONS("/*", func(c core.Ctx) error {
-		return handlePreflight(c, allowOrigins, allowMethods, allowHeaders, cfg.AllowCredentials)
-	})
 
 	return func(c core.Ctx) error {
-		core.Erro("method: %v : %v", c.Method(), core.MethodOptions)
-		if c.Request().Method != core.MethodOptions {
-			core.Erro("Wtf cros")
-			c.SetHeader(core.HeaderAccessControlAllowOrigin, strings.Join(allowOrigins, ","))
-			c.SetHeader(core.HeaderAccessControlAllowMethods, allowMethods)
-			c.SetHeader(core.HeaderAccessControlAllowCredentials, allowCredentials)
+		core.Dump("fuck men")
+		origin := c.GetHeader(core.HeaderOrigin)
+		allowOrigin := ""
+
+		for _, o := range allowOrigins {
+			if o == "*" {
+				allowOrigin = "*"
+				break
+			}
+			if o == origin {
+				allowOrigin = o
+				break
+			}
+			if matchSubdomain(origin, o) {
+				allowOrigin = origin
+				break
+			}
+		}
+
+		if c.Method() != core.MethodOptions {
+			c.Vary(core.HeaderOrigin)
+
+			c.SetHeader(core.HeaderAccessControlAllowOrigin, allowOrigin)
+
+			if cfg.AllowCredentials {
+				c.SetHeader(core.HeaderAccessControlAllowCredentials, "true")
+			}
+
 			return c.Next()
 		}
-		return nil
-	}
-}
+		c.Vary(core.HeaderOrigin)
+		c.Vary(core.HeaderAccessControlRequestMethod)
+		c.Vary(core.HeaderAccessControlRequestHeaders)
+		c.SetHeader(core.HeaderAccessControlAllowOrigin, allowOrigin)
+		c.SetHeader(core.HeaderAccessControlAllowMethods, allowMethods)
 
-func handlePreflight(c core.Ctx, allowOrigins []string, allowMethods, allowHeaders string, allowCredentials bool) error {
-	origin := c.GetHeader(core.HeaderOrigin)
-	allowOrigin := ""
-	for _, o := range allowOrigins {
-		if o == "*" || o == origin || matchSubdomain(origin, o) {
-			allowOrigin = o
-			break
+		if cfg.AllowCredentials {
+			c.SetHeader(core.HeaderAccessControlAllowCredentials, "true")
 		}
-	}
 
-	if allowOrigin == "" {
-		return c.SendStatus(core.StatusForbidden)
-	}
-
-	c.SetHeader(core.HeaderAccessControlAllowOrigin, allowOrigin)
-	c.SetHeader(core.HeaderAccessControlAllowMethods, allowMethods)
-	c.SetHeader(core.HeaderAccessControlAllowCredentials, strconv.FormatBool(allowCredentials))
-
-	if allowHeaders != "" {
-		c.SetHeader(core.HeaderAccessControlAllowHeaders, allowHeaders)
-	} else {
-		h := c.GetHeader(core.HeaderAccessControlRequestHeaders)
-		if h != "" {
-			c.SetHeader(core.HeaderAccessControlAllowHeaders, h)
+		// Set Allow-Headers if not empty
+		if allowHeaders != "" {
+			c.SetHeader(core.HeaderAccessControlAllowHeaders, allowHeaders)
+		} else {
+			h := c.GetHeader(core.HeaderAccessControlRequestHeaders)
+			if h != "" {
+				c.SetHeader(core.HeaderAccessControlAllowHeaders, h)
+			}
 		}
+		return c.SendStatus(core.StatusNoContent)
 	}
-
-	return c.SendStatus(core.StatusNoContent)
 }
 
 func matchScheme(domain, pattern string) bool {
