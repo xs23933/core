@@ -1,11 +1,11 @@
 package main
 
 import (
-	"github.com/xs23933/core/v2"
-	"github.com/xs23933/core/v2/example/work/models"
-	"github.com/xs23933/core/v2/middleware/requestid"
-	"github.com/xs23933/core/v2/middleware/view"
-	"github.com/xs23933/core/v2/middleware/view/html"
+	"github.com/xs23933/core/v3"
+	"github.com/xs23933/core/v3/example/work/models"
+	"github.com/xs23933/core/v3/middleware/requestid"
+	"github.com/xs23933/core/v3/middleware/view"
+	"github.com/xs23933/core/v3/middleware/view/html"
 )
 
 type Handler struct {

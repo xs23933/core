@@ -115,6 +115,11 @@ type Errors interface {
 	Errors() (int, string)
 }
 
+func IsErrors(v any) bool {
+	_, ok := v.(Errors)
+	return ok
+}
+
 // NewError creates a new Error instance with an optional message
 func NewError(code int, args ...any) *Error {
 	err := &Error{

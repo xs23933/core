@@ -10,7 +10,7 @@ import (
 
 	swaggerFiles "github.com/swaggo/files/v2"
 	"github.com/swaggo/swag"
-	"github.com/xs23933/core/v2"
+	"github.com/xs23933/core/v3"
 )
 
 // WrapHandler wraps swaggerFiles.Handler and returns http.HandlerFunc.

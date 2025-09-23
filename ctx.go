@@ -109,15 +109,16 @@ type Ctx interface {
 	Render(f string, bind ...any) error
 	TextBytes(out io.Writer, f string, bind ...any) error
 	TextRender(f string, bind ...any) error
+	SetParams(key string, val string)
 }
 
 type BaseCtx struct {
 	wm            resp
-	app           *Core  // Reference to *App
-	route         *Route // Reference to *Route
-	indexRoute    int    // Index of the current route
-	indexHandler  int    // Index of the current handler
-	method        string // HTTP method
+	app           *Core        // Reference to *App
+	handlers      HandlerFuncs // Reference to *Route
+	indexRoute    int          // Index of the current route
+	indexHandler  int          // Index of the current handler
+	method        string       // HTTP method
 	methodInt     MethodType
 	baseURI       string
 	treePath      string            // Path for the search in the tree
@@ -135,6 +136,11 @@ type BaseCtx struct {
 	startAt       time.Time
 	respJsonKeys  *RestfulDefine
 	mu            sync.RWMutex
+	params        map[string]string
+}
+
+func (c *BaseCtx) SetParams(key, val string) {
+	c.params[key] = val
 }
 
 // decoderPool helps to improve ReadBody's and QueryParser's performance
@@ -1077,6 +1083,7 @@ func (c *BaseCtx) init(app *Core, w http.ResponseWriter, r *http.Request) {
 	c.detectionPath = c.path
 	c.respJsonKeys = &app.defaultRestful
 	c.vars = make(Map)
+	c.params = make(map[string]string)
 	if !app.Conf.GetBool("case-sensitive", true) {
 		c.detectionPath = strings.ToLower(c.detectionPath)
 	}
@@ -1089,9 +1096,10 @@ func (c *BaseCtx) init(app *Core, w http.ResponseWriter, r *http.Request) {
 	}
 }
 func (c *BaseCtx) release() {
-	c.route = nil
+	c.handlers = nil
 	c.ctx = nil
 	c.vars = Map{}
+	c.params = nil
 }
 
 func (c *BaseCtx) Method() string {
@@ -1103,20 +1111,8 @@ func (c *BaseCtx) Path() string {
 }
 
 func (c *BaseCtx) Params(key string, defaultValue ...string) string {
-	if key == "*" || key == "+" {
-		key += "1"
-	}
-
-	for i := range c.route.Params {
-		if len(key) != len(c.route.Params[i]) {
-			continue
-		}
-		if c.route.Params[i] == key || (!c.app.Conf.GetBool("case-sensitive", true) && EqualFold(c.route.Params[i], key)) {
-			if len(c.values) <= i || len(c.values[i]) == 0 {
-				break
-			}
-			return c.values[i]
-		}
+	if val, ok := c.params[key]; ok {
+		return val
 	}
 	return defaultString("", defaultValue)
 }
@@ -1238,16 +1234,10 @@ func (c *BaseCtx) Next() error {
 	// Increment handler index
 	c.indexHandler++
 	// Did we executed all route handlers?
-	if c.indexHandler < len(c.route.Handlers) {
-		// Continue route stack
-		return c.route.Handlers[c.indexHandler](c)
+	if c.indexHandler < len(c.handlers) {
+		return c.handlers[c.indexHandler](c)
 	}
-	_, err := c.app.next(c)
-	return err
-}
-
-func (c *BaseCtx) getValues() *[maxParams]string {
-	return &c.values
+	return nil
 }
 
 // Accepts checks if the specified extensions or content types are acceptable.

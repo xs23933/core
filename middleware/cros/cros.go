@@ -3,7 +3,7 @@ package cros
 import (
 	"strings"
 
-	"github.com/xs23933/core/v2"
+	"github.com/xs23933/core/v3"
 )
 
 type Config struct {
@@ -43,7 +43,6 @@ func New(config ...Config) core.HandlerFunc {
 	allowHeaders := strings.ReplaceAll(cfg.AllowHeaders, " ", "")
 
 	return func(c core.Ctx) error {
-		core.Dump("fuck men")
 		origin := c.GetHeader(core.HeaderOrigin)
 		allowOrigin := ""
 
