@@ -88,22 +88,6 @@ func Delete[S ~[]E, E any](s S, i, j int) S {
 	return append(s[:i], s[j:]...)
 }
 
-// uniqueRouteStack drop all not unique routes from the slice
-func uniqueRouteStack(stack []*Route) []*Route {
-	var unique []*Route
-	m := make(map[*Route]int)
-	for _, v := range stack {
-		if _, ok := m[v]; !ok {
-			// Unique key found. Record position and collect
-			// in result.
-			m[v] = len(unique)
-			unique = append(unique, v)
-		}
-	}
-
-	return unique
-}
-
 // Error represents an error that occurred while handling a request.
 type Error struct {
 	Code    int    `json:"code"`

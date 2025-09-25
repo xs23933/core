@@ -3,6 +3,7 @@ package main
 import (
 	"github.com/xs23933/core/v3"
 	"github.com/xs23933/core/v3/middleware/cros"
+	"github.com/xs23933/core/v3/middleware/requestid"
 	"github.com/xs23933/core/v3/middleware/view/html"
 )
 
@@ -11,7 +12,9 @@ func main() {
 
 	app.Use(html.NewHtmlView("views", ".html"))
 
-	app.Use(cros.New())
+	app.Use(cros.New(app))
+
+	app.Use(requestid.New())
 
 	app.Use(func(c core.Ctx) error {
 		core.Erro("Fuck men")
@@ -55,7 +58,7 @@ func main() {
 
 	core.RegHandle(&handler{})
 
-	if err := app.Listen(8081); err != nil {
+	if err := app.Listen(8080); err != nil {
 		panic(err)
 	}
 }

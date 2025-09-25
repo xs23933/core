@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net/http"
 	"reflect"
-	"sort"
 	"strings"
 )
 
@@ -22,60 +21,6 @@ type Router interface {
 	TRACE(path string, handler any, middleware ...any) Router
 	PATCH(path string, handler any, middleware ...any) Router
 	ALL(path string, handler any, middleware ...any) Router
-}
-
-type Route struct {
-	// Data for routing
-	pos         uint32      // Position in stack -> important for the sort of the matched routes
-	use         bool        // USE matches path prefixes
-	star        bool        // Path equals '*'
-	root        bool        // Path equals '/'
-	path        string      // Prettified path
-	routeParser routeParser // Parameter parser
-	group       *Group      // Group instance. used for routes in groups
-
-	// Public fields
-	Method string `json:"method"` // HTTP method
-	Name   string `json:"name"`   // Route's name
-	//nolint:revive // Having both a Path (uppercase) and a path (lowercase) is fine
-	Path     string        `json:"path"`   // Original registered route path
-	Params   []string      `json:"params"` // Case sensitive param keys
-	Handlers []HandlerFunc `json:"-"`      // Ctx handlers
-}
-
-func (r *Route) match(detectionPath, path string, params *[maxParams]string) bool {
-	// root detectionPath check
-	if r.root && len(path) == 1 && detectionPath[0] == '/' {
-		return true
-		// '*' wildcard matches any detectionPath
-	} else if r.star {
-		if len(path) > 1 {
-			params[0] = path
-		} else {
-			params[0] = ""
-		}
-		return true
-	}
-	// Does this route have parameters
-	if len(r.Params) > 0 {
-		// Match params
-		if match := r.routeParser.getMatch(detectionPath, path, params, r.use); match {
-			// Get params from the path detectionPath
-			return match
-		}
-	}
-	// Is this route a Middleware?
-	if r.use {
-		// Single slash will match or detectionPath prefix
-		if r.root || strings.HasPrefix(detectionPath, r.path) {
-			return true
-		}
-		// Check for a simple detectionPath match
-	} else if len(r.path) == len(detectionPath) && r.path == detectionPath {
-		return true
-	}
-	// No match
-	return false
 }
 
 func (app *Core) processedHandler(hand any) HandlerFuncs {
@@ -141,18 +86,6 @@ func (app *Core) preparePath(uri string) string {
 	return uri
 }
 
-// 根据配置调整路径大小写
-func (app *Core) adjustPathCase(uri string) string {
-	uriPretty := uri
-	if !Conf.GetBool("case-sensitive", false) {
-		uriPretty = strings.ToLower(uriPretty)
-	}
-	if !Conf.GetBool("strict-routing", false) && len(uriPretty) > 1 {
-		uriPretty = strings.TrimRight(uriPretty, "/")
-	}
-	return uriPretty
-}
-
 func (app *Core) AddHandle(methods []string, uri string, group *Group, handler any, middleware ...HandlerFunc) Router {
 	handlers := middleware
 	if handler != nil {
@@ -194,100 +127,6 @@ func (app *Core) AddHandle(methods []string, uri string, group *Group, handler a
 	return app
 }
 
-func (app *Core) Build() *Core {
-	return app.buildTree()
-}
-
-func (app *Core) buildTree() *Core {
-	if !app.routesRefreshed {
-		return app
-	}
-	app.routesRefreshed = false
-
-	for _, method := range app.RequestMethods {
-		m := methodPos(method)
-		if m == -1 {
-			continue
-		}
-
-		tsMap := make(map[string][]*Route)
-
-		// 按前缀分桶 - 修复分类逻辑
-		for _, route := range app.stack[m] {
-			treePath := ""
-
-			// 通配路由放在 "" 桶
-			if route.star {
-				treePath = ""
-			} else if route.root {
-				treePath = ""
-			} else if len(route.routeParser.segs) > 0 && len(route.routeParser.segs[0].Const) >= 3 {
-				// 普通路由按前3个字符分桶
-				treePath = route.routeParser.segs[0].Const[:3]
-			} else {
-				// 其他情况也放到 "" 桶
-				treePath = ""
-			}
-			tsMap[treePath] = append(tsMap[treePath], route)
-		}
-
-		// 确保通配路由在所有桶中都存在
-		if starRoutes, ok := tsMap[""]; ok && len(starRoutes) > 0 {
-			for k := range tsMap {
-				if k != "" {
-					// 合并并去重
-					merged := make([]*Route, len(tsMap[k]))
-					copy(merged, tsMap[k])
-
-					for _, starRoute := range starRoutes {
-						// 只添加通配路由
-						if starRoute.star && !containsRoute(merged, starRoute) {
-							merged = append(merged, starRoute)
-						}
-					}
-					tsMap[k] = merged
-				}
-			}
-		}
-
-		// 排序每个桶 - 确保通配路由在最后
-		for k := range tsMap {
-			sort.Slice(tsMap[k], func(i, j int) bool {
-				// 通配路由放在最后
-				if tsMap[k][i].star && !tsMap[k][j].star {
-					return false
-				}
-				if !tsMap[k][i].star && tsMap[k][j].star {
-					return true
-				}
-				// 中间件路由放在前面
-				if tsMap[k][i].use && !tsMap[k][j].use {
-					return true
-				}
-				if !tsMap[k][i].use && tsMap[k][j].use {
-					return false
-				}
-				// 普通路由按位置排序
-				return tsMap[k][i].pos < tsMap[k][j].pos
-			})
-		}
-
-		app.treeStack[m] = tsMap
-	}
-
-	return app
-}
-
-// 辅助函数：检查路由是否已存在
-func containsRoute(routes []*Route, route *Route) bool {
-	for _, r := range routes {
-		if r == route {
-			return true
-		}
-	}
-	return false
-}
-
 func (app *Core) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	c, ok := app.AcquireCtx(w, r).(*BaseCtx)
 	if !ok {
@@ -297,7 +136,6 @@ func (app *Core) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	method := c.Method()
 	root := app.trees[methodPos(method)]
-	Info("match %s => %s", method, c.Path())
 	handlers, ok := root.match(c.Path(), c)
 	if !ok {
 		c.SendString(ErrNotFound)

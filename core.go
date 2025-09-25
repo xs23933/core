@@ -32,20 +32,8 @@ type Core struct {
 	*http.Server
 	mutex sync.Mutex
 
-	middlewares HandlerFuncs // 全局中间件
-	trees       []*RouteNode
-	// Route stack divided by HTTP methods
-	stack [][]*Route
-	// Route stack divided by HTTP methods and route prefixes
-	treeStack []map[string][]*Route
-	// Amount of registered routes
-	routesCount uint32
-	// Amount of registered handlers
-	handlersCount uint32
-	// contains the information if the route stack has been changed to build the optimized tree
-	routesRefreshed bool
-	// Latest route & group
-	latestRoute    *Route
+	trees []*RouteNode
+
 	Conf           Options
 	assets         Options
 	Debug          bool
@@ -75,7 +63,6 @@ func (app *Core) core() *Core {
 
 func New(options ...Options) *Core {
 	app := &Core{
-		latestRoute:    &Route{},
 		Server:         &http.Server{},
 		addr:           ":8080",
 		Debug:          true,
@@ -177,9 +164,6 @@ func New(options ...Options) *Core {
 			}
 		},
 	}
-
-	app.stack = make([][]*Route, len(app.RequestMethods))
-	app.treeStack = make([]map[string][]*Route, len(app.RequestMethods))
 
 	c := make(chan os.Signal, 1)
 	const SIGUSR2 = syscall.Signal(0x1f)
@@ -370,7 +354,7 @@ func (app *Core) prefork() error {
 
 func (app *Core) runProcess() {
 	app.loadMods() // load modules
-	app.buildTree()
+	// app.buildTree()
 }
 
 func (app *Core) Use(fn ...any) Router {

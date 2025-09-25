@@ -27,7 +27,7 @@ var defaultConfig = Config{
 	}, ","),
 }
 
-func New(config ...Config) core.HandlerFunc {
+func New(app *core.Core, config ...Config) core.HandlerFunc {
 	cfg := defaultConfig
 
 	if len(config) > 0 {
@@ -42,7 +42,15 @@ func New(config ...Config) core.HandlerFunc {
 	allowMethods := strings.ReplaceAll(cfg.AllowMethods, " ", "")
 	allowHeaders := strings.ReplaceAll(cfg.AllowHeaders, " ", "")
 
+	app.ALL("/*", func(c core.Ctx) error {
+		c.SetHeader(core.HeaderAccessControlAllowOrigin, strings.Join(allowOrigins, ","))
+		c.SetHeader(core.HeaderAccessControlAllowMethods, allowMethods)
+		c.SetHeader(core.HeaderAccessControlAllowHeaders, allowHeaders)
+		return c.SendStatus(core.StatusNoContent)
+	})
+
 	return func(c core.Ctx) error {
+		// core.Erro("fuck with cros")
 		origin := c.GetHeader(core.HeaderOrigin)
 		allowOrigin := ""
 
@@ -72,9 +80,9 @@ func New(config ...Config) core.HandlerFunc {
 
 			return c.Next()
 		}
-		c.Vary(core.HeaderOrigin)
-		c.Vary(core.HeaderAccessControlRequestMethod)
-		c.Vary(core.HeaderAccessControlRequestHeaders)
+		// c.Vary(core.HeaderOrigin)
+		// c.Vary(core.HeaderAccessControlRequestMethod)
+		// c.Vary(core.HeaderAccessControlRequestHeaders)
 		c.SetHeader(core.HeaderAccessControlAllowOrigin, allowOrigin)
 		c.SetHeader(core.HeaderAccessControlAllowMethods, allowMethods)
 

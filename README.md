@@ -1,5 +1,5 @@
 
-# Core web framework v2.0
+# Core web framework v3.0
 > Core is used for rapid development of enterprise application in Go, including RESTful APIs, web apps and backend services.
 
 It is inspired by Tornado, Sinatra and Koa(node.js). Core has some Go-specific features such as interfaces and struct embedding.
