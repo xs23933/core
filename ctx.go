@@ -121,12 +121,11 @@ type BaseCtx struct {
 	method        string       // HTTP method
 	methodInt     MethodType
 	baseURI       string
-	treePath      string            // Path for the search in the tree
-	detectionPath string            // Route detection path                                  -> string copy from detectionPathBuffer
-	path          string            // HTTP path with the modifications by the configuration -> string copy from pathBuffer
-	pathOriginal  string            // Original HTTP path
-	values        [maxParams]string // Route parameter values
-	matched       bool              // Non use route matched
+	treePath      string // Path for the search in the tree
+	detectionPath string // Route detection path                                  -> string copy from detectionPathBuffer
+	path          string // HTTP path with the modifications by the configuration -> string copy from pathBuffer
+	pathOriginal  string // Original HTTP path
+	matched       bool   // Non use route matched
 	theme         string
 	W             ResponseWriter
 	R             *http.Request

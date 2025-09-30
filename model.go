@@ -16,12 +16,12 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/glebarez/sqlite"
 	"github.com/google/uuid"
 	"github.com/xs23933/uid"
 	"gorm.io/driver/clickhouse"
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
-	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 	"gorm.io/gorm/logger"
@@ -509,15 +509,15 @@ func (m Money) Int() Int {
 func (Money) GormDBDataType(db *gorm.DB, field *schema.Field) string {
 	switch db.Dialector.Name() {
 	case "clickhouse":
-		return "DOUBLE"
+		return "DECIMAL(10,3)"
 	case "mysql":
-		return "DECIMAL(18,6)"
+		return "DECIMAL(10,3)"
 	case "postgres":
-		return "DECIMAL(18,6)"
+		return "DECIMAL(10,3)"
 	case "sqlite":
-		return "DECIMAL(18,6)"
+		return "DECIMAL(10,3)"
 	default:
-		return "DECIMAL(18,6)"
+		return "DECIMAL(10,3)"
 	}
 }
 
