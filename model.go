@@ -511,13 +511,13 @@ func (Money) GormDBDataType(db *gorm.DB, field *schema.Field) string {
 	case "clickhouse":
 		return "DOUBLE"
 	case "mysql":
-		return "DECIMAL(18,6)"
+		return "DECIMAL(12,2)"
 	case "postgres":
-		return "DECIMAL(18,6)"
+		return "DECIMAL(12,2)"
 	case "sqlite":
-		return "DECIMAL(18,6)"
+		return "DECIMAL(12,2)"
 	default:
-		return "DECIMAL(18,6)"
+		return "DECIMAL(12,2)"
 	}
 }
 
