@@ -9,6 +9,7 @@ type nodeType uint8
 const (
 	static nodeType = iota
 	param
+	params
 	catchAll
 	root
 )
@@ -30,6 +31,7 @@ func (n *RouteNode) addRoute(path string, handlers []HandlerFunc) {
 	for i, seg := range segments {
 		isParam := strings.HasPrefix(seg, ":")
 		isCatchAll := strings.HasPrefix(seg, "*")
+		isParams := strings.HasSuffix(seg, "?") //检查是否为可选参数
 
 		if isCatchAll {
 			// 通配符必须是最后一个
@@ -37,10 +39,19 @@ func (n *RouteNode) addRoute(path string, handlers []HandlerFunc) {
 			current.catchChild = child
 			current = child
 		} else if isParam {
-			if current.paramChild == nil {
-				current.paramChild = &RouteNode{path: seg, nType: param, handlers: nil}
+			if isParams {
+				// 可选参数：移除末尾的?
+				cleanSeg := strings.TrimSuffix(seg, "?")
+				if current.paramChild == nil {
+					current.paramChild = &RouteNode{path: cleanSeg, nType: params, handlers: nil}
+				}
+				current = current.paramChild
+			} else { // 必须参数
+				if current.paramChild == nil {
+					current.paramChild = &RouteNode{path: seg, nType: param, handlers: nil}
+				}
+				current = current.paramChild
 			}
-			current = current.paramChild
 		} else {
 			if current.staticChild == nil {
 				current.staticChild = make(map[string]*RouteNode)
@@ -70,20 +81,32 @@ func (n *RouteNode) match(path string, ctx Ctx) (HandlerFuncs, bool) {
 
 	for i, seg := range segments {
 		matched := false
-		// 先匹配参数节点
-		if !matched && current.paramChild != nil {
-			ctx.SetParams(current.paramChild.path[1:], seg)
-			current = current.paramChild
-			chain = append(chain, current.middlewares...)
-			matched = true
-		}
-
 		// 再匹配静态节点
 		if current.staticChild != nil {
 			if child, ok := current.staticChild[seg]; ok {
 				current = child
 				chain = append(chain, current.middlewares...)
 				matched = true
+			}
+		}
+
+		// 先匹配参数节点
+		if !matched && current.paramChild != nil {
+			paramName := current.paramChild.path
+			switch current.paramChild.nType {
+			case params:
+				// 可选参数： 设置参数值
+				ctx.SetParams(paramName[1:], seg)
+				current = current.paramChild
+				chain = append(chain, current.middlewares...)
+				matched = true
+			case param:
+				if seg != "" {
+					ctx.SetParams(paramName[1:], seg)
+					current = current.paramChild
+					chain = append(chain, current.middlewares...)
+					matched = true
+				}
 			}
 		}
 
@@ -100,6 +123,14 @@ func (n *RouteNode) match(path string, ctx Ctx) (HandlerFuncs, bool) {
 			return nil, false
 		}
 	}
+	// 4. 处理可选参数的特殊情况：检查当前节点是否有可选参数子节点
+	// 这种情况处理路径段数少于注册路径的情况，比如注册了 /a/b/:c?，但访问 /a/b
+	if current.paramChild != nil && current.paramChild.nType == params {
+		// 使用可选参数节点，但不设置参数值（参数为空）
+		current = current.paramChild
+		chain = append(chain, current.middlewares...)
+	}
+
 	// 到叶子节点，追加最终 handler
 	chain = append(chain, current.handlers...)
 	return chain, true

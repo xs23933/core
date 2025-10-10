@@ -551,6 +551,15 @@ func (m Money) MarshalJSON() ([]byte, error) {
 	return []byte(str), nil
 }
 
+func (m Money) MarshalBinary() (data []byte, err error) {
+	str := strconv.FormatFloat(float64(m), 'f', -1, 64) // 保留两位小数
+	return []byte(str), nil
+}
+
+func (m *Money) UnmarshalBinary(data []byte) error {
+	return m.UnmarshalJSON(data)
+}
+
 func ParseMoney(val any) Money {
 	switch v := val.(type) {
 	case string:
@@ -753,7 +762,7 @@ func (IntMoney) GormDBDataType(db *gorm.DB, field *schema.Field) string {
 }
 
 func (m IntMoney) MarshalBinary() (data []byte, err error) {
-	return []byte(fmt.Sprintf("%d", m)), nil
+	return fmt.Appendf(nil, "%d", m), nil
 }
 
 func (m *IntMoney) UnmarshalBinary(data []byte) error {
