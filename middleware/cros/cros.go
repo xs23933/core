@@ -7,82 +7,44 @@ import (
 )
 
 type Config struct {
-	AllowOrigins     string // default value "*"
-	AllowHeaders     string // default value ""
-	AllowCredentials bool   // default false
-	AllowMethods     string // default "POST, GET, OPTIONS, PUT, DELETE"
+	AllowOrigins     string // 例如: "http://localhost:3000"
+	AllowHeaders     string // 默认为空，自动从请求中取
+	AllowMethods     string // 默认为 "GET,POST,PUT,DELETE,OPTIONS"
+	AllowCredentials bool   // 是否允许带 Cookie / Authorization
 }
 
 var defaultConfig = Config{
-	AllowOrigins:     "*",
-	AllowHeaders:     "",
-	AllowCredentials: false,
-	AllowMethods: strings.Join([]string{
-		core.MethodGet,
-		core.MethodPost,
-		core.MethodHead,
-		core.MethodPut,
-		core.MethodDelete,
-		core.MethodPatch,
-	}, ","),
+	AllowOrigins: "*",
+	AllowMethods: "GET,POST,PUT,DELETE,OPTIONS",
 }
 
+// New 返回一个标准 CORS 中间件
 func New(app *core.Core, config ...Config) core.HandlerFunc {
 	cfg := defaultConfig
-
 	if len(config) > 0 {
-		cfg = config[0]
-		if cfg.AllowOrigins == "" {
-			cfg.AllowOrigins = defaultConfig.AllowOrigins
+		if config[0].AllowOrigins != "" {
+			cfg.AllowOrigins = config[0].AllowOrigins
 		}
+		if config[0].AllowHeaders != "" {
+			cfg.AllowHeaders = config[0].AllowHeaders
+		}
+		if config[0].AllowMethods != "" {
+			cfg.AllowMethods = config[0].AllowMethods
+		}
+		cfg.AllowCredentials = config[0].AllowCredentials
 	}
-	// Convert string to slice
+
 	allowOrigins := strings.Split(strings.ReplaceAll(cfg.AllowOrigins, " ", ""), ",")
-	// Strip white spaces
-	allowMethods := strings.ReplaceAll(cfg.AllowMethods, " ", "")
-	allowHeaders := strings.ReplaceAll(cfg.AllowHeaders, " ", "")
+	allowMethods := cfg.AllowMethods
 
-	app.ALL("/*", func(c core.Ctx) error {
-		c.SetHeader(core.HeaderAccessControlAllowOrigin, strings.Join(allowOrigins, ","))
-		c.SetHeader(core.HeaderAccessControlAllowMethods, allowMethods)
-		c.SetHeader(core.HeaderAccessControlAllowHeaders, allowHeaders)
-		return c.SendStatus(core.StatusNoContent)
-	})
-
-	return func(c core.Ctx) error {
-		// core.Erro("fuck with cros")
+	// OPTIONS 预检请求单独注册
+	app.OPTIONS("/*", func(c core.Ctx) error {
 		origin := c.GetHeader(core.HeaderOrigin)
-		allowOrigin := ""
-
-		for _, o := range allowOrigins {
-			if o == "*" {
-				allowOrigin = "*"
-				break
-			}
-			if o == origin {
-				allowOrigin = o
-				break
-			}
-			if matchSubdomain(origin, o) {
-				allowOrigin = origin
-				break
-			}
+		allowOrigin := matchOrigin(origin, allowOrigins)
+		if allowOrigin == "" {
+			return c.SendStatus(core.StatusForbidden)
 		}
 
-		if c.Method() != core.MethodOptions {
-			c.Vary(core.HeaderOrigin)
-
-			c.SetHeader(core.HeaderAccessControlAllowOrigin, allowOrigin)
-
-			if cfg.AllowCredentials {
-				c.SetHeader(core.HeaderAccessControlAllowCredentials, "true")
-			}
-
-			return c.Next()
-		}
-		// c.Vary(core.HeaderOrigin)
-		// c.Vary(core.HeaderAccessControlRequestMethod)
-		// c.Vary(core.HeaderAccessControlRequestHeaders)
 		c.SetHeader(core.HeaderAccessControlAllowOrigin, allowOrigin)
 		c.SetHeader(core.HeaderAccessControlAllowMethods, allowMethods)
 
@@ -90,66 +52,52 @@ func New(app *core.Core, config ...Config) core.HandlerFunc {
 			c.SetHeader(core.HeaderAccessControlAllowCredentials, "true")
 		}
 
-		// Set Allow-Headers if not empty
-		if allowHeaders != "" {
-			c.SetHeader(core.HeaderAccessControlAllowHeaders, allowHeaders)
+		if cfg.AllowHeaders != "" {
+			c.SetHeader(core.HeaderAccessControlAllowHeaders, cfg.AllowHeaders)
 		} else {
 			h := c.GetHeader(core.HeaderAccessControlRequestHeaders)
 			if h != "" {
 				c.SetHeader(core.HeaderAccessControlAllowHeaders, h)
 			}
 		}
+
 		return c.SendStatus(core.StatusNoContent)
+	})
+
+	// 实际请求的跨域处理
+	return func(c core.Ctx) error {
+		origin := c.GetHeader(core.HeaderOrigin)
+		allowOrigin := matchOrigin(origin, allowOrigins)
+		if allowOrigin != "" {
+			c.SetHeader(core.HeaderAccessControlAllowOrigin, allowOrigin)
+			if cfg.AllowCredentials {
+				c.SetHeader(core.HeaderAccessControlAllowCredentials, "true")
+			}
+		}
+		return c.Next()
 	}
 }
 
-func matchScheme(domain, pattern string) bool {
-	didx := strings.Index(domain, ":")
-	pidx := strings.Index(pattern, ":")
-	return didx != -1 && pidx != -1 && domain[:didx] == pattern[:pidx]
-}
-
-// matchSubdomain compares authority with wildcard
-func matchSubdomain(domain, pattern string) bool {
-	if !matchScheme(domain, pattern) {
-		return false
+// matchOrigin 判断当前请求的 Origin 是否允许
+func matchOrigin(origin string, allowOrigins []string) string {
+	if origin == "" {
+		return ""
 	}
-	didx := strings.Index(domain, "://")
-	pidx := strings.Index(pattern, "://")
-	if didx == -1 || pidx == -1 {
-		return false
-	}
-	domAuth := domain[didx+3:]
-	// to avoid long loop by invalid long domain
-	const maxDomainLen = 253
-	if len(domAuth) > maxDomainLen {
-		return false
-	}
-	patAuth := pattern[pidx+3:]
-
-	domComp := strings.Split(domAuth, ".")
-	patComp := strings.Split(patAuth, ".")
-	const divHalf = 2
-	for i := len(domComp)/divHalf - 1; i >= 0; i-- {
-		opp := len(domComp) - 1 - i
-		domComp[i], domComp[opp] = domComp[opp], domComp[i]
-	}
-	for i := len(patComp)/divHalf - 1; i >= 0; i-- {
-		opp := len(patComp) - 1 - i
-		patComp[i], patComp[opp] = patComp[opp], patComp[i]
-	}
-
-	for i, v := range domComp {
-		if len(patComp) <= i {
-			return false
+	for _, o := range allowOrigins {
+		if o == "*" {
+			return "*"
 		}
-		p := patComp[i]
-		if p == "*" {
-			return true
+		if o == origin {
+			return origin
 		}
-		if p != v {
-			return false
+		// 通配符匹配
+		if strings.HasPrefix(o, "*.") {
+			// *.example.com 匹配任意子域
+			domain := strings.TrimPrefix(o, "*.")
+			if strings.HasSuffix(origin, domain) {
+				return origin
+			}
 		}
 	}
-	return false
+	return ""
 }
