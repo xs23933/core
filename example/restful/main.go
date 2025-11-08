@@ -2,7 +2,7 @@ package main
 
 import (
 	"github.com/xs23933/core/v3"
-	"github.com/xs23933/core/v3/middleware/cros"
+	"github.com/xs23933/core/v3/middleware/cors"
 	"github.com/xs23933/core/v3/middleware/requestid"
 	"github.com/xs23933/core/v3/middleware/view/html"
 )
@@ -12,7 +12,7 @@ func main() {
 
 	app.Use(html.NewHtmlView("views", ".html"))
 
-	app.Use(cros.New(app))
+	app.Use(cors.New(app))
 
 	app.Use(requestid.New())
 

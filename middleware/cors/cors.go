@@ -1,4 +1,4 @@
-package cros
+package cors
 
 import (
 	"strings"
