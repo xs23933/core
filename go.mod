@@ -5,6 +5,7 @@ go 1.23.0
 toolchain go1.24.6
 
 require (
+	github.com/bwmarrin/snowflake v0.3.0
 	github.com/bytedance/sonic v1.14.0
 	github.com/davecgh/go-spew v1.1.1
 	github.com/glebarez/sqlite v1.11.0

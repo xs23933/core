@@ -18,6 +18,7 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/glebarez/sqlite"
 	"github.com/google/uuid"
+	"github.com/xs23933/core/v3/sid"
 	"github.com/xs23933/uid"
 	"gorm.io/driver/clickhouse"
 	"gorm.io/driver/mysql"
@@ -29,6 +30,10 @@ import (
 )
 
 func NewModel(conf Options, debug, colorful bool) (map[string]*DB, error) {
+
+	nodeID := Conf.GetInt64("node_id", 1)
+	SnID, _ = sid.New(nodeID)
+
 	if conf.GetString("type") != "" && conf.GetString("dsn") != "" {
 		db, err := openDB(conf, debug, colorful)
 		if err != nil {
@@ -51,6 +56,10 @@ func NewModel(conf Options, debug, colorful bool) (map[string]*DB, error) {
 		D("Opened database connection %s %s", dbsType[name], name)
 	}
 	return conns, nil
+}
+
+func NewSnID() sid.ID {
+	return SnID.MustGenerate()
 }
 
 func openDB(conf Options, debug, colorful bool) (db *DB, err error) {
@@ -89,6 +98,19 @@ func openDB(conf Options, debug, colorful bool) (db *DB, err error) {
 	if err != nil {
 		return nil, err
 	}
+	maxOpenConns := conf.GetInt("max_open_conns", 100)
+	maxIdleConns := conf.GetInt("max_idle_conns", 20)
+	connMaxLifetime := conf.GetString("conn_max_lifetime", "300s")
+
+	sqlDB, _ := db.DB()
+	sqlDB.SetMaxOpenConns(maxOpenConns)
+	sqlDB.SetMaxIdleConns(maxIdleConns)
+	maxLifeTime, err := time.ParseDuration(connMaxLifetime)
+	if err != nil {
+		maxLifeTime = time.Second * 300
+	}
+	sqlDB.SetConnMaxLifetime(maxLifeTime)
+
 	if debug {
 		db = db.Debug()
 	}
@@ -98,8 +120,8 @@ func openDB(conf Options, debug, colorful bool) (db *DB, err error) {
 
 type Model struct {
 	ID        uid.UID         `gorm:"size:12;primaryKey" json:"id,omitempty"`
-	CreatedAt time.Time       `json:"created_at" gorm:"<-:create"`
-	UpdatedAt time.Time       `json:"updated_at" gorm:"autoUpdateTime"`
+	CreatedAt time.Time       `json:"created_at,omitempty" gorm:"<-:create"`
+	UpdatedAt time.Time       `json:"updated_at,omitempty" gorm:"autoUpdateTime"`
 	DeletedAt *gorm.DeletedAt `json:"deleted_at,omitempty" gorm:"index"`
 }
 
@@ -991,15 +1013,29 @@ func (d *Date) Scan(value interface{}) error {
 }
 
 type Models struct {
-	ID        UUID            `json:"id,omitempty" gorm:"size:32;primaryKey"`
-	CreatedAt time.Time       `json:"created_at" gorm:"<-:create"`
-	UpdatedAt time.Time       `json:"updated_at" gorm:"autoUpdateTime"`
+	ID        UUID            `json:"id,omitzero" gorm:"size:32;primaryKey"`
+	CreatedAt *time.Time      `json:"created_at,omitempty" gorm:"<-:create"`
+	UpdatedAt *time.Time      `json:"updated_at,omitempty" gorm:"autoUpdateTime"`
 	DeletedAt *gorm.DeletedAt `json:"deleted_at,omitempty" gorm:"index"`
 }
 
 func (m *Models) BeforeCreate(tx *DB) error {
 	if m.ID.IsEmpty() {
 		m.ID = NewUUID()
+	}
+	return nil
+}
+
+type SModels struct {
+	ID        sid.ID          `json:"id,omitzero" gorm:"primaryKey;comment:主键"`
+	CreatedAt *time.Time      `json:"created_at,omitempty" gorm:"<-:create;comment:创建时间"`
+	UpdatedAt *time.Time      `json:"updated_at,omitempty" gorm:"autoUpdateTime;comment:更新时间"`
+	DeletedAt *gorm.DeletedAt `json:"deleted_at,omitempty" gorm:"index;comment:删除时间"`
+}
+
+func (m *SModels) BeforeCreate(tx *DB) error {
+	if m.ID == 0 {
+		m.ID = SnID.MustGenerate()
 	}
 	return nil
 }
@@ -1233,6 +1269,7 @@ func DBType(name ...string) string {
 var (
 	conns   = make(map[string]*DB)
 	dbsType = make(map[string]string)
+	SnID    *sid.SnowflakeID
 )
 
 type DB = gorm.DB

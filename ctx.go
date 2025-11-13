@@ -335,7 +335,7 @@ var (
 func (c *BaseCtx) Validate(out any) error {
 	// 检查是否是结构体指针
 	val := reflect.ValueOf(out)
-	if val.Kind() != reflect.Ptr || val.Elem().Kind() != reflect.Struct {
+	if val.Kind() != reflect.Pointer || val.Elem().Kind() != reflect.Struct {
 		return ErrInvalidValidationType
 	}
 
