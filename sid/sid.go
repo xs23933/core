@@ -1,6 +1,7 @@
 package sid
 
 import (
+	"context"
 	"database/sql/driver"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 	"gorm.io/gorm/schema"
 )
 
@@ -295,7 +297,7 @@ func (ID) GormDBDataType(db *gorm.DB, field *schema.Field) string {
 
 // 实现 GORM 的序列化接口
 func (id ID) Value() (driver.Value, error) {
-	return int64(id), nil
+	return id.Int64(), nil
 }
 
 func (id *ID) Scan(value interface{}) error {
@@ -321,4 +323,23 @@ func (id *ID) Scan(value interface{}) error {
 		return fmt.Errorf("不支持的扫描类型: %T", value)
 	}
 	return nil
+}
+
+// Expression 实现 GORM 的 Expression 接口，让 ID 在查询中自动转换为 int64
+func (id ID) Expression() clause.Expression {
+	return clause.Expr{
+		SQL:  "?",
+		Vars: []any{id.Int64()}, // 自动转换为 int64
+	}
+}
+func (id ID) Build(builder clause.Builder) {
+	builder.WriteString(fmt.Sprintf("%d", id.Int64()))
+}
+
+// GormValue 添加 GORM 特定的方法
+func (id ID) GormValue(ctx context.Context, db *gorm.DB) clause.Expr {
+	return clause.Expr{
+		SQL:  "?",
+		Vars: []any{id.Int64()},
+	}
 }

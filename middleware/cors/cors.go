@@ -14,8 +14,9 @@ type Config struct {
 }
 
 var defaultConfig = Config{
-	AllowOrigins: "*",
-	AllowMethods: "GET,POST,PUT,DELETE,OPTIONS",
+	AllowOrigins:     "*",
+	AllowMethods:     "GET,POST,PUT,DELETE,OPTIONS",
+	AllowCredentials: true,
 }
 
 // New 返回一个标准 CORS 中间件

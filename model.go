@@ -529,6 +529,15 @@ func (m Money) Int() Int {
 
 // GormDBDataType gorm 方言映射 (不同数据库可指定不同字段类型)
 func (Money) GormDBDataType(db *gorm.DB, field *schema.Field) string {
+
+	// 1️⃣ 如果字段上显式声明了 type，优先使用
+	if field.TagSettings != nil {
+		if t, ok := field.TagSettings["TYPE"]; ok && t != "" {
+			Dump(t)
+			return t
+		}
+	}
+
 	switch db.Dialector.Name() {
 	case "clickhouse":
 		return "DECIMAL(10,3)"
@@ -769,6 +778,15 @@ func (IntMoney) GormDataType() string {
 
 // GormDBDataType gorm 方言映射 (不同数据库可指定不同字段类型)
 func (IntMoney) GormDBDataType(db *gorm.DB, field *schema.Field) string {
+
+	// 1️⃣ 如果字段上显式声明了 type，优先使用
+	if field.TagSettings != nil {
+		if t, ok := field.TagSettings["TYPE"]; ok && t != "" {
+			Dump(t)
+			return t
+		}
+	}
+
 	switch db.Dialector.Name() {
 	case "clickhouse":
 		return "Int64"
