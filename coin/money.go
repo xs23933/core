@@ -16,47 +16,59 @@ import (
 // ==========================================
 // 常量与基数
 // ==========================================
-const CoinScale = 8
+const MoneyScale = 8
 
 var (
-	coinBase = new(big.Int).Exp(big.NewInt(10), big.NewInt(CoinScale), nil) // 10^8
+	MoneyBase = new(big.Int).Exp(big.NewInt(10), big.NewInt(MoneyScale), nil) // 10^8
+	oneMoney  = Money{v: new(big.Int).Set(MoneyBase)}
 )
 
+func One() Money {
+	return oneMoney
+}
+
 // ==========================================
-// CoinMoney 结构体
+// Money 结构体
 // 内部使用 big.Int 存储最小单位（固定 8 位小数）
 // ==========================================
-type CoinMoney struct {
+type Money struct {
 	v *big.Int // 最小单位
 }
 
 // ==========================================
 // 构造函数
 // ==========================================
-func Zero() CoinMoney {
-	return CoinMoney{v: big.NewInt(0)}
+func Zero() Money {
+	return Money{v: big.NewInt(0)}
 }
 
-func (m CoinMoney) norm() *big.Int {
+func (m Money) norm() *big.Int {
 	if m.v == nil {
 		return big.NewInt(0)
 	}
 	return m.v
 }
 
-func FromInt(v *big.Int) CoinMoney {
+func FromInt(v *big.Int) Money {
 	if v == nil {
 		return Zero()
 	}
-	return CoinMoney{v: new(big.Int).Set(v)}
+	return Money{v: new(big.Int).Set(v)}
 }
 
-func FromInt64(v int64) CoinMoney {
-	return CoinMoney{v: big.NewInt(v)}
+func FromInt64(v int64) Money {
+	return Money{v: big.NewInt(v)}
 }
 
-// ParseCoinMoney 从字符串解析，例如 "123.45678901"
-func ParseCoinMoney(s string) (CoinMoney, error) {
+func MustParse(s string) Money {
+	m, err := Parse(s)
+	if err != nil {
+		panic(err)
+	}
+	return m
+}
+
+func Parse(s string) (Money, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return Zero(), nil
@@ -75,10 +87,12 @@ func ParseCoinMoney(s string) (CoinMoney, error) {
 		fracPart = parts[1]
 	}
 
-	if len(fracPart) > CoinScale {
-		return Zero(), errors.New("too many decimal places")
+	if len(fracPart) > MoneyScale {
+		// ⚠️ 直接拒绝，不四舍五入
+		return Zero(), errors.New("money precision overflow")
 	}
-	fracPart += strings.Repeat("0", CoinScale-len(fracPart))
+
+	fracPart += strings.Repeat("0", MoneyScale-len(fracPart))
 	raw := intPart + fracPart
 
 	n := new(big.Int)
@@ -89,13 +103,18 @@ func ParseCoinMoney(s string) (CoinMoney, error) {
 	if neg {
 		n.Neg(n)
 	}
-	return CoinMoney{v: n}, nil
+	return Money{v: n}, nil
+}
+
+// ParseMoney 从字符串解析，例如 "123.45678901"
+func ParseMoney(s string) (Money, error) {
+	return Parse(s)
 }
 
 // ==========================================
 // 输出
 // ==========================================
-func (m CoinMoney) String() string {
+func (m Money) String() string {
 	if m.v == nil {
 		return "0.00000000"
 	}
@@ -107,29 +126,29 @@ func (m CoinMoney) String() string {
 	}
 
 	s := val.Text(10)
-	if len(s) <= CoinScale {
-		s = strings.Repeat("0", CoinScale-len(s)+1) + s
+	if len(s) <= MoneyScale {
+		s = strings.Repeat("0", MoneyScale-len(s)+1) + s
 	}
-	intPart := s[:len(s)-CoinScale]
-	fracPart := s[len(s)-CoinScale:]
+	intPart := s[:len(s)-MoneyScale]
+	fracPart := s[len(s)-MoneyScale:]
 	return sign + intPart + "." + fracPart
 }
 
-func (m CoinMoney) Int() *big.Int {
+func (m Money) Int() *big.Int {
 	if m.v == nil {
 		return big.NewInt(0)
 	}
-	return new(big.Int).Set(m.v)
+	return new(big.Int).Set(m.norm())
 }
 
 // ==========================================
 // JSON
 // ==========================================
-func (m CoinMoney) MarshalJSON() ([]byte, error) {
+func (m Money) MarshalJSON() ([]byte, error) {
 	return json.Marshal(m.String())
 }
 
-func (m *CoinMoney) UnmarshalJSON(data []byte) error {
+func (m *Money) UnmarshalJSON(data []byte) error {
 	data = bytes.TrimSpace(data)
 
 	// null
@@ -144,7 +163,7 @@ func (m *CoinMoney) UnmarshalJSON(data []byte) error {
 		if err := json.Unmarshal(data, &s); err != nil {
 			return err
 		}
-		cm, err := ParseCoinMoney(s)
+		cm, err := Parse(s)
 		if err != nil {
 			return err
 		}
@@ -158,7 +177,7 @@ func (m *CoinMoney) UnmarshalJSON(data []byte) error {
 		return err
 	}
 
-	cm, err := ParseCoinMoney(num.String())
+	cm, err := Parse(num.String())
 	if err != nil {
 		return err
 	}
@@ -169,7 +188,7 @@ func (m *CoinMoney) UnmarshalJSON(data []byte) error {
 // ==========================================
 // GORM / SQL
 // ==========================================
-func (m CoinMoney) GormDBDataType(db *gorm.DB, field *schema.Field) string {
+func (m Money) GormDBDataType(db *gorm.DB, field *schema.Field) string {
 	if field.TagSettings != nil {
 		if t, ok := field.TagSettings["TYPE"]; ok && t != "" {
 			return t
@@ -183,14 +202,11 @@ func (m CoinMoney) GormDBDataType(db *gorm.DB, field *schema.Field) string {
 	}
 }
 
-func (m CoinMoney) Value() (driver.Value, error) {
-	if m.v == nil {
-		return "0", nil
-	}
+func (m Money) Value() (driver.Value, error) {
 	return m.String(), nil
 }
 
-func (m *CoinMoney) Scan(value any) error {
+func (m *Money) Scan(value any) error {
 	if value == nil {
 		*m = Zero()
 		return nil
@@ -198,13 +214,13 @@ func (m *CoinMoney) Scan(value any) error {
 
 	switch v := value.(type) {
 	case string:
-		cm, err := ParseCoinMoney(v)
+		cm, err := ParseMoney(v)
 		if err != nil {
 			return err
 		}
 		*m = cm
 	case []byte:
-		cm, err := ParseCoinMoney(string(v))
+		cm, err := ParseMoney(string(v))
 		if err != nil {
 			return err
 		}
@@ -218,75 +234,134 @@ func (m *CoinMoney) Scan(value any) error {
 // ==========================================
 // 基础运算
 // ==========================================
-func (m CoinMoney) Add(x CoinMoney) CoinMoney {
-	return CoinMoney{v: new(big.Int).Add(m.norm(), x.v)}
+func (m Money) Add(x Money) Money {
+	return Money{v: new(big.Int).Add(m.norm(), x.v)}
 }
 
-func (m CoinMoney) Sub(x CoinMoney) CoinMoney {
-	return CoinMoney{v: new(big.Int).Sub(m.norm(), x.v)}
+func (m Money) Sub(x Money) Money {
+	return Money{v: new(big.Int).Sub(m.norm(), x.v)}
 }
 
-func (m CoinMoney) MulInt(n int64) CoinMoney {
-	return CoinMoney{v: new(big.Int).Mul(m.norm(), big.NewInt(n))}
+func (m Money) Mul(x Money) Money {
+	return Money{v: new(big.Int).Mul(m.norm(), x.norm())}
+}
+func (m Money) Div(x Money) Money {
+	return Money{v: new(big.Int).Div(m.norm(), x.norm())}
 }
 
-func (m CoinMoney) DivInt(n int64) CoinMoney {
-	return CoinMoney{v: new(big.Int).Div(m.norm(), big.NewInt(n))}
+func (m Money) MulInt(n int64) Money {
+	return Money{v: new(big.Int).Mul(m.norm(), big.NewInt(n))}
+}
+
+func (m Money) DivInt(n int64) Money {
+	return Money{v: new(big.Int).Div(m.norm(), big.NewInt(n))}
+}
+
+// MulRatio 向下截断的比例乘法
+// 等价于：m * numerator / denominator
+func (m Money) MulRatio(numerator, denominator *big.Int) Money {
+	if denominator == nil || denominator.Sign() == 0 {
+		return Zero()
+	}
+	tmp := new(big.Int).Mul(m.norm(), numerator)
+	tmp.Div(tmp, denominator) // 向下截断
+	return Money{v: tmp}
+}
+
+// MulRate 基于 MoneyBase 的比例乘法
+// rate 是 *1e8 表示的小数（如 0.002 = 200000）
+func (m Money) MulRate(rate *big.Int) Money {
+	return m.MulRatio(rate, MoneyBase)
+}
+
+// MulRatioFloor
+// 返回 floor(m * numerator / denominator)
+func (m Money) MulRatioFloor(
+	numerator,
+	denominator *big.Int,
+) Money {
+
+	// 安全兜底
+	if m.v == nil || m.v.Sign() == 0 {
+		return Zero()
+	}
+	if numerator == nil || numerator.Sign() == 0 {
+		return Zero()
+	}
+	if denominator == nil || denominator.Sign() <= 0 {
+		panic("MulRatioFloor: invalid denominator")
+	}
+
+	// m.v * numerator
+	num := new(big.Int).Mul(m.v, numerator)
+
+	// floor(num / denominator)
+	num.Div(num, denominator)
+
+	return Money{v: num}
 }
 
 // 精确除法（必须整除）
-func (m CoinMoney) DivIntExact(n int64) (CoinMoney, error) {
+func (m Money) DivIntExact(n int64) (Money, error) {
 	div := big.NewInt(n)
 	mod := new(big.Int).Mod(m.norm(), div)
 	if mod.Sign() != 0 {
 		return Zero(), fmt.Errorf("division not exact")
 	}
-	return CoinMoney{v: new(big.Int).Div(m.norm(), div)}, nil
+	return Money{v: new(big.Int).Div(m.norm(), div)}, nil
 }
 
-func (m CoinMoney) Abs() CoinMoney {
-	return CoinMoney{v: new(big.Int).Abs(m.norm())}
+func (m Money) Abs() Money {
+	return Money{v: new(big.Int).Abs(m.norm())}
 }
 
-func (m CoinMoney) Cmp(x CoinMoney) int {
+func (m Money) Cmp(x Money) int {
 	return m.v.Cmp(x.norm())
 }
 
-func (m CoinMoney) IsZero() bool {
+func (m Money) IsZero() bool {
 	return m.norm().Sign() == 0
 }
 
-func (m CoinMoney) IsNegative() bool {
+func (m Money) IsNegative() bool {
 	return m.norm().Sign() < 0
+}
+
+func (m Money) LessThanOrEqual(o Money) bool {
+	return m.Cmp(o) <= 0
+}
+
+func (m Money) GreaterThanOrEqual(o Money) bool {
+	return m.Cmp(o) >= 0
 }
 
 // ==========================================
 // ERC20 Token 转换
 // ==========================================
 
-// TokenAmount → CoinMoney
+// TokenAmount → Money
 // decimals: ERC20 decimals
-func FromToken(token *big.Int, decimals uint8) CoinMoney {
+func FromToken(token *big.Int, decimals uint8) Money {
 	if token == nil {
 		return Zero()
 	}
 	v := new(big.Int).Set(token)
-	diff := int(decimals) - CoinScale
+	diff := int(decimals) - MoneyScale
 	if diff > 0 {
 		v.Div(v, new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(diff)), nil))
 	} else if diff < 0 {
 		v.Mul(v, new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(-diff)), nil))
 	}
-	return CoinMoney{v: v}
+	return Money{v: v}
 }
 
-// CoinMoney → TokenAmount
-func (m CoinMoney) ToToken(decimals uint8) (*big.Int, error) {
+// Money → TokenAmount
+func (m Money) ToToken(decimals uint8) (*big.Int, error) {
 	if m.v == nil {
 		return big.NewInt(0), nil
 	}
 	v := new(big.Int).Set(m.v)
-	diff := int(decimals) - CoinScale
+	diff := int(decimals) - MoneyScale
 	if diff > 0 {
 		v.Mul(v, new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(diff)), nil))
 	} else if diff < 0 {
