@@ -315,6 +315,7 @@ func (m Money) Abs() Money {
 	return Money{v: new(big.Int).Abs(m.norm())}
 }
 
+// 比较
 func (m Money) Cmp(x Money) int {
 	return m.v.Cmp(x.norm())
 }
@@ -325,6 +326,10 @@ func (m Money) IsZero() bool {
 
 func (m Money) IsNegative() bool {
 	return m.norm().Sign() < 0
+}
+
+func (m Money) Less(x Money) bool {
+	return m.Cmp(x) < 0
 }
 
 func (m Money) LessThanOrEqual(o Money) bool {
