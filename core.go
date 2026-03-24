@@ -226,6 +226,9 @@ func (app *Core) Listen(port ...any) error {
 	return app.Serve(ln)
 }
 
+// Run 启动应用程序并监听指定端口
+// 参数 port 是可选的端口号，可以是一个或多个值
+// 返回可能发生的错误
 func (app *Core) Run(port ...any) error {
 	return app.Listen(port...)
 }

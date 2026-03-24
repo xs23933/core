@@ -21,6 +21,14 @@ import (
 	"github.com/xs23933/uid"
 )
 
+func IsNumeric(s string) bool {
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
 func lastChar(str string) uint8 {
 	if str == "" {
 		panic("The length of the string can't be 0")
@@ -732,4 +740,14 @@ func ContainsAny(elems Array, v any) bool {
 		}
 	}
 	return false
+}
+
+func Filter[T any](slice []T, test func(T) bool) []T {
+	result := make([]T, 0)
+	for _, item := range slice {
+		if test(item) {
+			result = append(result, item)
+		}
+	}
+	return result
 }

@@ -1044,6 +1044,50 @@ func (m *Models) BeforeCreate(tx *DB) error {
 	return nil
 }
 
+type IntID uint
+
+func (id IntID) Value() (driver.Value, error) {
+	return uint(id), nil
+}
+
+func (id *IntID) Scan(value any) error {
+	switch v := value.(type) {
+	case uint:
+		*id = IntID(v)
+	case uint64:
+		*id = IntID(v)
+	case int:
+		*id = IntID(v)
+	case int64:
+		*id = IntID(v)
+	case string:
+		// 先解析是否是 Hex，解析hex 不是0x那种 而是hex字符串 比如: 00007B
+		// if len(v) == 6 &&
+
+		i, err := strconv.ParseUint(v, 10, 64)
+		if err != nil {
+			return err
+		}
+		*id = IntID(i)
+	default:
+		return fmt.Errorf("unsupported type: %T", v)
+	}
+	return nil
+}
+
+func (id *IntID) Encode() string {
+	// 将这个id 转换为 6位数hex 输出大端 hex
+	fmt.Printf("%06x", uint(*id))
+	return hex.EncodeToString([]byte{byte(*id >> 8), byte(*id)})
+}
+
+type IModel struct {
+	ID        IntID           `gorm:"primarykey;comment:主键" json:"id,omitzero"`
+	CreatedAt *time.Time      `gorm:"<-:create;comment:创建时间" json:"created_at,omitempty"`
+	UpdatedAt *time.Time      `gorm:"autoUpdateTime;comment:更新时间" json:"updated_at,omitempty"`
+	DeletedAt *gorm.DeletedAt `gorm:"index;comment:删除时间" json:"deleted_at,omitempty"`
+}
+
 type SModels struct {
 	ID        sid.ID          `json:"id,omitzero" gorm:"primaryKey;comment:主键"`
 	CreatedAt *time.Time      `json:"created_at,omitempty" gorm:"<-:create;comment:创建时间"`

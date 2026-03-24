@@ -258,6 +258,10 @@ func (id ID) MarshalJSON() ([]byte, error) {
 }
 
 func (id *ID) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" || string(data) == "\"\"" {
+		*id = 0
+		return nil
+	}
 	if len(data) < 3 || data[0] != '"' || data[len(data)-1] != '"' {
 		return JSONSyntaxError{Original: data}
 	}

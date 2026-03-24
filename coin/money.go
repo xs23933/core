@@ -8,10 +8,38 @@ import (
 	"fmt"
 	"math/big"
 	"strings"
+	"sync"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/schema"
 )
+
+// ==========================================
+// 全局配置
+// ==========================================
+var (
+	// 默认输出小数位数（0 表示输出所有小数位）
+	defaultOutputDecimals = 8
+	configMutex           sync.RWMutex
+)
+
+// SetDefaultOutputDecimals 设置默认输出小数位数
+// decimals: 0 表示输出所有小数位，1-8 表示保留指定位数
+func SetDefaultOutputDecimals(decimals int) {
+	configMutex.Lock()
+	defer configMutex.Unlock()
+	if decimals < 0 || decimals > 8 {
+		decimals = 8
+	}
+	defaultOutputDecimals = decimals
+}
+
+// GetDefaultOutputDecimals 获取默认输出小数位数
+func GetDefaultOutputDecimals() int {
+	configMutex.RLock()
+	defer configMutex.RUnlock()
+	return defaultOutputDecimals
+}
 
 // ==========================================
 // 常量与基数
@@ -88,8 +116,10 @@ func Parse(s string) (Money, error) {
 	}
 
 	if len(fracPart) > MoneyScale {
+		// 改四舍五入
+		fracPart = fracPart[:MoneyScale]
 		// ⚠️ 直接拒绝，不四舍五入
-		return Zero(), errors.New("money precision overflow")
+		// return Zero(), errors.New("money precision overflow")
 	}
 
 	fracPart += strings.Repeat("0", MoneyScale-len(fracPart))
@@ -111,13 +141,13 @@ func ParseMoney(s string) (Money, error) {
 	return Parse(s)
 }
 
-// ==========================================
-// 输出
-// ==========================================
-func (m Money) String() string {
+// FormatDecimals 按指定小数位格式化
+// decimals: 0 表示输出所有小数位，1-8 表示保留指定位数
+func (m Money) FormatDecimals(decimals int) string {
 	if m.v == nil {
-		return "0.00000000"
+		return "0." + strings.Repeat("0", decimals)
 	}
+
 	sign := ""
 	val := new(big.Int).Set(m.v)
 	if val.Sign() < 0 {
@@ -129,9 +159,49 @@ func (m Money) String() string {
 	if len(s) <= MoneyScale {
 		s = strings.Repeat("0", MoneyScale-len(s)+1) + s
 	}
+
 	intPart := s[:len(s)-MoneyScale]
-	fracPart := s[len(s)-MoneyScale:]
-	return sign + intPart + "." + fracPart
+	fullFracPart := s[len(s)-MoneyScale:]
+
+	// 按指定小数位截取
+	if decimals >= 0 && decimals <= 8 {
+		if decimals == 0 {
+			// 去掉末尾的 0
+			fullFracPart = strings.TrimRight(fullFracPart, "0")
+			if fullFracPart == "" {
+				return sign + intPart
+			}
+			return sign + intPart + "." + fullFracPart
+		}
+		// 保留指定位数
+		if decimals <= len(fullFracPart) {
+			fracPart := fullFracPart[:decimals]
+			// 去掉末尾的 0
+			fracPart = strings.TrimRight(fracPart, "0")
+			if fracPart == "" {
+				return sign + intPart
+			}
+			return sign + intPart + "." + fracPart
+		}
+		// 补零
+		fracPart := fullFracPart + strings.Repeat("0", decimals-len(fullFracPart))
+		return sign + intPart + "." + fracPart
+	}
+
+	// 默认返回完整 8 位
+	return sign + intPart + "." + fullFracPart
+}
+
+// ==========================================
+// 输出（支持小数位配置）
+// ==========================================
+func (m Money) String() string {
+	return m.FormatDecimals(GetDefaultOutputDecimals())
+}
+
+// StringFull 输出完整 8 位小数
+func (m Money) StringFull() string {
+	return m.FormatDecimals(8)
 }
 
 func (m Money) Int() *big.Int {
@@ -185,6 +255,21 @@ func (m *Money) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// MarshalJSONWithDecimals 按指定小数位序列化
+func (m Money) MarshalJSONWithDecimals(decimals int) ([]byte, error) {
+	return json.Marshal(m.FormatDecimals(decimals))
+}
+
+// MoneyJSON 用于临时指定小数位的包装器
+type MoneyJSON struct {
+	Money
+	Decimals int
+}
+
+func (mj MoneyJSON) MarshalJSON() ([]byte, error) {
+	return mj.Money.MarshalJSONWithDecimals(mj.Decimals)
+}
+
 // ==========================================
 // GORM / SQL
 // ==========================================
@@ -235,6 +320,13 @@ func (m *Money) Scan(value any) error {
 // 基础运算
 // ==========================================
 func (m Money) Add(x Money) Money {
+	if m.v == nil {
+		m.v = new(big.Int)
+	}
+	if x.v == nil {
+		x.v = new(big.Int)
+	}
+
 	return Money{v: new(big.Int).Add(m.norm(), x.v)}
 }
 
@@ -242,6 +334,7 @@ func (m Money) Sub(x Money) Money {
 	return Money{v: new(big.Int).Sub(m.norm(), x.v)}
 }
 
+// Mul 乘法
 func (m Money) Mul(x Money) Money {
 	return Money{v: new(big.Int).Mul(m.norm(), x.norm())}
 }
@@ -249,6 +342,7 @@ func (m Money) Div(x Money) Money {
 	return Money{v: new(big.Int).Div(m.norm(), x.norm())}
 }
 
+// MulInt 整数乘法
 func (m Money) MulInt(n int64) Money {
 	return Money{v: new(big.Int).Mul(m.norm(), big.NewInt(n))}
 }
@@ -301,7 +395,9 @@ func (m Money) MulRatioFloor(
 	return Money{v: num}
 }
 
-// 精确除法（必须整除）
+// DivIntExact 精确除法（必须整除）
+//
+// 如果除数不是 n 的倍数，则返回错误。
 func (m Money) DivIntExact(n int64) (Money, error) {
 	div := big.NewInt(n)
 	mod := new(big.Int).Mod(m.norm(), div)
@@ -311,31 +407,51 @@ func (m Money) DivIntExact(n int64) (Money, error) {
 	return Money{v: new(big.Int).Div(m.norm(), div)}, nil
 }
 
+// Abs 绝对值
+//
+// Abs returns the absolute value of x.
 func (m Money) Abs() Money {
 	return Money{v: new(big.Int).Abs(m.norm())}
 }
 
-// 比较
+// Cmp 比较
+// Cmp compares x and y and returns:
+//
+// -1 if x < y;
+//
+// 0 if x == y;
+//
+// +1 if x > y.
 func (m Money) Cmp(x Money) int {
-	return m.v.Cmp(x.norm())
+	return m.norm().Cmp(x.norm())
 }
 
+// IsZero 是否为0
 func (m Money) IsZero() bool {
 	return m.norm().Sign() == 0
 }
 
+// IsNegative 是否为负数
 func (m Money) IsNegative() bool {
 	return m.norm().Sign() < 0
 }
 
+// Less 小于
 func (m Money) Less(x Money) bool {
 	return m.Cmp(x) < 0
 }
 
-func (m Money) LessThanOrEqual(o Money) bool {
-	return m.Cmp(o) <= 0
+// Greater 大于
+func (m Money) Greater(x Money) bool {
+	return m.Cmp(x) > 0
 }
 
+// LessThanOrEqual 小于等于
+func (m Money) LessThanOrEqual(o Money) bool {
+	return m.norm().Cmp(o.norm()) <= 0
+}
+
+// GreaterThanOrEqual 大于等于
 func (m Money) GreaterThanOrEqual(o Money) bool {
 	return m.Cmp(o) >= 0
 }
