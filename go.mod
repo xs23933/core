@@ -1,4 +1,4 @@
-module github.com/xs23933/core/v3
+module github.com/xs23933/core/v4
 
 go 1.24.0
 

@@ -141,14 +141,7 @@ func New(options ...Options) *Core {
 	// 为每个 HTTP 方法初始化一个 Trie 根节点
 	app.trees = make([]*RouteNode, len(app.RequestMethods))
 	for i := range app.trees {
-		app.trees[i] = &RouteNode{
-			path:        "/",
-			nType:       root,
-			staticChild: make(map[string]*RouteNode),
-			paramChild:  nil,
-			catchChild:  nil,
-			handlers:    nil,
-		}
+		app.trees[i] = NewRouteNode()
 	}
 
 	app.ErrorHandler = DefaultErrorHandler

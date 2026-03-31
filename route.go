@@ -86,6 +86,7 @@ func (app *Core) preparePath(uri string) string {
 	return uri
 }
 
+/*
 func (app *Core) AddHandle(methods []string, uri string, group *Group, handler any, middleware ...HandlerFunc) Router {
 	handlers := middleware
 	if handler != nil {
@@ -126,16 +127,27 @@ func (app *Core) AddHandle(methods []string, uri string, group *Group, handler a
 	}
 	return app
 }
+*/
 
 func (app *Core) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	c, ok := app.AcquireCtx(w, r).(*BaseCtx)
-	if !ok {
-		panic("field to type-assert to Ctx")
-	}
+	c := app.AcquireCtx(w, r)
 	defer app.ReleaseCtx(c)
 
 	method := c.Method()
-	root := app.trees[methodPos(method)]
+	methodIdx := methodPos(method)
+
+	// 检查方法是否支持
+	if methodIdx == -1 || methodIdx >= len(app.trees) {
+		c.SendString(ErrNotFound)
+		return
+	}
+
+	root := app.trees[methodIdx]
+	if root == nil {
+		c.SendString(ErrNotFound)
+		return
+	}
+
 	handlers, ok := root.match(c.Path(), c)
 	if !ok {
 		c.SendString(ErrNotFound)
@@ -149,4 +161,61 @@ func (app *Core) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			c.SendStatus(e.Errors())
 		}
 	}
+}
+
+// core.go - AddHandle 方法
+func (app *Core) AddHandle(methods []string, uri string, group *Group, handler any, middleware ...HandlerFunc) Router {
+	// 构建处理器链
+	var handlers HandlerFuncs
+
+	// 添加中间件
+	if len(middleware) > 0 {
+		handlers = append(handlers, middleware...)
+	}
+
+	// 添加主处理器
+	if handler != nil {
+		handlers = append(handlers, app.processedHandler(handler)...)
+	}
+
+	if len(handlers) == 0 {
+		panic(fmt.Sprintf("missing handler/middleware in route: %s\n", uri))
+	}
+
+	// 确保路径格式
+	uri = app.preparePath(uri)
+
+	for _, method := range methods {
+		method := strings.ToUpper(method)
+		if err := app.validateMethod(method); err != nil {
+			panic(err)
+		}
+
+		if method == MethodUse {
+			if uri == "/" || uri == "" { // 全局中间件
+				for _, root := range app.trees {
+					if root != nil {
+						root.middlewares = append(handlers, root.middlewares...)
+					}
+				}
+			} else {
+				for _, root := range app.trees {
+					if root != nil {
+						node := root.addRouteNode(uri)
+						node.middlewares = append(node.middlewares, handlers...)
+					}
+				}
+			}
+			continue
+		}
+
+		methodIdx := methodPos(method)
+		if methodIdx >= 0 && methodIdx < len(app.trees) {
+			root := app.trees[methodIdx]
+			if root != nil {
+				root.addRoute(uri, handlers)
+			}
+		}
+	}
+	return app
 }

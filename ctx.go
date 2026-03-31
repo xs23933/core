@@ -1443,8 +1443,8 @@ func (c *BaseCtx) Response() ResponseWriter {
 	return c.W
 }
 
-func (app *Core) AcquireCtx(w http.ResponseWriter, r *http.Request) Ctx {
-	ctx, ok := app.pool.Get().(Ctx)
+func (app *Core) AcquireCtx(w http.ResponseWriter, r *http.Request) *BaseCtx {
+	ctx, ok := app.pool.Get().(*BaseCtx)
 	if !ok {
 		panic(fmt.Errorf("failed to type-assert to Ctx"))
 	}
