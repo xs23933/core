@@ -67,10 +67,33 @@ type handler struct {
 	core.Handler
 }
 
+// app 启动首先执行
 func (h *handler) Init() {
-	core.Dump("init")
+	core.Info("init")
+}
+
+// app 启动次执行
+func (h *handler) Start(eng *core.Core) error {
+	core.Info("start")
+	return nil
+}
+
+// app 关机执行
+func (h *handler) Stop(eng *core.Core) error {
+	core.Info("shutdown")
+	return nil
+}
+
+// 每个请求 都会调用 Preload
+func (h *handler) Preload(c core.Ctx) error {
+	core.Info("preload")
+	return c.Next()
 }
 
 func (handler) GetHello(c core.Ctx) {
 	c.SendString("ok")
+}
+
+func (handler) GetUser_id(c core.Ctx) {
+	c.SendString("id is %s", c.Params("id"))
 }

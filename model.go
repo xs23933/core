@@ -533,7 +533,6 @@ func (Money) GormDBDataType(db *gorm.DB, field *schema.Field) string {
 	// 1️⃣ 如果字段上显式声明了 type，优先使用
 	if field.TagSettings != nil {
 		if t, ok := field.TagSettings["TYPE"]; ok && t != "" {
-			Dump(t)
 			return t
 		}
 	}
@@ -782,7 +781,6 @@ func (IntMoney) GormDBDataType(db *gorm.DB, field *schema.Field) string {
 	// 1️⃣ 如果字段上显式声明了 type，优先使用
 	if field.TagSettings != nil {
 		if t, ok := field.TagSettings["TYPE"]; ok && t != "" {
-			Dump(t)
 			return t
 		}
 	}

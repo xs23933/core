@@ -192,12 +192,14 @@ func init() {
 | ------ | ---------- | -------- |
 | Param  | 参数关键词 | :param   |
 | Params | 参数关键词 | :params? |
+| \_id   | 下划线     | /:id     |
 
 _Params 是可选关键词 即:params?_
 
 - `Get` → `GET /`
 - `GetParam` → `GET /:param`
 - `GetParams` → `GET /:params?`
+- `Get_id` → `GET /:id`
 - `GetDetailParam` → `GET /detail/:param`
 - `PostUser` → `POST /user`
 - `PutUserParam` → `PUT /user/:param`
@@ -991,9 +993,7 @@ func (p *Plugin) Init() {
 ## 社区支持
 
 - **GitHub**: https://github.com/xs23933/core
-- **文档**: https://core.xs23933.com
 - **问题反馈**: https://github.com/xs23933/core/issues
-- **讨论区**: https://github.com/xs23933/core/discussions
 
 ## 贡献指南
 
