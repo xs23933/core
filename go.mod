@@ -11,6 +11,7 @@ require (
 	github.com/go-playground/validator/v10 v10.24.0
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/schema v1.4.1
+	github.com/gorilla/websocket v1.4.2
 	github.com/mattn/go-isatty v0.0.20
 	github.com/swaggo/files/v2 v2.0.2
 	github.com/swaggo/swag v1.16.6
