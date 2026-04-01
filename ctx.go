@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -20,7 +21,9 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/go-playground/validator/v10"
+	"github.com/google/uuid"
 	"github.com/gorilla/schema"
+	"github.com/xs23933/core/v3/sid"
 	"github.com/xs23933/uid"
 )
 
@@ -58,6 +61,8 @@ type Ctx interface {
 	StartAt(t ...time.Time) time.Time                                           // set ctx start time if t set, else get start at
 	Params(key string, defaultValue ...string) string                           // get Param data e.g c.Param("param")
 	ParamsUid(key string, defaultValue ...uid.UID) (uid.UID, error)             // get Param UID type, return uid.Nil if failed
+	GetParamSid(key string, defaultValue ...sid.ID) (sid.ID, error)             // get Param ID type, return sid.Nil if failed
+	ParamsSid(key string, defaultValue ...sid.ID) (sid.ID, error)               // get Param ID type, return sid.Nil if failed
 	ParamsUuid(key string, defaultValue ...UUID) (UUID, error)                  // get Param UID type, return uid.Nil if failed
 	ParamUUID(key string, defaultValue ...UUID) UUID                            // get Param UUID type, return uid.Nil if failed
 	ParamsInt(key string, defaultValue ...int) (int, error)                     // get Param int type, return -1 if failed
@@ -68,6 +73,7 @@ type Ctx interface {
 	FileFromFS(filePath string, fs http.FileSystem)                             // send file from FS
 	Append(key string, values ...string) Ctx                                    // append response header
 	Vary(fields ...string) Ctx                                                  // set response vary
+	FormFile(key string) (*multipart.FileHeader, error)                         // get form file
 	SaveFile(key, dst string, args ...any) (relpath, abspath string, err error) // upload some one file
 	SaveFiles(key, dst string, args ...any) (rel Array, err error)              // upload multi-file
 	Query(key string, def ...string) string                                     // get request query string like ?id=12345
@@ -109,23 +115,23 @@ type Ctx interface {
 	Render(f string, bind ...any) error
 	TextBytes(out io.Writer, f string, bind ...any) error
 	TextRender(f string, bind ...any) error
+	SetParams(key string, val string)
 }
 
 type BaseCtx struct {
 	wm            resp
-	app           *Core  // Reference to *App
-	route         *Route // Reference to *Route
-	indexRoute    int    // Index of the current route
-	indexHandler  int    // Index of the current handler
-	method        string // HTTP method
+	app           *Core        // Reference to *App
+	handlers      HandlerFuncs // Reference to *Route
+	indexRoute    int          // Index of the current route
+	indexHandler  int          // Index of the current handler
+	method        string       // HTTP method
 	methodInt     MethodType
 	baseURI       string
-	treePath      string            // Path for the search in the tree
-	detectionPath string            // Route detection path                                  -> string copy from detectionPathBuffer
-	path          string            // HTTP path with the modifications by the configuration -> string copy from pathBuffer
-	pathOriginal  string            // Original HTTP path
-	values        [maxParams]string // Route parameter values
-	matched       bool              // Non use route matched
+	treePath      string // Path for the search in the tree
+	detectionPath string // Route detection path                                  -> string copy from detectionPathBuffer
+	path          string // HTTP path with the modifications by the configuration -> string copy from pathBuffer
+	pathOriginal  string // Original HTTP path
+	matched       bool   // Non use route matched
 	theme         string
 	W             ResponseWriter
 	R             *http.Request
@@ -135,12 +141,29 @@ type BaseCtx struct {
 	startAt       time.Time
 	respJsonKeys  *RestfulDefine
 	mu            sync.RWMutex
+	params        map[string]string
+}
+
+func (c *BaseCtx) SetParams(key, val string) {
+	c.params[key] = val
 }
 
 // decoderPool helps to improve ReadBody's and QueryParser's performance
 var decoderPool = &sync.Pool{New: func() any {
 	var decoder = schema.NewDecoder()
 	decoder.IgnoreUnknownKeys(true)
+	decoder.ZeroEmpty(true)
+	decoder.RegisterConverter(time.Time{}, func(s string) reflect.Value {
+		if s == "" {
+			return reflect.Zero(reflect.TypeOf(time.Time{}))
+		}
+
+		t, err := time.Parse(time.RFC3339, s)
+		if err != nil {
+			return reflect.Zero(reflect.TypeOf(time.Time{}))
+		}
+		return reflect.ValueOf(t)
+	})
 	return decoder
 }}
 
@@ -253,10 +276,25 @@ func (c *BaseCtx) Stream(step func(w io.Writer) bool) bool {
 // If none of the content types above are matched, it will return a ErrUnprocessableEntity error
 //
 //	out any MIMEApplicationForm MIMEMultipartForm MIMETextXML must struct
+//
+// 单文件
+// type Upload struct {
+//     File *multipart.FileHeader `form:"file"`
+// }
+// f, _ := req.File.Open()
+// defer f.Close()
+
+// 多文件
+//
+//	type Upload struct {
+//	    Files []*multipart.FileHeader `form:"files"`
+//	}
 func (c *BaseCtx) ReadBody(out any, debug ...bool) error {
 	// Get decoder from pool
 	schemaDecoder := decoderPool.Get().(*schema.Decoder)
 	defer decoderPool.Put(schemaDecoder)
+
+	schemaDecoder.ZeroEmpty(true)
 
 	// Get content-type
 	ctype := strings.ToLower(c.R.Header.Get(HeaderContentType))
@@ -296,10 +334,16 @@ func (c *BaseCtx) ReadBody(out any, debug ...bool) error {
 		return schemaDecoder.Decode(out, c.R.PostForm)
 	case strings.HasPrefix(ctype, MIMEMultipartForm):
 		schemaDecoder.SetAliasTag("form")
-		if err := c.R.ParseMultipartForm(1048576); err != nil {
-			return nil
+		if err := c.R.ParseMultipartForm(c.app.MaxMultipartMemory); err != nil {
+			return err
 		}
-		return schemaDecoder.Decode(out, c.R.MultipartForm.Value)
+		// 解析普通字段
+		if err := schemaDecoder.Decode(out, c.R.MultipartForm.Value); err != nil {
+			return err
+		}
+
+		return c.bindMultipartFiles(out)
+
 	case strings.HasPrefix(ctype, MIMETextXML), strings.HasPrefix(ctype, MIMEApplicationXML):
 		schemaDecoder.SetAliasTag("xml")
 		body, err := io.ReadAll(c.R.Body)
@@ -311,6 +355,168 @@ func (c *BaseCtx) ReadBody(out any, debug ...bool) error {
 	}
 	// No suitable content type found
 	return ErrUnprocessableEntity
+}
+
+func (c *BaseCtx) bindMultipartFiles(out any) error {
+	// 自动绑定 FileHeader
+	files := c.R.MultipartForm.File
+	if len(files) == 0 {
+		return nil
+	}
+
+	rv := reflect.ValueOf(out)
+	if rv.Kind() != reflect.Pointer {
+		return nil
+	}
+
+	rv = rv.Elem()
+	rt := rv.Type()
+
+	fileHeaderType := reflect.TypeFor[*multipart.FileHeader]()
+	// fileType := reflect.TypeFor[multipart.File]()
+
+	for i := 0; i < rt.NumField(); i++ {
+		field := rt.Field(i)
+		tag := field.Tag.Get("form")
+		if tag == "" {
+			continue
+		}
+
+		fileHeaders, ok := files[tag]
+		if !ok || len(fileHeaders) == 0 {
+			continue
+		}
+
+		fv := rv.Field(i)
+
+		if !fv.CanSet() {
+			continue
+		}
+
+		// *multipart.FileHeader
+		if fv.Type() == fileHeaderType {
+			fh := fileHeaders[0]
+
+			if err := c.processFileTags(field, fh); err != nil {
+				return err
+			}
+			fv.Set(reflect.ValueOf(fh))
+			continue
+		}
+
+		// []*multipart.FileHeader
+		if fv.Type() == reflect.SliceOf(fileHeaderType) {
+			for _, fh := range fileHeaders {
+				if err := c.processFileTags(field, fh); err != nil {
+					return err
+				}
+			}
+			fv.Set(reflect.ValueOf(fileHeaders))
+		}
+	}
+
+	return nil
+}
+
+func (c *BaseCtx) processFileTags(field reflect.StructField, fh *multipart.FileHeader) error {
+
+	// max size
+	if maxTag := field.Tag.Get("max"); maxTag != "" {
+
+		maxBytes, err := parseSize(maxTag)
+		if err != nil {
+			return err
+		}
+
+		if fh.Size > maxBytes {
+			return fmt.Errorf("file too large: %s", fh.Filename)
+		}
+	}
+
+	// mime
+	if mimeTag := field.Tag.Get("mime"); mimeTag != "" {
+
+		mimes := strings.Split(mimeTag, ",")
+
+		file, err := fh.Open()
+		if err != nil {
+			return err
+		}
+		defer file.Close()
+
+		buff := make([]byte, 512)
+
+		n, _ := file.Read(buff)
+
+		mime := http.DetectContentType(buff[:n])
+
+		ok := false
+
+		for _, m := range mimes {
+			if strings.Contains(mime, m) {
+				ok = true
+				break
+			}
+		}
+
+		if !ok {
+			return fmt.Errorf("invalid mime: %s", mime)
+		}
+	}
+
+	// save
+	if saveTag := field.Tag.Get("save"); saveTag != "" {
+
+		if err := saveUploadedFile(fh, saveTag); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func parseSize(s string) (int64, error) {
+
+	s = strings.ToUpper(s)
+
+	if strings.HasSuffix(s, "MB") {
+		v, _ := strconv.Atoi(strings.TrimSuffix(s, "MB"))
+		return int64(v) * 1024 * 1024, nil
+	}
+
+	if strings.HasSuffix(s, "KB") {
+		v, _ := strconv.Atoi(strings.TrimSuffix(s, "KB"))
+		return int64(v) * 1024, nil
+	}
+
+	return strconv.ParseInt(s, 10, 64)
+}
+
+func saveUploadedFile(fh *multipart.FileHeader, dst string) error {
+
+	src, err := fh.Open()
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+
+	name := uuid.New().String() + filepath.Ext(fh.Filename)
+
+	path := filepath.Join(dst, name)
+
+	if err := os.MkdirAll(dst, 0755); err != nil {
+		return err
+	}
+
+	out, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	_, err = io.Copy(out, src)
+
+	return err
 }
 
 // BodyParser parses the request body into the provided 'out' parameter.
@@ -330,7 +536,7 @@ var (
 func (c *BaseCtx) Validate(out any) error {
 	// 检查是否是结构体指针
 	val := reflect.ValueOf(out)
-	if val.Kind() != reflect.Ptr || val.Elem().Kind() != reflect.Struct {
+	if val.Kind() != reflect.Pointer || val.Elem().Kind() != reflect.Struct {
 		return ErrInvalidValidationType
 	}
 
@@ -418,26 +624,37 @@ func (c *BaseCtx) Cookies(name string) (string, error) {
 // It also checks if the remoteIP is a trusted proxy or not.
 // In order to perform this validation, it will see if the IP is contained within at least one of the CIDR blocks
 func (c *BaseCtx) RemoteIP() net.IP {
-	remote := c.GetHeader("X-Forwarded-For")
-	remoteIP := net.ParseIP(remote)
-	if remoteIP != nil {
-		return remoteIP
+	// 1. Cloudflare 官方真实 IP（最优先）
+	if ip := strings.TrimSpace(c.GetHeader("CF-Connecting-IP")); ip != "" {
+		if realIP := net.ParseIP(ip); realIP != nil {
+			return realIP
+		}
 	}
-	remote = c.GetHeader("X-Real-IP")
-	remoteIP = net.ParseIP(remote)
-	if remoteIP != nil {
-		return remoteIP
-	}
-	ip, _, err := net.SplitHostPort(strings.TrimSpace(c.R.RemoteAddr))
-	if err != nil {
-		return nil
-	}
-	remoteIP = net.ParseIP(ip)
-	if remoteIP == nil {
-		return nil
+	// 优先 X-Forwarded-For
+	if forwarded := c.GetHeader("X-Forwarded-For"); forwarded != "" {
+		// 有多个 IP 时取第一个（用户真实 IP）
+		parts := strings.Split(forwarded, ",")
+		ip := strings.TrimSpace(parts[0])
+		if realIP := net.ParseIP(ip); realIP != nil {
+			return realIP
+		}
 	}
 
-	return remoteIP
+	// 其次 X-Real-IP
+	if real := c.GetHeader("X-Real-IP"); real != "" {
+		if realIP := net.ParseIP(strings.TrimSpace(real)); realIP != nil {
+			return realIP
+		}
+	}
+
+	// 最后 RemoteAddr
+	if host, _, err := net.SplitHostPort(strings.TrimSpace(c.R.RemoteAddr)); err == nil {
+		if realIP := net.ParseIP(host); realIP != nil {
+			return realIP
+		}
+	}
+
+	return nil
 }
 
 // set locals var
@@ -1077,6 +1294,7 @@ func (c *BaseCtx) init(app *Core, w http.ResponseWriter, r *http.Request) {
 	c.detectionPath = c.path
 	c.respJsonKeys = &app.defaultRestful
 	c.vars = make(Map)
+	c.params = make(map[string]string)
 	if !app.Conf.GetBool("case-sensitive", true) {
 		c.detectionPath = strings.ToLower(c.detectionPath)
 	}
@@ -1089,9 +1307,11 @@ func (c *BaseCtx) init(app *Core, w http.ResponseWriter, r *http.Request) {
 	}
 }
 func (c *BaseCtx) release() {
-	c.route = nil
+
+	c.handlers = nil
 	c.ctx = nil
 	c.vars = Map{}
+	c.params = nil
 }
 
 func (c *BaseCtx) Method() string {
@@ -1103,20 +1323,8 @@ func (c *BaseCtx) Path() string {
 }
 
 func (c *BaseCtx) Params(key string, defaultValue ...string) string {
-	if key == "*" || key == "+" {
-		key += "1"
-	}
-
-	for i := range c.route.Params {
-		if len(key) != len(c.route.Params[i]) {
-			continue
-		}
-		if c.route.Params[i] == key || (!c.app.Conf.GetBool("case-sensitive", true) && EqualFold(c.route.Params[i], key)) {
-			if len(c.values) <= i || len(c.values[i]) == 0 {
-				break
-			}
-			return c.values[i]
-		}
+	if val, ok := c.params[key]; ok {
+		return val
 	}
 	return defaultString("", defaultValue)
 }
@@ -1148,6 +1356,21 @@ func (c *BaseCtx) ParamsUuid(key string, defaultValue ...UUID) (UUID, error) {
 func (c *BaseCtx) ParamUUID(key string, defaultValue ...UUID) UUID {
 	ret, _ := c.ParamsUuid(key, defaultValue...)
 	return ret
+}
+
+func (c *BaseCtx) GetParamSid(key string, defaultValue ...sid.ID) (sid.ID, error) {
+	return c.ParamsSid(key, defaultValue...)
+}
+
+func (c *BaseCtx) ParamsSid(key string, defaultValue ...sid.ID) (sid.ID, error) {
+	value, err := sid.ParseString(c.Params(key))
+	if err != nil {
+		if len(defaultValue) > 0 {
+			return defaultValue[0], nil
+		}
+		return 0, fmt.Errorf("failed to convert: %w", err)
+	}
+	return value, nil
 }
 
 // ParamsInt get int param, return -1 if failed
@@ -1220,8 +1443,8 @@ func (c *BaseCtx) Response() ResponseWriter {
 	return c.W
 }
 
-func (app *Core) AcquireCtx(w http.ResponseWriter, r *http.Request) Ctx {
-	ctx, ok := app.pool.Get().(Ctx)
+func (app *Core) AcquireCtx(w http.ResponseWriter, r *http.Request) *BaseCtx {
+	ctx, ok := app.pool.Get().(*BaseCtx)
 	if !ok {
 		panic(fmt.Errorf("failed to type-assert to Ctx"))
 	}
@@ -1238,16 +1461,10 @@ func (c *BaseCtx) Next() error {
 	// Increment handler index
 	c.indexHandler++
 	// Did we executed all route handlers?
-	if c.indexHandler < len(c.route.Handlers) {
-		// Continue route stack
-		return c.route.Handlers[c.indexHandler](c)
+	if c.indexHandler < len(c.handlers) {
+		return c.handlers[c.indexHandler](c)
 	}
-	_, err := c.app.next(c)
-	return err
-}
-
-func (c *BaseCtx) getValues() *[maxParams]string {
-	return &c.values
+	return nil
 }
 
 // Accepts checks if the specified extensions or content types are acceptable.

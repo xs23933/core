@@ -10,7 +10,7 @@ import (
 	"golang.org/x/text/language"
 )
 
-const VERSION = "v2.0.0"
+const VERSION = "v3.0.0"
 
 type MethodType uint8
 
@@ -40,6 +40,18 @@ var (
 		"PATCH",
 		"USE",
 	}
+	methodMap = map[string]int{
+		"GET":     0,
+		"POST":    1,
+		"HEAD":    2,
+		"PUT":     3,
+		"DELETE":  4,
+		"OPTIONS": 5,
+		"CONNECT": 6,
+		"TRACE":   7,
+		"PATCH":   8,
+		"USE":     9,
+	}
 )
 
 var (
@@ -57,7 +69,10 @@ var (
 
 // 返回方法位置
 func methodPos(method string) int {
-	return Index(Methods, method)
+	if pos, ok := methodMap[method]; ok {
+		return pos
+	}
+	return -1
 }
 
 var (

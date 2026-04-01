@@ -16,12 +16,13 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/glebarez/sqlite"
 	"github.com/google/uuid"
+	"github.com/xs23933/core/v3/sid"
 	"github.com/xs23933/uid"
 	"gorm.io/driver/clickhouse"
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
-	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 	"gorm.io/gorm/logger"
@@ -29,6 +30,10 @@ import (
 )
 
 func NewModel(conf Options, debug, colorful bool) (map[string]*DB, error) {
+
+	nodeID := Conf.GetInt64("node_id", 1)
+	SnID, _ = sid.New(nodeID)
+
 	if conf.GetString("type") != "" && conf.GetString("dsn") != "" {
 		db, err := openDB(conf, debug, colorful)
 		if err != nil {
@@ -51,6 +56,10 @@ func NewModel(conf Options, debug, colorful bool) (map[string]*DB, error) {
 		D("Opened database connection %s %s", dbsType[name], name)
 	}
 	return conns, nil
+}
+
+func NewSnID() sid.ID {
+	return SnID.MustGenerate()
 }
 
 func openDB(conf Options, debug, colorful bool) (db *DB, err error) {
@@ -89,6 +98,19 @@ func openDB(conf Options, debug, colorful bool) (db *DB, err error) {
 	if err != nil {
 		return nil, err
 	}
+	maxOpenConns := conf.GetInt("max_open_conns", 100)
+	maxIdleConns := conf.GetInt("max_idle_conns", 20)
+	connMaxLifetime := conf.GetString("conn_max_lifetime", "300s")
+
+	sqlDB, _ := db.DB()
+	sqlDB.SetMaxOpenConns(maxOpenConns)
+	sqlDB.SetMaxIdleConns(maxIdleConns)
+	maxLifeTime, err := time.ParseDuration(connMaxLifetime)
+	if err != nil {
+		maxLifeTime = time.Second * 300
+	}
+	sqlDB.SetConnMaxLifetime(maxLifeTime)
+
 	if debug {
 		db = db.Debug()
 	}
@@ -98,8 +120,8 @@ func openDB(conf Options, debug, colorful bool) (db *DB, err error) {
 
 type Model struct {
 	ID        uid.UID         `gorm:"size:12;primaryKey" json:"id,omitempty"`
-	CreatedAt time.Time       `json:"created_at" gorm:"<-:create"`
-	UpdatedAt time.Time       `json:"updated_at" gorm:"autoUpdateTime"`
+	CreatedAt time.Time       `json:"created_at,omitempty" gorm:"<-:create"`
+	UpdatedAt time.Time       `json:"updated_at,omitempty" gorm:"autoUpdateTime"`
 	DeletedAt *gorm.DeletedAt `json:"deleted_at,omitempty" gorm:"index"`
 }
 
@@ -507,9 +529,17 @@ func (m Money) Int() Int {
 
 // GormDBDataType gorm 方言映射 (不同数据库可指定不同字段类型)
 func (Money) GormDBDataType(db *gorm.DB, field *schema.Field) string {
+
+	// 1️⃣ 如果字段上显式声明了 type，优先使用
+	if field.TagSettings != nil {
+		if t, ok := field.TagSettings["TYPE"]; ok && t != "" {
+			return t
+		}
+	}
+
 	switch db.Dialector.Name() {
 	case "clickhouse":
-		return "DOUBLE"
+		return "DECIMAL(10,3)"
 	case "mysql":
 		return "DECIMAL(12,2)"
 	case "postgres":
@@ -549,6 +579,15 @@ func (m *Money) UnmarshalJSON(data []byte) error {
 func (m Money) MarshalJSON() ([]byte, error) {
 	str := strconv.FormatFloat(float64(m), 'f', 2, 64) // 保留两位小数
 	return []byte(str), nil
+}
+
+func (m Money) MarshalBinary() (data []byte, err error) {
+	str := strconv.FormatFloat(float64(m), 'f', -1, 64) // 保留两位小数
+	return []byte(str), nil
+}
+
+func (m *Money) UnmarshalBinary(data []byte) error {
+	return m.UnmarshalJSON(data)
 }
 
 func ParseMoney(val any) Money {
@@ -738,6 +777,14 @@ func (IntMoney) GormDataType() string {
 
 // GormDBDataType gorm 方言映射 (不同数据库可指定不同字段类型)
 func (IntMoney) GormDBDataType(db *gorm.DB, field *schema.Field) string {
+
+	// 1️⃣ 如果字段上显式声明了 type，优先使用
+	if field.TagSettings != nil {
+		if t, ok := field.TagSettings["TYPE"]; ok && t != "" {
+			return t
+		}
+	}
+
 	switch db.Dialector.Name() {
 	case "clickhouse":
 		return "Int64"
@@ -753,7 +800,7 @@ func (IntMoney) GormDBDataType(db *gorm.DB, field *schema.Field) string {
 }
 
 func (m IntMoney) MarshalBinary() (data []byte, err error) {
-	return []byte(fmt.Sprintf("%d", m)), nil
+	return fmt.Appendf(nil, "%d", m), nil
 }
 
 func (m *IntMoney) UnmarshalBinary(data []byte) error {
@@ -982,15 +1029,73 @@ func (d *Date) Scan(value interface{}) error {
 }
 
 type Models struct {
-	ID        UUID            `json:"id,omitempty" gorm:"size:32;primaryKey"`
-	CreatedAt time.Time       `json:"created_at" gorm:"<-:create"`
-	UpdatedAt time.Time       `json:"updated_at" gorm:"autoUpdateTime"`
+	ID        UUID            `json:"id,omitzero" gorm:"size:32;primaryKey"`
+	CreatedAt *time.Time      `json:"created_at,omitempty" gorm:"<-:create"`
+	UpdatedAt *time.Time      `json:"updated_at,omitempty" gorm:"autoUpdateTime"`
 	DeletedAt *gorm.DeletedAt `json:"deleted_at,omitempty" gorm:"index"`
 }
 
 func (m *Models) BeforeCreate(tx *DB) error {
 	if m.ID.IsEmpty() {
 		m.ID = NewUUID()
+	}
+	return nil
+}
+
+type IntID uint
+
+func (id IntID) Value() (driver.Value, error) {
+	return uint(id), nil
+}
+
+func (id *IntID) Scan(value any) error {
+	switch v := value.(type) {
+	case uint:
+		*id = IntID(v)
+	case uint64:
+		*id = IntID(v)
+	case int:
+		*id = IntID(v)
+	case int64:
+		*id = IntID(v)
+	case string:
+		// 先解析是否是 Hex，解析hex 不是0x那种 而是hex字符串 比如: 00007B
+		// if len(v) == 6 &&
+
+		i, err := strconv.ParseUint(v, 10, 64)
+		if err != nil {
+			return err
+		}
+		*id = IntID(i)
+	default:
+		return fmt.Errorf("unsupported type: %T", v)
+	}
+	return nil
+}
+
+func (id *IntID) Encode() string {
+	// 将这个id 转换为 6位数hex 输出大端 hex
+	fmt.Printf("%06x", uint(*id))
+	return hex.EncodeToString([]byte{byte(*id >> 8), byte(*id)})
+}
+
+type IModel struct {
+	ID        IntID           `gorm:"primarykey;comment:主键" json:"id,omitzero"`
+	CreatedAt *time.Time      `gorm:"<-:create;comment:创建时间" json:"created_at,omitempty"`
+	UpdatedAt *time.Time      `gorm:"autoUpdateTime;comment:更新时间" json:"updated_at,omitempty"`
+	DeletedAt *gorm.DeletedAt `gorm:"index;comment:删除时间" json:"deleted_at,omitempty"`
+}
+
+type SModels struct {
+	ID        sid.ID          `json:"id,omitzero" gorm:"primaryKey;comment:主键"`
+	CreatedAt *time.Time      `json:"created_at,omitempty" gorm:"<-:create;comment:创建时间"`
+	UpdatedAt *time.Time      `json:"updated_at,omitempty" gorm:"autoUpdateTime;comment:更新时间"`
+	DeletedAt *gorm.DeletedAt `json:"deleted_at,omitempty" gorm:"index;comment:删除时间"`
+}
+
+func (m *SModels) BeforeCreate(tx *DB) error {
+	if m.ID == 0 {
+		m.ID = SnID.MustGenerate()
 	}
 	return nil
 }
@@ -1224,6 +1329,7 @@ func DBType(name ...string) string {
 var (
 	conns   = make(map[string]*DB)
 	dbsType = make(map[string]string)
+	SnID    *sid.SnowflakeID
 )
 
 type DB = gorm.DB

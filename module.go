@@ -19,7 +19,7 @@ func (app *Core) addHandler(h handler) {
 	if prefix == "" {
 		prefix = "/"
 	}
-	group := app.Group(prefix, h.Preload).(*Group)
+	group := app.Group(prefix, app.processedHandler(h.Preload)).(*Group)
 	for i := 0; i < methodCount; i++ {
 		m := refCtl.Method(i)
 		name := toNamer(m.Name)

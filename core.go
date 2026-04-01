@@ -20,8 +20,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/xs23933/core/v2/middleware/view"
-	"github.com/xs23933/core/v2/reuseport"
+	"github.com/xs23933/core/v3/middleware/view"
+	"github.com/xs23933/core/v3/reuseport"
 	"golang.org/x/crypto/acme"
 	"golang.org/x/crypto/acme/autocert"
 	"golang.org/x/net/http2"
@@ -31,18 +31,9 @@ import (
 type Core struct {
 	*http.Server
 	mutex sync.Mutex
-	// Route stack divided by HTTP methods
-	stack [][]*Route
-	// Route stack divided by HTTP methods and route prefixes
-	treeStack []map[string][]*Route
-	// Amount of registered routes
-	routesCount uint32
-	// Amount of registered handlers
-	handlersCount uint32
-	// contains the information if the route stack has been changed to build the optimized tree
-	routesRefreshed bool
-	// Latest route & group
-	latestRoute    *Route
+
+	trees []*RouteNode
+
 	Conf           Options
 	assets         Options
 	Debug          bool
@@ -72,7 +63,6 @@ func (app *Core) core() *Core {
 
 func New(options ...Options) *Core {
 	app := &Core{
-		latestRoute:    &Route{},
 		Server:         &http.Server{},
 		addr:           ":8080",
 		Debug:          true,
@@ -148,6 +138,19 @@ func New(options ...Options) *Core {
 
 	app.RequestMethods = Conf.GetStrings("methods", Methods[:len(Methods)-1])
 
+	// 为每个 HTTP 方法初始化一个 Trie 根节点
+	app.trees = make([]*RouteNode, len(app.RequestMethods))
+	for i := range app.trees {
+		app.trees[i] = &RouteNode{
+			path:        "/",
+			nType:       root,
+			staticChild: make(map[string]*RouteNode),
+			paramChild:  nil,
+			catchChild:  nil,
+			handlers:    nil,
+		}
+	}
+
 	app.ErrorHandler = DefaultErrorHandler
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -161,9 +164,6 @@ func New(options ...Options) *Core {
 			}
 		},
 	}
-
-	app.stack = make([][]*Route, len(app.RequestMethods))
-	app.treeStack = make([]map[string][]*Route, len(app.RequestMethods))
 
 	c := make(chan os.Signal, 1)
 	const SIGUSR2 = syscall.Signal(0x1f)
@@ -226,6 +226,9 @@ func (app *Core) Listen(port ...any) error {
 	return app.Serve(ln)
 }
 
+// Run 启动应用程序并监听指定端口
+// 参数 port 是可选的端口号，可以是一个或多个值
+// 返回可能发生的错误
 func (app *Core) Run(port ...any) error {
 	return app.Listen(port...)
 }
@@ -354,13 +357,23 @@ func (app *Core) prefork() error {
 
 func (app *Core) runProcess() {
 	app.loadMods() // load modules
-	app.buildTree()
+	// app.buildTree()
 }
+
 func (app *Core) Use(fn ...any) Router {
 	prefixes, handlers := anyToHandlers(app, fn...)
 	if len(handlers) > 0 {
 		for _, prefix := range prefixes {
-			app.AddHandle([]string{MethodUse}, prefix, nil, nil, app.processedHandler(handlers)...)
+			if prefix == "/" || prefix == "" { // 全局中间件
+				for _, root := range app.trees {
+					root.middlewares = append(handlers, root.middlewares...)
+				}
+			} else {
+				for _, root := range app.trees {
+					node := root.addRouteNode(prefix)
+					node.middlewares = append(node.middlewares, handlers...)
+				}
+			}
 		}
 	}
 	return app
@@ -468,23 +481,22 @@ func (app *Core) Add(methods []string, path string, handler any, middleware ...a
 	return app.AddHandle(methods, path, nil, handler, app.processedHandler(handlers)...)
 }
 
-func (app *Core) Group(prefix string, handlers ...any) Router {
+func (app *Core) Group(prefix string, handlers ...HandlerFuncs) Router {
 	g := &Group{
 		Prefix: prefix,
 		Core:   app,
 	}
-	_, handlers = anyToHandlers(app, handlers...)
 	if len(handlers) > 0 {
 		app.AddHandle([]string{MethodUse}, prefix, g, nil, app.processedHandler(handlers)...)
 	}
 	return g
 }
 
-func anyToHandlers(app *Core, fn ...any) (prefixes []string, handlers []any) {
+func anyToHandlers(app *Core, fn ...any) (prefixes []string, handlers HandlerFuncs) {
 	var (
 		prefix string
 	)
-	handlers = make([]any, 0)
+	handlers = make(HandlerFuncs, 0)
 
 	for _, v := range fn {
 		switch arg := v.(type) {
@@ -497,9 +509,9 @@ func anyToHandlers(app *Core, fn ...any) (prefixes []string, handlers []any) {
 		case view.IEngine:
 			app.Views = arg
 		case HandlerFun, HandlerFunc, http.HandlerFunc, http.Handler:
-			handlers = append(handlers, arg)
+			handlers = append(handlers, app.processedHandler(arg)...)
 		case HandlerFuncs:
-			handlers = append(handlers, arg)
+			handlers = append(handlers, arg...)
 		default:
 			panic(fmt.Sprintf("use: invalid middleware %v\n", reflect.TypeOf(arg)))
 		}

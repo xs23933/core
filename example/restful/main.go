@@ -1,9 +1,10 @@
 package main
 
 import (
-	"github.com/xs23933/core/v2"
-	"github.com/xs23933/core/v2/middleware/cros"
-	"github.com/xs23933/core/v2/middleware/view/html"
+	"github.com/xs23933/core/v3"
+	"github.com/xs23933/core/v3/middleware/cors"
+	"github.com/xs23933/core/v3/middleware/requestid"
+	"github.com/xs23933/core/v3/middleware/view/html"
 )
 
 func main() {
@@ -11,9 +12,22 @@ func main() {
 
 	app.Use(html.NewHtmlView("views", ".html"))
 
-	app.Use(cros.New())
+	app.Use(cors.New(app))
+
+	app.Use(requestid.New())
 
 	app.Use(func(c core.Ctx) error {
+		core.Erro("Fuck men")
+		return c.Next()
+	})
+
+	app.Use(func(c core.Ctx) error {
+		core.Erro("Fuck men2")
+		return c.Next()
+	})
+
+	app.Use(func(c core.Ctx) error {
+		core.Erro("Fuck men3")
 		return c.Next()
 	})
 
@@ -33,14 +47,53 @@ func main() {
 		c.SendString("what happend post 1")
 	})
 	api := app.Group("/api")
-	api.GET("/test", func(c core.Ctx) {
-		c.SendString("test")
+	api.GET("/test/:id", func(c core.Ctx) {
+		id := c.Params("id")
+		core.Info(id)
+		c.Format(id)
 	})
 	api.POST("test2", func(c core.Ctx) {
 		c.SendString("what happend post")
 	})
 
-	if err := app.Listen(8081); err != nil {
+	core.RegHandle(&handler{})
+
+	if err := app.Listen(8080); err != nil {
 		panic(err)
 	}
+}
+
+type handler struct {
+	core.Handler
+}
+
+// app 启动首先执行
+func (h *handler) Init() {
+	core.Info("init")
+}
+
+// app 启动次执行
+func (h *handler) Start(eng *core.Core) error {
+	core.Info("start")
+	return nil
+}
+
+// app 关机执行
+func (h *handler) Stop(eng *core.Core) error {
+	core.Info("shutdown")
+	return nil
+}
+
+// 每个请求 都会调用 Preload
+func (h *handler) Preload(c core.Ctx) error {
+	core.Info("preload")
+	return c.Next()
+}
+
+func (handler) GetHello(c core.Ctx) {
+	c.SendString("ok")
+}
+
+func (handler) GetUser_id(c core.Ctx) {
+	c.SendString("id is %s", c.Params("id"))
 }

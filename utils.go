@@ -21,6 +21,14 @@ import (
 	"github.com/xs23933/uid"
 )
 
+func IsNumeric(s string) bool {
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
 func lastChar(str string) uint8 {
 	if str == "" {
 		panic("The length of the string can't be 0")
@@ -88,22 +96,6 @@ func Delete[S ~[]E, E any](s S, i, j int) S {
 	return append(s[:i], s[j:]...)
 }
 
-// uniqueRouteStack drop all not unique routes from the slice
-func uniqueRouteStack(stack []*Route) []*Route {
-	var unique []*Route
-	m := make(map[*Route]int)
-	for _, v := range stack {
-		if _, ok := m[v]; !ok {
-			// Unique key found. Record position and collect
-			// in result.
-			m[v] = len(unique)
-			unique = append(unique, v)
-		}
-	}
-
-	return unique
-}
-
 // Error represents an error that occurred while handling a request.
 type Error struct {
 	Code    int    `json:"code"`
@@ -113,6 +105,11 @@ type Error struct {
 type Errors interface {
 	Error() string
 	Errors() (int, string)
+}
+
+func IsErrors(v any) bool {
+	_, ok := v.(Errors)
+	return ok
 }
 
 // NewError creates a new Error instance with an optional message
@@ -743,4 +740,14 @@ func ContainsAny(elems Array, v any) bool {
 		}
 	}
 	return false
+}
+
+func Filter[T any](slice []T, test func(T) bool) []T {
+	result := make([]T, 0)
+	for _, item := range slice {
+		if test(item) {
+			result = append(result, item)
+		}
+	}
+	return result
 }

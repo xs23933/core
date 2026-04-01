@@ -97,8 +97,16 @@ func (opt *Options) GetStrings(k string, def ...[]string) []string {
 
 func (opt *Options) GetInt(k string, def ...int) int {
 	if val, ok := (*opt)[k]; ok && val != nil {
-		if v, ok := val.(int); ok {
+		switch v := val.(type) {
+		case string:
+			i, _ := strconv.Atoi(v)
+			return i
+		case int:
 			return v
+		case float64:
+			return int(v)
+		case int64:
+			return int(v)
 		}
 	}
 	if len(def) > 0 {
@@ -109,8 +117,16 @@ func (opt *Options) GetInt(k string, def ...int) int {
 
 func (opt *Options) GetInt64(k string, def ...int64) int64 {
 	if val, ok := (*opt)[k]; ok && val != nil {
-		if v := val.(int); ok {
+		switch v := val.(type) {
+		case string:
+			i, _ := strconv.ParseInt(v, 10, 64)
+			return i
+		case int:
 			return int64(v)
+		case float64:
+			return int64(v)
+		case int64:
+			return v
 		}
 	}
 	if len(def) > 0 {

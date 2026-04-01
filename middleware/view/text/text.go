@@ -16,8 +16,8 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/davecgh/go-spew/spew"
-	"github.com/xs23933/core/v2"
-	"github.com/xs23933/core/v2/middleware/view"
+	"github.com/xs23933/core/v3"
+	"github.com/xs23933/core/v3/middleware/view"
 )
 
 type TextEngine struct {

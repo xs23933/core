@@ -1,7 +1,7 @@
 package requestid
 
 import (
-	"github.com/xs23933/core/v2"
+	"github.com/xs23933/core/v3"
 )
 
 type Config struct {

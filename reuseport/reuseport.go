@@ -13,7 +13,7 @@ import (
 	"net"
 	"strings"
 
-	"github.com/xs23933/core/v2/tcplisten"
+	"github.com/xs23933/core/v3/tcplisten"
 )
 
 func Listen(network, addr string) (net.Listener, error) {

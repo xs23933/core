@@ -17,8 +17,8 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/davecgh/go-spew/spew"
-	"github.com/xs23933/core/v2"
-	view "github.com/xs23933/core/v2/middleware/view"
+	"github.com/xs23933/core/v3"
+	view "github.com/xs23933/core/v3/middleware/view"
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/extension"
 	"github.com/yuin/goldmark/parser"
