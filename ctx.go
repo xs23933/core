@@ -24,6 +24,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/schema"
 	"github.com/xs23933/core/v3/sid"
+	"github.com/xs23933/core/v3/xid"
 	"github.com/xs23933/uid"
 )
 
@@ -63,6 +64,7 @@ type Ctx interface {
 	ParamsUid(key string, defaultValue ...uid.UID) (uid.UID, error)             // get Param UID type, return uid.Nil if failed
 	GetParamSid(key string, defaultValue ...sid.ID) (sid.ID, error)             // get Param ID type, return sid.Nil if failed
 	ParamsSid(key string, defaultValue ...sid.ID) (sid.ID, error)               // get Param ID type, return sid.Nil if failed
+	ParamsXid(key string, defaultValue ...xid.ID) (xid.ID, error)               // get Param XID type, return xid.Nil if failed
 	ParamsUuid(key string, defaultValue ...UUID) (UUID, error)                  // get Param UID type, return uid.Nil if failed
 	ParamUUID(key string, defaultValue ...UUID) UUID                            // get Param UUID type, return uid.Nil if failed
 	ParamsInt(key string, defaultValue ...int) (int, error)                     // get Param int type, return -1 if failed
@@ -79,19 +81,21 @@ type Ctx interface {
 	Query(key string, def ...string) string                                     // get request query string like ?id=12345
 	QueryInt(key string, def ...int) int                                        // parse form value to int
 	Querys(key string, def ...[]string) []string                                // like query, but return []string values
-	FormValue(key string, def ...string) string                                 // like Query support old version
-	FromValueInt(key string, def ...int) int                                    // parse form value to int
-	FromValueUid(key string, def ...uid.UID) uid.UID                            // parse form value to uid
-	FromValueUUID(key string, def ...UUID) UUID                                 // parse form value to uuid
-	FormValues(key string, def ...[]string) []string                            // like Querys
-	Flush(data any, statusCode ...int) error                                    // flush
-	Accepts(offers ...string) string                                            // Accepts checks if the specified extensions or content types are acceptable.
-	AcceptsCharsets(offers ...string) string                                    // AcceptsCharsets checks if the specified charset is acceptable.
-	AcceptsEncodings(offers ...string) string                                   // AcceptsEncodings checks if the specified encoding is acceptable.
-	AcceptsLanguages(offers ...string) string                                   // AcceptsLanguages checks if the specified language is acceptable.
-	Format(body any) error                                                      // Format performs content-negotiation on the Accept HTTP header. It uses Accepts to select a proper format. If the header is not specified or there is no proper format, text/plain is used.
-	Type(extension string, charset ...string) Ctx                               // 发送 response content-type
-	XML(data any) error                                                         // output xml
+
+	FromValueXid(key string, def ...xid.ID) xid.ID   // parse form value to xid
+	FormValue(key string, def ...string) string      // like Query support old version
+	FromValueInt(key string, def ...int) int         // parse form value to int
+	FromValueUid(key string, def ...uid.UID) uid.UID // parse form value to uid
+	FromValueUUID(key string, def ...UUID) UUID      // parse form value to uuid
+	FormValues(key string, def ...[]string) []string // like Querys
+	Flush(data any, statusCode ...int) error         // flush
+	Accepts(offers ...string) string                 // Accepts checks if the specified extensions or content types are acceptable.
+	AcceptsCharsets(offers ...string) string         // AcceptsCharsets checks if the specified charset is acceptable.
+	AcceptsEncodings(offers ...string) string        // AcceptsEncodings checks if the specified encoding is acceptable.
+	AcceptsLanguages(offers ...string) string        // AcceptsLanguages checks if the specified language is acceptable.
+	Format(body any) error                           // Format performs content-negotiation on the Accept HTTP header. It uses Accepts to select a proper format. If the header is not specified or there is no proper format, text/plain is used.
+	Type(extension string, charset ...string) Ctx    // 发送 response content-type
+	XML(data any) error                              // output xml
 	Set(key string, val any)
 	Get(key string) (val any, ok bool)
 	GetString(key string, def ...string) (value string)
@@ -101,6 +105,7 @@ type Ctx interface {
 	GetUint(key string, def ...uint) (i uint)
 	GetUint64(key string, def ...uint64) (i uint64)
 	GetUUID(key string, def ...UUID) (v UUID)
+	GetXid(key string, def ...xid.ID) (v xid.ID) // get xid from params
 	GetFloat64(key string, def ...float64) (value float64)
 	GetTime(key string) (t time.Time)
 	GetDuration(key string) (d time.Duration)
@@ -769,6 +774,20 @@ func (c *BaseCtx) GetUUID(key string, def ...UUID) (v UUID) {
 	return NewUUID()
 }
 
+func (c *BaseCtx) GetXid(key string, def ...xid.ID) (v xid.ID) {
+	if val, ok := c.Get(key); ok && val != nil {
+		if value, ok := val.(string); ok {
+			if v, err := xid.ParseString(value); err == nil {
+				return v
+			}
+		}
+	}
+	if len(def) > 0 {
+		return def[0]
+	}
+	return xid.ID(0)
+}
+
 // GetFloat64 returns the value associated with the key as a float64.
 func (c *BaseCtx) GetFloat64(key string, def ...float64) (value float64) {
 	if val, ok := c.Get(key); ok && val != nil {
@@ -988,6 +1007,18 @@ func (c *BaseCtx) FromValueUid(key string, def ...uid.UID) uid.UID {
 		return def[0]
 	}
 	return uid.Nil
+}
+func (c *BaseCtx) FromValueXid(key string, def ...xid.ID) xid.ID {
+	val := c.Query(key)
+	if val != "" {
+		if v, err := xid.ParseString(val); err == nil && !v.IsZero() {
+			return v
+		}
+	}
+	if len(def) > 0 {
+		return def[0]
+	}
+	return xid.ID(0)
 }
 
 func (c *BaseCtx) FromValueUUID(key string, def ...UUID) UUID {
@@ -1364,6 +1395,17 @@ func (c *BaseCtx) GetParamSid(key string, defaultValue ...sid.ID) (sid.ID, error
 
 func (c *BaseCtx) ParamsSid(key string, defaultValue ...sid.ID) (sid.ID, error) {
 	value, err := sid.ParseString(c.Params(key))
+	if err != nil {
+		if len(defaultValue) > 0 {
+			return defaultValue[0], nil
+		}
+		return 0, fmt.Errorf("failed to convert: %w", err)
+	}
+	return value, nil
+}
+
+func (c *BaseCtx) ParamsXid(key string, defaultValue ...xid.ID) (xid.ID, error) {
+	value, err := xid.ParseString(c.Params(key))
 	if err != nil {
 		if len(defaultValue) > 0 {
 			return defaultValue[0], nil

@@ -16,10 +16,11 @@ import (
 
 // 常量定义
 const (
-	Epoch           int64 = 1288834974657
+	Epoch           int64 = 1774972800000
 	DefaultNodeBits uint8 = 10
 	DefaultStepBits uint8 = 12
 	EncodeAlphabet        = "ABCDEFGHJKLMNPQRSTUVWXYZ123456789"
+	Base62                = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz123456789"
 )
 
 var (
@@ -46,6 +47,7 @@ func init() {
 			decodeTable[ch+'a'-'A'] = int8(idx)
 		}
 	}
+
 }
 
 // SnowflakeID 雪花ID生成器
@@ -228,7 +230,6 @@ func Decode(s string) (ID, error) {
 	return id, nil
 }
 
-// Time 提取ID中的时间戳部分
 func (id ID) Time(epoch time.Time) time.Time {
 	sf := int64(id) >> 22 // 假设timeShift是22
 	return epoch.Add(time.Duration(sf) * time.Millisecond)
@@ -304,7 +305,7 @@ func (id ID) Value() (driver.Value, error) {
 	return id.Int64(), nil
 }
 
-func (id *ID) Scan(value interface{}) error {
+func (id *ID) Scan(value any) error {
 	if value == nil {
 		*id = 0
 		return nil

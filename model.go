@@ -19,6 +19,7 @@ import (
 	"github.com/glebarez/sqlite"
 	"github.com/google/uuid"
 	"github.com/xs23933/core/v3/sid"
+	"github.com/xs23933/core/v3/xid"
 	"github.com/xs23933/uid"
 	"gorm.io/driver/clickhouse"
 	"gorm.io/driver/mysql"
@@ -33,6 +34,11 @@ func NewModel(conf Options, debug, colorful bool) (map[string]*DB, error) {
 
 	nodeID := Conf.GetInt64("node_id", 1)
 	SnID, _ = sid.New(nodeID)
+	XID = xid.New(&xid.Config{
+		NodeID:      nodeID,
+		CounterBits: 16,
+		Salt:        0xe5b08fe69dbe,
+	})
 
 	if conf.GetString("type") != "" && conf.GetString("dsn") != "" {
 		db, err := openDB(conf, debug, colorful)
@@ -60,6 +66,10 @@ func NewModel(conf Options, debug, colorful bool) (map[string]*DB, error) {
 
 func NewSnID() sid.ID {
 	return SnID.MustGenerate()
+}
+
+func NewXID() xid.ID {
+	return XID.MustGenerate()
 }
 
 func openDB(conf Options, debug, colorful bool) (db *DB, err error) {
@@ -1330,6 +1340,7 @@ var (
 	conns   = make(map[string]*DB)
 	dbsType = make(map[string]string)
 	SnID    *sid.SnowflakeID
+	XID     *xid.Generator
 )
 
 type DB = gorm.DB
