@@ -79,6 +79,9 @@ func (id ID) Int64() int64 {
 }
 
 func (id ID) String() string {
+	return strconv.FormatInt(int64(id), 10)
+}
+func (id ID) Encode() string {
 	obf := id.obfuscate(id)
 	return Encode(obf)
 }
@@ -88,7 +91,7 @@ func (id ID) MarshalJSON() ([]byte, error) {
 }
 
 func (id ID) MarshalBinary() ([]byte, error) {
-	return []byte(id.String()), nil
+	return []byte(id.Encode()), nil
 }
 
 func (id *ID) UnmarshalBinary(data []byte) error {
