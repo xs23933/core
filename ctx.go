@@ -791,10 +791,17 @@ func (c *BaseCtx) GetXid(key string, def ...xid.ID) (v xid.ID) {
 
 func (c *BaseCtx) GetSid(key string, def ...sid.ID) (v sid.ID) {
 	if val, ok := c.Get(key); ok && val != nil {
-		if value, ok := val.(string); ok {
+		switch value := val.(type) {
+		case string:
 			if v, err := sid.ParseString(value); err == nil {
 				return v
 			}
+		case int64:
+			return sid.ID(value)
+		case sid.ID:
+			return value
+		default:
+			Erro("invalid sid type: %T", value)
 		}
 	}
 	if len(def) > 0 {

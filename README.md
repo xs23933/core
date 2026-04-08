@@ -966,6 +966,385 @@ func (p *Plugin) Init() {
 }
 ```
 
+# Core/V3 框架路由自动注册规范
+
+> 本文档描述 `github.com/xs23933/core/v3` 框架的路由自动注册机制。
+
+---
+
+## 一、命名约定
+
+### 1.1 Handler 结构体
+
+```go
+type UserHandler struct {
+    core.Handler  // 必须嵌入 core.Handler
+    // ... 依赖字段
+}
+```
+
+- Handler 结构体名以 `Handler` 结尾
+- 框架自动注册时会去掉 `Handler` 后缀作为路由组名
+- 例：`UserHandler` → 路由组前缀为 `/user`（可通过 `Init()` 覆盖）
+
+### 1.2 方法命名规则
+
+HTTP 方法前缀 + 路径片段（驼峰命名）：
+
+| 方法名前缀 | HTTP 方法 |
+| ---------- | --------- |
+| `Get`      | GET       |
+| `Post`     | POST      |
+| `Put`      | PUT       |
+| `Delete`   | DELETE    |
+| `Patch`    | PATCH     |
+
+---
+
+## 二、路径转换规则（核心）
+
+### 2.1 基本规则
+
+| 字符特征               | 转换结果           | 示例                   |
+| ---------------------- | ------------------ | ---------------------- |
+| 大写字母开头           | 路径片段 `/xxx`    | `Profile` → `/profile` |
+| 下划线 + 小写字母      | 路径参数 `:xxx`    | `_id` → `:id`          |
+| `Param`（固定关键字）  | 路径参数 `:param`  | `Param` → `:param`     |
+| `Params`（固定关键字） | 可选参数 `:param?` | `Params` → `:param?`   |
+
+### 2.2 大写字母 = 路径分隔
+
+每个大写字母开头的片段都会生成一个新的路径层级：
+
+```go
+// 方法名 → 路由
+func (h *Handler) GetProfile(c core.Ctx) error {}
+// GET /profile
+
+func (h *Handler) GetCurrentUser(c core.Ctx) error {}
+// GET /current/user
+
+func (h *Handler) GetId(c core.Ctx) error {}
+// GET /id  （Id 是路径片段，不是参数！）
+```
+
+### 2.3 下划线 = 自定义路径参数
+
+下划线开头 + 小写字母 = 自定义路径参数名：
+
+```go
+// 方法名 → 路由
+func (h *Handler) Get_id(c core.Ctx) error {}
+// GET /:id
+
+func (h *Handler) Get_userId(c core.Ctx) error {}
+// GET /:userId
+
+func (h *Handler) Get_id_Profile(c core.Ctx) error {}
+// GET /:id/profile
+```
+
+### 2.4 固定关键字 Param / Params
+
+`Param` 和 `Params` 是框架固定关键字：
+
+```go
+// 方法名 → 路由
+func (h *Handler) GetParam(c core.Ctx) error {}
+// GET /:param  （必选参数）
+
+func (h *Handler) GetParams(c core.Ctx) error {}
+// GET /:param?  （可选参数）
+
+func (h *Handler) GetParam_Callback(c core.Ctx) error {}
+// GET /:param/callback
+
+func (h *Handler) GetParams_Detail(c core.Ctx) error {}
+// GET /:param?/detail
+```
+
+> ⚠️ 关键区别：
+>
+> - `Param` → `:param`（必选）
+> - `Params` → `:param?`（可选）
+> - 参数名固定为 `param`，通过 `c.Params("param")` 获取
+
+---
+
+## 三、参数获取
+
+### 3.1 固定关键字参数
+
+```go
+// 路由: GET /:param
+func (h *Handler) GetParam(c core.Ctx) error {
+    val := c.Params("param")  // 参数名固定为 "param"
+    // ...
+}
+
+// 路由: GET /:param/callback
+func (h *Handler) GetParam_Callback(c core.Ctx) error {
+    provider := c.Params("param")  // 同样是 "param"
+    // ...
+}
+```
+
+### 3.2 自定义参数名
+
+```go
+// 路由: GET /:id
+func (h *Handler) Get_id(c core.Ctx) error {
+    id := c.Params("id")  // 参数名为 "id"
+    // ...
+}
+
+// 路由: GET /:userId/profile
+func (h *Handler) Get_userId_Profile(c core.Ctx) error {
+    userId := c.Params("userId")  // 参数名为 "userId"
+    // ...
+}
+```
+
+---
+
+## 四、路由前缀设置
+
+### 4.1 默认前缀
+
+框架根据 Handler 名称自动推断前缀：
+
+```go
+type UserHandler struct { core.Handler }
+// 默认前缀: /user
+
+type OAuthHandler struct { core.Handler }
+// 默认前缀: /oauth
+```
+
+### 4.2 自定义前缀
+
+在 `Init()` 方法中使用 `Prefix()` 设置：
+
+```go
+func (h *OAuthHandler) Init() {
+    h.Prefix("/api/v1/oauth")
+}
+```
+
+---
+
+## 五、完整示例
+
+### 5.1 OAuth Handler 示例
+
+```go
+type OAuthHandler struct {
+    core.Handler
+    oauthService *OAuthService
+}
+
+func (h *OAuthHandler) Init() {
+    h.Prefix("/api/v1/oauth")
+}
+
+// GET /api/v1/oauth/:param
+func (h *OAuthHandler) GetParam(c core.Ctx) error {
+    provider := c.Params("param") // google, facebook, twitter, github
+    // ...
+}
+
+// GET /api/v1/oauth/:param/callback
+func (h *OAuthHandler) GetParam_Callback(c core.Ctx) error {
+    provider := c.Params("param")
+    // ...
+}
+```
+
+**生成的路由**：
+
+```
+GET /api/v1/oauth/:param           → OAuthHandler.GetParam
+GET /api/v1/oauth/:param/callback  → OAuthHandler.GetParam_Callback
+```
+
+**访问示例**：
+
+| URL                                   | 匹配路由            | param 值     |
+| ------------------------------------- | ------------------- | ------------ |
+| `GET /api/v1/oauth/google`            | `GetParam`          | `"google"`   |
+| `GET /api/v1/oauth/facebook/callback` | `GetParam_Callback` | `"facebook"` |
+| `GET /api/v1/oauth`                   | 404                 | 必选参数缺失 |
+
+### 5.2 User Handler 示例
+
+```go
+type UserHandler struct {
+    core.Handler
+}
+
+func (h *UserHandler) Init() {
+    h.Prefix("/api/v1/users")
+}
+
+// GET /api/v1/users
+func (h *UserHandler) Get(c core.Ctx) error {}
+
+// GET /api/v1/users/:id
+func (h *UserHandler) Get_id(c core.Ctx) error {
+    id := c.Params("id")
+}
+
+// GET /api/v1/users/:id/profile
+func (h *UserHandler) Get_id_Profile(c core.Ctx) error {
+    id := c.Params("id")
+}
+
+// GET /api/v1/users/current
+func (h *UserHandler) GetCurrent(c core.Ctx) error {}
+
+// POST /api/v1/users
+func (h *UserHandler) Post(c core.Ctx) error {}
+
+// PUT /api/v1/users/:id
+func (h *UserHandler) Put_id(c core.Ctx) error {}
+
+// DELETE /api/v1/users/:id
+func (h *UserHandler) Delete_id(c core.Ctx) error {}
+```
+
+---
+
+## 六、命名转换规则（toNamer）
+
+框架内部使用 `toNamer` 函数进行命名转换：
+
+**转换逻辑**：
+
+1. 提取 HTTP 方法前缀（`Get`/`Post`/`Put`/`Delete`/`Patch`）
+2. 遍历剩余字符：
+   - 大写字母 → 新路径片段（转小写）
+   - `_` + 小写字母 → 自定义路径参数
+   - `Param`（关键字）→ `:param`
+   - `Params`（关键字）→ `:param?`
+
+**转换示例**：
+
+| 方法名              | 解析过程                                  | 最终路由                |
+| ------------------- | ----------------------------------------- | ----------------------- |
+| `GetProfile`        | `Profile` → `/profile`                    | `GET /profile`          |
+| `GetCurrentUser`    | `Current` + `User` → `/current/user`      | `GET /current/user`     |
+| `Get_id`            | `_id` → `/:id`                            | `GET /:id`              |
+| `Get_userId`        | `_userId` → `/:userId`                    | `GET /:userId`          |
+| `Get_id_Profile`    | `_id` + `Profile` → `/:id/profile`        | `GET /:id/profile`      |
+| `GetParam`          | `Param` → `/:param`                       | `GET /:param`           |
+| `GetParam_Callback` | `Param` + `Callback` → `/:param/callback` | `GET /:param/callback`  |
+| `GetParams`         | `Params` → `/:param?`                     | `GET /:param?`          |
+| `GetParams_Detail`  | `Params` + `Detail` → `/:param?/detail`   | `GET /:param?/detail`   |
+| `GetId`             | `Id` → `/id`                              | `GET /id`（不是参数！） |
+| `PostLogin`         | `Login` → `/login`                        | `POST /login`           |
+
+---
+
+## 七、常见错误
+
+### 7.1 混淆大写和下划线
+
+```go
+// ❌ 错误：期望 /:id，实际得到 /id
+func (h *Handler) GetId(c core.Ctx) error {}
+// GET /id  （Id 是路径片段，不是参数）
+
+// ✅ 正确：使用下划线定义参数
+func (h *Handler) Get_id(c core.Ctx) error {}
+// GET /:id
+```
+
+### 7.2 混淆 Param 和 Params
+
+```go
+// ❌ 错误：期望可选参数，实际是必选
+func (h *Handler) GetParam(c core.Ctx) error {}
+// GET /:param  （必选）
+
+// ✅ 正确：使用 Params 表示可选
+func (h *Handler) GetParams(c core.Ctx) error {}
+// GET /:param?  （可选）
+```
+
+### 7.3 Param 与自定义参数混用
+
+```go
+// ⚠️ 注意：Param 固定参数名为 "param"
+func (h *Handler) GetParam(c core.Ctx) error {}
+// GET /:param，用 c.Params("param") 获取
+
+// 自定义参数名用下划线
+func (h *Handler) Get_id(c core.Ctx) error {}
+// GET /:id，用 c.Params("id") 获取
+```
+
+---
+
+## 八、调试技巧
+
+### 8.1 查看注册的路由
+
+框架启动时会打印所有注册的路由：
+
+```
+[DBUG] AutoRoute handler.UserHandler
+[DBUG] route: GET /profile > handler.UserHandler.GetProfile
+[DBUG] route: POST /login > handler.AuthHandler.PostLogin
+[DBUG] route: GET /api/v1/oauth/:param > handler.OAuthHandler.GetParam
+```
+
+### 8.2 常见问题排查
+
+| 问题           | 原因                    | 解决方案                                    |
+| -------------- | ----------------------- | ------------------------------------------- |
+| 404 路由不匹配 | 参数必选但未提供        | 使用 `Params` 改为可选，或确保 URL 包含参数 |
+| 参数值为空     | 使用 `Params` 但未传参  | 检查是否应该用 `Param` 改为必选             |
+| 路由不是参数   | 用了大写开头（如 `Id`） | 改用下划线开头（如 `_id`）                  |
+| 路由冲突       | 多个方法映射到同一路径  | 检查方法命名是否重复                        |
+
+---
+
+## 九、快速参考卡
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  命名规则                                                    │
+├─────────────────────────────────────────────────────────────┤
+│  大写字母开头    → 路径片段 /xxx                              │
+│  _xxx（下划线）  → 自定义路径参数 :xxx                        │
+│  Param（关键字） → 路径参数 :param（必选）                    │
+│  Params（关键字）→ 路径参数 :param?（可选）                   │
+├─────────────────────────────────────────────────────────────┤
+│  方法名               →  路由                               │
+├─────────────────────────────────────────────────────────────┤
+│  Get                  →  GET /                              │
+│  GetProfile           →  GET /profile                       │
+│  GetCurrent           →  GET /current                       │
+│  GetCurrentProfile    →  GET /current/profile               │
+│  Get_id               →  GET /:id       (自定义参数)        │
+│  Get_userId           →  GET /:userId   (自定义参数)        │
+│  Get_id_Profile       →  GET /:id/profile                   │
+│  GetParam             →  GET /:param     (必选关键字)       │
+│  GetParam_Callback    →  GET /:param/callback               │
+│  GetParams            →  GET /:param?    (可选关键字)       │
+│  GetParams_Detail     →  GET /:param?/detail                │
+│  GetId                →  GET /id       (不是参数！)         │
+│  Post                 →  POST /                             │
+│  PostLogin            →  POST /login                        │
+│  Put_id               →  PUT /:id                           │
+│  Delete_id            →  DELETE /:id                        │
+└─────────────────────────────────────────────────────────────┘
+
+参数获取:
+  - 关键字参数: c.Params("param")
+  - 自定义参数: c.Params("id"), c.Params("userId") 等
+```
+
 ## 版本历史
 
 ### v3.1.0 (当前版本)
