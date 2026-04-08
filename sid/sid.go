@@ -254,6 +254,20 @@ func (e JSONSyntaxError) Error() string {
 	return fmt.Sprintf("invalid snowflake ID: %q", string(e.Original))
 }
 
+func (id ID) MarshalBinary() ([]byte, error) {
+	return []byte(id.Encode()), nil
+}
+
+func (id *ID) UnmarshalBinary(data []byte) error {
+	str := string(data)
+	val, err := ParseString(str)
+	if err != nil {
+		return err
+	}
+	*id = val
+	return nil
+}
+
 func (id ID) MarshalJSON() ([]byte, error) {
 	return []byte(`"` + id.String() + `"`), nil
 }

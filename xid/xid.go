@@ -84,7 +84,7 @@ func (id ID) String() string {
 }
 
 func (id ID) MarshalJSON() ([]byte, error) {
-	return []byte(id.String()), nil
+	return []byte(`"` + id.String() + `"`), nil
 }
 
 func (id ID) MarshalBinary() ([]byte, error) {
@@ -101,9 +101,26 @@ func (id *ID) UnmarshalBinary(data []byte) error {
 	return nil
 }
 
+// JSON序列化相关
+type JSONSyntaxError struct {
+	Original []byte
+}
+
+func (e JSONSyntaxError) Error() string {
+	return fmt.Sprintf("invalid xID: %q", string(e.Original))
+}
+
 func (id *ID) UnmarshalJSON(data []byte) error {
-	str := string(data)
-	val, err := ParseString(str)
+	if string(data) == "null" || string(data) == "\"\"" {
+		*id = 0
+		return nil
+	}
+
+	if len(data) < 3 || data[0] != '"' || data[len(data)-1] != '"' {
+		return JSONSyntaxError{Original: data}
+	}
+
+	val, err := ParseString(string(data[1 : len(data)-1]))
 	if err != nil {
 		return err
 	}

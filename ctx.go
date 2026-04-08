@@ -105,7 +105,8 @@ type Ctx interface {
 	GetUint(key string, def ...uint) (i uint)
 	GetUint64(key string, def ...uint64) (i uint64)
 	GetUUID(key string, def ...UUID) (v UUID)
-	GetXid(key string, def ...xid.ID) (v xid.ID) // get xid from params
+	GetXid(key string, def ...xid.ID) (v xid.ID)
+	GetSid(key string, def ...sid.ID) (v sid.ID)
 	GetFloat64(key string, def ...float64) (value float64)
 	GetTime(key string) (t time.Time)
 	GetDuration(key string) (d time.Duration)
@@ -786,6 +787,20 @@ func (c *BaseCtx) GetXid(key string, def ...xid.ID) (v xid.ID) {
 		return def[0]
 	}
 	return xid.ID(0)
+}
+
+func (c *BaseCtx) GetSid(key string, def ...sid.ID) (v sid.ID) {
+	if val, ok := c.Get(key); ok && val != nil {
+		if value, ok := val.(string); ok {
+			if v, err := sid.ParseString(value); err == nil {
+				return v
+			}
+		}
+	}
+	if len(def) > 0 {
+		return def[0]
+	}
+	return sid.ID(0)
 }
 
 // GetFloat64 returns the value associated with the key as a float64.
