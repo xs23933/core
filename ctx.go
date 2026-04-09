@@ -29,6 +29,7 @@ import (
 )
 
 type Ctx interface {
+	Context() context.Context                                                   // Request().Context()
 	Response() ResponseWriter                                                   // Response() return http.ResponseWriter
 	Request() *http.Request                                                     // Request() return *http.Request
 	RedirectJS(to string, msg ...string)                                        // use js redirect
@@ -148,6 +149,10 @@ type BaseCtx struct {
 	respJsonKeys  *RestfulDefine
 	mu            sync.RWMutex
 	params        map[string]string
+}
+
+func (c *BaseCtx) Context() context.Context {
+	return c.Request().Context()
 }
 
 func (c *BaseCtx) SetParams(key, val string) {
