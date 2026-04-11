@@ -418,26 +418,38 @@ func (c *BaseCtx) Cookies(name string) (string, error) {
 // It also checks if the remoteIP is a trusted proxy or not.
 // In order to perform this validation, it will see if the IP is contained within at least one of the CIDR blocks
 func (c *BaseCtx) RemoteIP() net.IP {
-	remote := c.GetHeader("X-Forwarded-For")
-	remoteIP := net.ParseIP(remote)
-	if remoteIP != nil {
-		return remoteIP
-	}
-	remote = c.GetHeader("X-Real-IP")
-	remoteIP = net.ParseIP(remote)
-	if remoteIP != nil {
-		return remoteIP
-	}
-	ip, _, err := net.SplitHostPort(strings.TrimSpace(c.R.RemoteAddr))
-	if err != nil {
-		return nil
-	}
-	remoteIP = net.ParseIP(ip)
-	if remoteIP == nil {
-		return nil
+	// 1. Cloudflare 官方真实 IP（最优先）
+	if ip := strings.TrimSpace(c.GetHeader("CF-Connecting-IP")); ip != "" {
+		if realIP := net.ParseIP(ip); realIP != nil {
+			return realIP
+		}
 	}
 
-	return remoteIP
+	// 其次 X-Real-IP
+	if real := c.GetHeader("X-Real-IP"); real != "" {
+		if realIP := net.ParseIP(strings.TrimSpace(real)); realIP != nil {
+			return realIP
+		}
+	}
+
+	// 优先 X-Forwarded-For
+	if forwarded := c.GetHeader("X-Forwarded-For"); forwarded != "" {
+		// 有多个 IP 时取第一个（用户真实 IP）
+		parts := strings.Split(forwarded, ",")
+		ip := strings.TrimSpace(parts[0])
+		if realIP := net.ParseIP(ip); realIP != nil {
+			return realIP
+		}
+	}
+
+	// 最后 RemoteAddr
+	if host, _, err := net.SplitHostPort(strings.TrimSpace(c.R.RemoteAddr)); err == nil {
+		if realIP := net.ParseIP(host); realIP != nil {
+			return realIP
+		}
+	}
+
+	return nil
 }
 
 // set locals var
