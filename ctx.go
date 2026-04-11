@@ -641,19 +641,20 @@ func (c *BaseCtx) RemoteIP() net.IP {
 			return realIP
 		}
 	}
+
+	// 其次 X-Real-IP
+	if real := c.GetHeader("X-Real-IP"); real != "" {
+		if realIP := net.ParseIP(strings.TrimSpace(real)); realIP != nil {
+			return realIP
+		}
+	}
+
 	// 优先 X-Forwarded-For
 	if forwarded := c.GetHeader("X-Forwarded-For"); forwarded != "" {
 		// 有多个 IP 时取第一个（用户真实 IP）
 		parts := strings.Split(forwarded, ",")
 		ip := strings.TrimSpace(parts[0])
 		if realIP := net.ParseIP(ip); realIP != nil {
-			return realIP
-		}
-	}
-
-	// 其次 X-Real-IP
-	if real := c.GetHeader("X-Real-IP"); real != "" {
-		if realIP := net.ParseIP(strings.TrimSpace(real)); realIP != nil {
 			return realIP
 		}
 	}

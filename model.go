@@ -1419,6 +1419,28 @@ func EnumUnmarshalJSON[T Enum](data []byte, mapping []string) (T, error) {
 	return T(0), fmt.Errorf("invalid %v value: %v ", tType, data)
 }
 
+func EnumMarshalText[T Enum](v T, mapping []string) ([]byte, error) {
+	return []byte(mapping[v]), nil
+}
+
+func EnumUnmarshalText[T Enum](data []byte, mapping []string) (T, error) {
+	s := string(data)
+
+	for i, v := range mapping {
+		if v == s {
+			return T(i), nil
+		}
+	}
+
+	// fallback binary
+	if len(data) == 1 {
+		return T(data[0]), nil
+	}
+
+	var zero T
+	return zero, fmt.Errorf("invalid enum: %s", s)
+}
+
 // WithTransaction
 //
 //	func (s *TypeX) WithTransaction(fn func(tx *core.DB) error) error {
