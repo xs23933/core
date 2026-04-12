@@ -636,14 +636,14 @@ func (c *BaseCtx) Cookies(name string) (string, error) {
 // In order to perform this validation, it will see if the IP is contained within at least one of the CIDR blocks
 func (c *BaseCtx) RemoteIP() net.IP {
 	// 1. Cloudflare 官方真实 IP（最优先）
-	if ip := strings.TrimSpace(c.GetHeader("CF-Connecting-IP")); ip != "" {
+	if ip := strings.TrimSpace(c.GetHeader("Cf-Connecting-Ip")); ip != "" {
 		if realIP := net.ParseIP(ip); realIP != nil {
 			return realIP
 		}
 	}
 
 	// 其次 X-Real-IP
-	if real := c.GetHeader("X-Real-IP"); real != "" {
+	if real := c.GetHeader("X-Real-Ip"); real != "" {
 		if realIP := net.ParseIP(strings.TrimSpace(real)); realIP != nil {
 			return realIP
 		}
