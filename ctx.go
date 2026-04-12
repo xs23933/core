@@ -631,29 +631,23 @@ func (c *BaseCtx) Cookies(name string) (string, error) {
 	return val, nil
 }
 
+var ipHeaders = []string{"Cf-Connecting-Ip", "X-Real-Ip", "X-Forwarded-For"}
+
 // RemoteIP parses the IP from Request.RemoteAddr, normalizes and returns the IP (without the port).
 // It also checks if the remoteIP is a trusted proxy or not.
 // In order to perform this validation, it will see if the IP is contained within at least one of the CIDR blocks
 func (c *BaseCtx) RemoteIP() net.IP {
-	// 1. Cloudflare 官方真实 IP（最优先）
-	if ip := strings.TrimSpace(c.GetHeader("Cf-Connecting-Ip")); ip != "" {
-		if realIP := net.ParseIP(ip); realIP != nil {
-			return realIP
+	// 按照优先级检查各个HTTP头
+	for _, header := range ipHeaders {
+		ip := strings.TrimSpace(c.GetHeader(header))
+		if ip == "" {
+			continue
 		}
-	}
-
-	// 其次 X-Real-IP
-	if real := c.GetHeader("X-Real-Ip"); real != "" {
-		if realIP := net.ParseIP(strings.TrimSpace(real)); realIP != nil {
-			return realIP
+		// 多个 IP 时取第一个（用户真实 IP）
+		if header == "X-Forwarded-For" {
+			parts := strings.Split(ip, ",")
+			ip = strings.TrimSpace(parts[0])
 		}
-	}
-
-	// 优先 X-Forwarded-For
-	if forwarded := c.GetHeader("X-Forwarded-For"); forwarded != "" {
-		// 有多个 IP 时取第一个（用户真实 IP）
-		parts := strings.Split(forwarded, ",")
-		ip := strings.TrimSpace(parts[0])
 		if realIP := net.ParseIP(ip); realIP != nil {
 			return realIP
 		}
@@ -1335,7 +1329,19 @@ func (c *BaseCtx) ToJSON(data any, msg ...any) error {
 	return c.JSON(dat)
 }
 
+func NormalizeHeaders(h http.Header) {
+	for k, v := range h {
+		ck := http.CanonicalHeaderKey(k)
+
+		if ck != k {
+			h.Del(k)
+			h[ck] = v
+		}
+	}
+}
+
 func (c *BaseCtx) init(app *Core, w http.ResponseWriter, r *http.Request) {
+	NormalizeHeaders(r.Header)
 	c.R = r
 	c.wm.init(w)
 	c.W = &c.wm
@@ -1475,7 +1481,7 @@ func (c *BaseCtx) SetHeader(key string, value string) {
 
 // GetHeader get Request header
 func (c *BaseCtx) GetHeader(key string, defaultValue ...string) string {
-	return defaultString(c.Request().Header.Get(key), defaultValue)
+	return defaultString(c.R.Header.Get(key), defaultValue)
 }
 
 func (c *BaseCtx) SendStatus(code int, msg ...string) error {
