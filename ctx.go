@@ -40,6 +40,7 @@ type Ctx interface {
 	Cookie(cookie *http.Cookie)                                                 // set cookie with cookie object
 	Cookies(name string) (string, error)                                        // get some cookie
 	ReadBody(out any, debug ...bool) error                                      // read put post any request body to struct or map
+	Bind(out any, debug ...bool) error                                          // ReadBody alias  read put post form data to struct or map
 	BodyParser(out any) error                                                   // read put post form data to struct or map
 	Validate(out any) error                                                     // validate struct or map
 	Next() error                                                                // next HandlerFunc
@@ -279,6 +280,10 @@ func (c *BaseCtx) Stream(step func(w io.Writer) bool) bool {
 			}
 		}
 	}
+}
+
+func (c *BaseCtx) Bind(out any, debug ...bool) error {
+	return c.ReadBody(out, debug...)
 }
 
 // ReadBody binds the request body to a struct.

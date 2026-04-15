@@ -30,6 +30,7 @@ type handler interface {
 	Prefix(prefix ...string) string
 	PushHandler(method, path string)
 	Init()
+	Debug() bool
 }
 
 type Handler struct {
@@ -71,4 +72,8 @@ func (h *Handler) Prefix(prefix ...string) string {
 		h.prefix = prefix[0]
 	}
 	return h.prefix
+}
+
+func (h *Handler) Debug() bool {
+	return h.Core().Debug
 }
