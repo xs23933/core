@@ -167,12 +167,12 @@ var decoderPool = &sync.Pool{New: func() any {
 	decoder.ZeroEmpty(true)
 	decoder.RegisterConverter(time.Time{}, func(s string) reflect.Value {
 		if s == "" {
-			return reflect.Zero(reflect.TypeOf(time.Time{}))
+			return reflect.Zero(reflect.TypeFor[time.Time]())
 		}
 
 		t, err := time.Parse(time.RFC3339, s)
 		if err != nil {
-			return reflect.Zero(reflect.TypeOf(time.Time{}))
+			return reflect.Zero(reflect.TypeFor[time.Time]())
 		}
 		return reflect.ValueOf(t)
 	})

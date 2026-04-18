@@ -435,7 +435,7 @@ func (d *Array) Scan(src any) error {
 
 // Strings 转换为 []string
 func (d Array) String() []string {
-	arr := make([]string, 0)
+	arr := make([]string, 0, len(d))
 	for _, v := range d {
 		arr = append(arr, fmt.Sprint(v))
 	}
