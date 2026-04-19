@@ -364,12 +364,25 @@ func (d Map) GetBool(k string) (value bool) {
 func (d Map) GetAs(k string, v any) error {
 	if val, ok := d[k]; ok && val != nil {
 		rv := reflect.ValueOf(v)
-		if rv.Kind() != reflect.Ptr || rv.IsNil() {
+		if rv.Kind() != reflect.Pointer || rv.IsNil() {
 			return &InvalidUnmarshalError{reflect.TypeOf(v)}
 		}
-		rv = rv.Elem()
-		rv.Set(reflect.ValueOf(val).Convert(rv.Type()))
-		return nil
+		// 先尝试直接转换
+		srcVal := reflect.ValueOf(val)
+		srcType := srcVal.Type()
+		dstType := rv.Elem().Type()
+
+		if srcType.ConvertibleTo(dstType) {
+			rv.Elem().Set(srcVal.Convert(dstType))
+			return nil
+		}
+
+		// 如果不能直接转换，使用 JSON 序列化/反序列化
+		buf, err := sonic.Marshal(val)
+		if err != nil {
+			return err
+		}
+		return sonic.Unmarshal(buf, v)
 	}
 	return ErrDataTypeNotSupport
 }
