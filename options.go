@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/bytedance/sonic"
 	"gopkg.in/yaml.v3"
 )
 
@@ -72,6 +73,32 @@ func (opt *Options) GetAs(k string, v any) error {
 
 		rv.Set(reflect.ValueOf(val).Convert(rv.Type()))
 		return nil
+	}
+	return ErrDataTypeNotSupport
+}
+
+func (d Options) As(k string, v any) error {
+	if val, ok := d[k]; ok && val != nil {
+		rv := reflect.ValueOf(v)
+		if rv.Kind() != reflect.Pointer || rv.IsNil() {
+			return &InvalidUnmarshalError{reflect.TypeOf(v)}
+		}
+		// 先尝试直接转换
+		srcVal := reflect.ValueOf(val)
+		srcType := srcVal.Type()
+		dstType := rv.Elem().Type()
+
+		if srcType.ConvertibleTo(dstType) {
+			rv.Elem().Set(srcVal.Convert(dstType))
+			return nil
+		}
+
+		// 如果不能直接转换，使用 JSON 序列化/反序列化
+		buf, err := sonic.Marshal(val)
+		if err != nil {
+			return err
+		}
+		return sonic.Unmarshal(buf, v)
 	}
 	return ErrDataTypeNotSupport
 }
