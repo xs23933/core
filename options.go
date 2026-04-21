@@ -20,6 +20,9 @@ func (opt *Options) Value(k string) (any, bool) {
 }
 
 func (opt *Options) GetString(k string, def ...string) string {
+	if strings.Contains(k, ".") {
+		return opt.GetPathString(k, def...)
+	}
 	if val, ok := (*opt)[k]; ok && val != nil {
 		if v, ok := val.(string); ok {
 			return v
@@ -123,6 +126,9 @@ func (opt *Options) GetStrings(k string, def ...[]string) []string {
 }
 
 func (opt *Options) GetInt(k string, def ...int) int {
+	if strings.Contains(k, ".") {
+		return opt.GetPathInt(k, def...)
+	}
 	if val, ok := (*opt)[k]; ok && val != nil {
 		switch v := val.(type) {
 		case string:
@@ -163,6 +169,9 @@ func (opt *Options) GetInt64(k string, def ...int64) int64 {
 }
 
 func (opt *Options) GetBool(k string, def ...bool) bool {
+	if strings.Contains(k, ".") {
+		return opt.GetPathBool(k, def...)
+	}
 	val, ok := (*opt)[k]
 	if !ok {
 		if len(def) > 0 {
@@ -242,3 +251,153 @@ var (
 		Code:    0,
 	}
 )
+
+// GetPathString 支持通过点号路径获取嵌套配置
+// 例如: GetPathString("telegram.token") 会获取 cfg["telegram"].(Options)["token"]
+func (opt *Options) GetPathString(path string, def ...string) string {
+	keys := strings.Split(path, ".")
+	current := *opt
+
+	for i, key := range keys {
+		val, exists := current[key]
+		if !exists {
+			if len(def) > 0 {
+				return def[0]
+			}
+			return ""
+		}
+
+		// 如果是最后一个key，尝试转换为string
+		if i == len(keys)-1 {
+			if str, ok := val.(string); ok {
+				return str
+			}
+			if len(def) > 0 {
+				return def[0]
+			}
+			return ""
+		}
+
+		// 如果不是最后一个key，需要继续向下查找
+		next, ok := val.(Options)
+		if !ok {
+			// 尝试从 map[string]any 转换
+			if m, ok := val.(map[string]any); ok {
+				next = Options(m)
+			} else {
+				if len(def) > 0 {
+					return def[0]
+				}
+				return ""
+			}
+		}
+		current = next
+	}
+
+	if len(def) > 0 {
+		return def[0]
+	}
+	return ""
+}
+
+// 同样添加其他类型的路径访问方法
+func (opt *Options) GetPathInt(path string, def ...int) int {
+	keys := strings.Split(path, ".")
+	current := *opt
+
+	for i, key := range keys {
+		val, exists := current[key]
+		if !exists {
+			if len(def) > 0 {
+				return def[0]
+			}
+			return 0
+		}
+
+		if i == len(keys)-1 {
+			switch v := val.(type) {
+			case string:
+				if i, err := strconv.Atoi(v); err == nil {
+					return i
+				}
+			case int:
+				return v
+			case float64:
+				return int(v)
+			case int64:
+				return int(v)
+			}
+			if len(def) > 0 {
+				return def[0]
+			}
+			return 0
+		}
+
+		next, ok := val.(Options)
+		if !ok {
+			if m, ok := val.(map[string]any); ok {
+				next = Options(m)
+			} else {
+				if len(def) > 0 {
+					return def[0]
+				}
+				return 0
+			}
+		}
+		current = next
+	}
+
+	if len(def) > 0 {
+		return def[0]
+	}
+	return 0
+}
+
+// GetPathBool 获取布尔值
+func (opt *Options) GetPathBool(path string, def ...bool) bool {
+	keys := strings.Split(path, ".")
+	current := *opt
+
+	for i, key := range keys {
+		val, exists := current[key]
+		if !exists {
+			if len(def) > 0 {
+				return def[0]
+			}
+			return false
+		}
+
+		if i == len(keys)-1 {
+			switch v := val.(type) {
+			case string:
+				return v == "true" || v == "1"
+			case bool:
+				return v
+			case int:
+				return v != 0
+			}
+			if len(def) > 0 {
+				return def[0]
+			}
+			return false
+		}
+
+		next, ok := val.(Options)
+		if !ok {
+			if m, ok := val.(map[string]any); ok {
+				next = Options(m)
+			} else {
+				if len(def) > 0 {
+					return def[0]
+				}
+				return false
+			}
+		}
+		current = next
+	}
+
+	if len(def) > 0 {
+		return def[0]
+	}
+	return false
+}
