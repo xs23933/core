@@ -1171,6 +1171,67 @@ func FindNext(whr *Map, out any, db ...*DB) (result NextPages, err error) {
 	return
 }
 
+type Page[T any] struct {
+	P     int   `json:"p"`
+	L     int   `json:"l"`
+	Total int64 `json:"total"`
+	Data  []T   `json:"data"`
+	Extra any   `json:"extra,omitempty"`
+}
+
+// FindPage Gorm find to page process whr
+func FindPageBy[T any](whr *Map, out *T, db ...*DB) (result Pages, err error) {
+	var (
+		total    int64
+		tx       *DB
+		pos, lmt int
+	)
+	if len(db) > 0 {
+		tx, pos, lmt = Where(whr, db[0])
+	} else {
+		tx, pos, lmt = Where(whr)
+	}
+	err = tx.Find(out).Offset(-1).Limit(-1).Count(&total).Error
+	result = Pages{
+		P: pos, L: lmt,
+		Total: total,
+		Data:  *out,
+	}
+	return
+}
+
+type NextPage[T any] struct {
+	P     int  `json:"p"`
+	L     int  `json:"l"`
+	Next  bool `json:"next"`
+	Prev  bool `json:"prev"`
+	Data  []T  `json:"data"`
+	Extra any  `json:"extra,omitempty"`
+}
+
+func FindNextBy[T any](whr *Map, out *T, db ...*DB) (result NextPages, err error) {
+	var (
+		lmt = 20
+		pos = 1
+		tx  *DB
+	)
+	if len(db) > 0 {
+		tx, pos, lmt = Where(whr, db[0])
+	} else {
+		tx, pos, lmt = Where(whr)
+	}
+	act := tx.Limit(lmt + 1).Find(out)
+	rows := act.RowsAffected
+	err = act.Error
+	result = NextPages{
+		P: pos, L: lmt,
+		Next: rows > int64(lmt),
+		Prev: pos > 1,
+		Data: *out,
+	}
+	return
+}
+
 // Find find all data record max 10000
 func Find(out any, args ...any) error {
 	wher := make(Map)
