@@ -1302,6 +1302,7 @@ func (c *BaseCtx) ToJSONCode(data any, msg ...any) error {
 	dat := Map{}
 	dat[c.respJsonKeys.Data] = data
 	dat["code"] = c.respJsonKeys.Code
+	httpCode := 0
 	for _, v := range msg {
 		switch d := v.(type) {
 		case int, int32, int16, int8:
@@ -1309,10 +1310,18 @@ func (c *BaseCtx) ToJSONCode(data any, msg ...any) error {
 		case string:
 			dat[c.respJsonKeys.Message] = d
 		case Errors:
-			dat["code"], dat[c.respJsonKeys.Message] = d.Errors()
+			eCode, eMsg := d.Errors()
+			dat["code"] = eCode
+			dat[c.respJsonKeys.Message] = eMsg
+			if eCode > 0 {
+				httpCode = eCode
+			}
 		case error:
 			dat[c.respJsonKeys.Message] = d.Error()
 		}
+	}
+	if httpCode > 0 {
+		return c.JSON(dat, httpCode)
 	}
 	return c.JSON(dat)
 }
@@ -1322,6 +1331,7 @@ func (c *BaseCtx) ToJSON(data any, msg ...any) error {
 	dat[c.respJsonKeys.Message] = "ok"
 	dat[c.respJsonKeys.Status] = true
 
+	httpCode := 0
 	for _, v := range msg {
 		switch d := v.(type) {
 		case int, int32, int16, int8:
@@ -1334,7 +1344,13 @@ func (c *BaseCtx) ToJSON(data any, msg ...any) error {
 		case Error:
 			dat[c.respJsonKeys.Status] = d.Code
 			dat[c.respJsonKeys.Message] = d.Message
+			if d.Code > 0 {
+				httpCode = d.Code
+			}
 		}
+	}
+	if httpCode > 0 {
+		return c.JSON(dat, httpCode)
 	}
 	return c.JSON(dat)
 }

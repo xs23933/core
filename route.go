@@ -138,19 +138,19 @@ func (app *Core) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// 检查方法是否支持
 	if methodIdx == -1 || methodIdx >= len(app.trees) {
-		c.SendString(ErrNotFound)
+		c.SendStatus(StatusNotFound, ErrNotFound.Error())
 		return
 	}
 
 	root := app.trees[methodIdx]
 	if root == nil {
-		c.SendString(ErrNotFound)
+		c.SendStatus(StatusNotFound, ErrNotFound.Error())
 		return
 	}
 
 	handlers, ok := root.match(c.Path(), c)
 	if !ok {
-		c.SendString(ErrNotFound)
+		c.SendStatus(StatusNotFound, ErrNotFound.Error())
 		return
 	}
 
@@ -158,7 +158,10 @@ func (app *Core) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	c.indexHandler = -1
 	if err := c.Next(); err != nil {
 		if e, ok := err.(Errors); ok {
-			c.SendStatus(e.Errors())
+			eCode, eMsg := e.Errors()
+			c.SendStatus(eCode, eMsg)
+		} else {
+			c.SendStatus(StatusInternalServerError, err.Error())
 		}
 	}
 }
