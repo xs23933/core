@@ -638,6 +638,12 @@ func init() {
 	for _, initialism := range commonInitialisms {
 		commonInitialismsForReplacer = append(commonInitialismsForReplacer, initialism, cases.Title(language.Und, cases.NoLower).String(initialism))
 	}
+	commonInitialismsForReplacer = append(commonInitialismsForReplacer, "__dot__", "\x01") // __dot__ -> .
+	commonInitialismsForReplacer = append(commonInitialismsForReplacer, "__Dot__", "\x01") // __Dot__ -> .
+	commonInitialismsForReplacer = append(commonInitialismsForReplacer, "__DOT__", "\x01") // __dot__ -> .
+	commonInitialismsForReplacer = append(commonInitialismsForReplacer, "__", "\x00")      // __ -> -
+	commonInitialismsForReplacer = append(commonInitialismsForReplacer, "By", "_")         // By -> _
+
 	commonInitialismsReplacer = strings.NewReplacer(commonInitialismsForReplacer...)
 }
 

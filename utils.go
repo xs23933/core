@@ -172,10 +172,6 @@ func toNamer(name string) string {
 		lastCase, currCase, nextCase, nextNumber bool
 	)
 
-	value = strings.ReplaceAll(value, "__dot__", "\x01")
-	value = strings.ReplaceAll(value, "__", "\x00")
-	value = strings.ReplaceAll(value, "By", "_")
-
 	for i, v := range value[:len(value)-1] {
 		iPlus := i + 1
 		nextCase = bool(value[iPlus] >= 'A' && value[iPlus] <= 'Z')
