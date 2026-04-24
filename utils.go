@@ -171,17 +171,32 @@ func toNamer(name string) string {
 		buf                                      = bytes.NewBufferString("")
 		lastCase, currCase, nextCase, nextNumber bool
 	)
+
+	value = strings.ReplaceAll(value, "__dot__", "\x01")
+	value = strings.ReplaceAll(value, "__", "\x00")
+	value = strings.ReplaceAll(value, "By", "_")
+
 	for i, v := range value[:len(value)-1] {
 		iPlus := i + 1
 		nextCase = bool(value[iPlus] >= 'A' && value[iPlus] <= 'Z')
 		nextNumber = bool(value[iPlus] >= '0' && value[iPlus] <= '9')
+
+		// 当前字符是占位符时特殊处理
+		if v == '\x00' || v == '\x01' {
+			buf.WriteRune(v)
+			lastCase = currCase
+			currCase = false
+			continue
+		}
 
 		if i > 0 {
 			if currCase {
 				if lastCase && (nextCase || nextNumber) {
 					buf.WriteRune(v)
 				} else {
-					if value[i-1] != '/' && value[iPlus] != '/' {
+					if value[i-1] != '/' && value[iPlus] != '/' &&
+						value[i-1] != '\x00' && value[iPlus] != '\x00' &&
+						value[i-1] != '\x01' && value[iPlus] != '\x01' {
 						buf.WriteRune('/')
 					}
 					buf.WriteRune(v)
@@ -200,7 +215,11 @@ func toNamer(name string) string {
 		currCase = nextCase
 	}
 
-	buf.WriteByte(value[len(value)-1])
+	// 处理最后一个字符
+	lastChar := value[len(value)-1]
+	if lastChar != '\x00' && lastChar != '\x01' {
+		buf.WriteByte(lastChar)
+	}
 
 	s := strings.ToLower(buf.String())
 
@@ -218,8 +237,19 @@ func toNamer(name string) string {
 	}
 
 	replacer := strings.NewReplacer(reps...)
+	result := replacer.Replace(s)
 
-	return replacer.Replace(s)
+	// 清理占位符周围的斜杠，然后替换为中横线
+	result = strings.ReplaceAll(result, "/\x00/", "\x00")
+	result = strings.ReplaceAll(result, "/\x00", "\x00")
+	result = strings.ReplaceAll(result, "\x00/", "\x00")
+	result = strings.ReplaceAll(result, "\x00", "-")
+	// 处理点号（__dot__）
+	result = strings.ReplaceAll(result, "/\x01/", "\x01")
+	result = strings.ReplaceAll(result, "/\x01", "\x01")
+	result = strings.ReplaceAll(result, "\x01/", "\x01")
+	result = strings.ReplaceAll(result, "\x01", ".")
+	return result
 }
 
 func FixURI(pre, src, tag string) string {
@@ -232,7 +262,6 @@ func FixURI(pre, src, tag string) string {
 }
 
 const (
-	toLowerTable = "\x00\x01\x02\x03\x04\x05\x06\a\b\t\n\v\f\r\x0e\x0f\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f !\"#$%&'()*+,-./0123456789:;<=>?@abcdefghijklmnopqrstuvwxyz[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~\u007f\x80\x81\x82\x83\x84\x85\x86\x87\x88\x89\x8a\x8b\x8c\x8d\x8e\x8f\x90\x91\x92\x93\x94\x95\x96\x97\x98\x99\x9a\x9b\x9c\x9d\x9e\x9f\xa0\xa1\xa2\xa3\xa4\xa5\xa6\xa7\xa8\xa9\xaa\xab\xac\xad\xae\xaf\xb0\xb1\xb2\xb3\xb4\xb5\xb6\xb7\xb8\xb9\xba\xbb\xbc\xbd\xbe\xbf\xc0\xc1\xc2\xc3\xc4\xc5\xc6\xc7\xc8\xc9\xca\xcb\xcc\xcd\xce\xcf\xd0\xd1\xd2\xd3\xd4\xd5\xd6\xd7\xd8\xd9\xda\xdb\xdc\xdd\xde\xdf\xe0\xe1\xe2\xe3\xe4\xe5\xe6\xe7\xe8\xe9\xea\xeb\xec\xed\xee\xef\xf0\xf1\xf2\xf3\xf4\xf5\xf6\xf7\xf8\xf9\xfa\xfb\xfc\xfd\xfe\xff"
 	toUpperTable = "\x00\x01\x02\x03\x04\x05\x06\a\b\t\n\v\f\r\x0e\x0f\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`ABCDEFGHIJKLMNOPQRSTUVWXYZ{|}~\u007f\x80\x81\x82\x83\x84\x85\x86\x87\x88\x89\x8a\x8b\x8c\x8d\x8e\x8f\x90\x91\x92\x93\x94\x95\x96\x97\x98\x99\x9a\x9b\x9c\x9d\x9e\x9f\xa0\xa1\xa2\xa3\xa4\xa5\xa6\xa7\xa8\xa9\xaa\xab\xac\xad\xae\xaf\xb0\xb1\xb2\xb3\xb4\xb5\xb6\xb7\xb8\xb9\xba\xbb\xbc\xbd\xbe\xbf\xc0\xc1\xc2\xc3\xc4\xc5\xc6\xc7\xc8\xc9\xca\xcb\xcc\xcd\xce\xcf\xd0\xd1\xd2\xd3\xd4\xd5\xd6\xd7\xd8\xd9\xda\xdb\xdc\xdd\xde\xdf\xe0\xe1\xe2\xe3\xe4\xe5\xe6\xe7\xe8\xe9\xea\xeb\xec\xed\xee\xef\xf0\xf1\xf2\xf3\xf4\xf5\xf6\xf7\xf8\xf9\xfa\xfb\xfc\xfd\xfe\xff"
 )
 
