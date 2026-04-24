@@ -188,11 +188,14 @@ func init() {
 
 #### 路由规则
 
-| 关键字 | 路由规则   | 结果     |
-| ------ | ---------- | -------- |
-| Param  | 参数关键词 | :param   |
-| Params | 参数关键词 | :params? |
-| \_id   | 下划线     | /:id     |
+| 关键字      | 路由规则   | 结果     |
+| ----------- | ---------- | -------- |
+| Param       | 参数关键词 | :param   |
+| Params      | 参数关键词 | :params? |
+| \_id        | 下划线     | /:id     |
+| By          | 参数关键字 | /:       |
+| \_\_        | 中横线     | -        |
+| \_\_dot\_\_ | 点         | .        |
 
 _Params 是可选关键词 即:params?_
 
@@ -203,6 +206,9 @@ _Params 是可选关键词 即:params?_
 - `GetDetailParam` → `GET /detail/:param`
 - `PostUser` → `POST /user`
 - `PutUserParam` → `PUT /user/:param`
+- `GetUserByID` → `GET /user/:id`
+- `GetUser__Create` → `GET /user-create`
+- `GetUser__dot__Html` → `GET /user.html`
 
 #### 路由注释
 
