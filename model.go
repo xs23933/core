@@ -419,6 +419,7 @@ func (js JSON) GormValue(ctx context.Context, db *gorm.DB) clause.Expr {
 	return gorm.Expr("?", string(data))
 }
 
+// Deprecated: Money 已废弃，请使用 coins.Money
 type Money float64
 
 // ToFixed 保留几位小数
@@ -618,6 +619,7 @@ func ParseMoney(val any) Money {
 	}
 }
 
+// Deprecated: IntMoney 已废弃，请使用 coins.Money
 type IntMoney int64
 
 // NewIntMoneyFromFloat 创建 IntMoney（内部存储分）

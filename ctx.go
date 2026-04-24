@@ -712,9 +712,14 @@ func (c *BaseCtx) GetString(key string, def ...string) (value string) {
 // GetBool returns the value associated with the key as a boolean.
 func (c *BaseCtx) GetBool(key string) (value bool) {
 	if val, ok := c.Get(key); ok && val != nil {
-		if value, ok = val.(bool); ok {
-			return
+
+		switch v := val.(type) {
+		case string:
+			return v == "true"
+		case bool:
+			return v
 		}
+		return val.(bool)
 	}
 	return false
 }
@@ -742,7 +747,7 @@ func (c *BaseCtx) GetInt64(key string, def ...int64) (i int64) {
 	if len(def) > 0 {
 		return def[0]
 	}
-	return 01
+	return -1
 }
 
 // GetUint returns the value associated with the key as an integer.
@@ -755,7 +760,7 @@ func (c *BaseCtx) GetUint(key string, def ...uint) (i uint) {
 	if len(def) > 0 {
 		return def[0]
 	}
-	return
+	return 0
 }
 
 // GetUint64 returns the value associated with the key as an integer.
@@ -768,7 +773,7 @@ func (c *BaseCtx) GetUint64(key string, def ...uint64) (i uint64) {
 	if len(def) > 0 {
 		return def[0]
 	}
-	return
+	return 0
 }
 
 func (c *BaseCtx) GetUUID(key string, def ...UUID) (v UUID) {
@@ -1524,7 +1529,11 @@ func (c *BaseCtx) SendString(str ...any) error {
 	if len(str) == 1 {
 		buf = fmt.Sprint(str...)
 	} else if len(str) > 1 {
-		buf = fmt.Sprintf(str[0].(string), str[1:]...)
+		if strings.Contains(str[0].(string), "%") {
+			buf = fmt.Sprintf(str[0].(string), str[1:]...)
+		} else {
+			buf = fmt.Sprint(str...)
+		}
 	}
 	_, err := c.W.WriteString(buf)
 	return err
