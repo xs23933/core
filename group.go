@@ -131,10 +131,14 @@ func (g *Group) Add(methods []string, path string, handler any, middleware ...an
 	return g.Core.AddHandle(methods, uri, g, handler, g.Core.processedHandler(handlers)...)
 }
 
-func (g *Group) Group(prefix string, handlers ...any) *Group {
+func (g *Group) Group(prefix string, handlers ...HandlerFuncs) Router {
 	prefix = getGroupPath(g.Prefix, prefix)
 	if len(handlers) > 0 {
-		g.Add([]string{MethodUse}, prefix, g, handlers...)
+		mws := make([]any, len(handlers))
+		for i, h := range handlers {
+			mws[i] = h
+		}
+		g.Add([]string{MethodUse}, prefix, g, mws...)
 	}
 
 	return &Group{

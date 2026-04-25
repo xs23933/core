@@ -21,6 +21,7 @@ type Router interface {
 	TRACE(path string, handler any, middleware ...any) Router
 	PATCH(path string, handler any, middleware ...any) Router
 	ALL(path string, handler any, middleware ...any) Router
+	Group(prefix string, handlers ...HandlerFuncs) Router
 }
 
 func (app *Core) processedHandler(hand any) HandlerFuncs {
