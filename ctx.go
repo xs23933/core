@@ -34,7 +34,7 @@ type Ctx interface {
 	Response() ResponseWriter                                                   // Response() return http.ResponseWriter
 	Request() *http.Request                                                     // Request() return *http.Request
 	RedirectJS(to string, msg ...string)                                        // use js redirect
-	Redirect(to string, stCode ...int)                                          // base redirect
+	Redirect(to string, stCode ...int) error                                    // base redirect
 	RemoteIP() net.IP                                                           // remote client ip
 	SetCookie(name, value string, exp time.Time, path string, args ...any)      // set cookie
 	RemoveCookie(name, path string, dom ...string)                              // remove some cookie
@@ -101,6 +101,7 @@ type Ctx interface {
 	XML(data any) error                              // output xml
 	Set(key string, val any)
 	Get(key string) (val any, ok bool)
+	Locals(key string, val ...any) any // set get local ver
 	GetString(key string, def ...string) (value string)
 	GetBool(key string) (value bool)
 	GetInt(key string, def ...int) (i int)
@@ -680,6 +681,15 @@ func (c *BaseCtx) Set(key string, val any) {
 	c.mu.Unlock()
 }
 
+func (c *BaseCtx) Locals(key string, val ...any) any {
+	if len(val) > 0 {
+		c.Set(key, val[0])
+		return nil
+	}
+	value, _ := c.Get(key)
+	return value
+}
+
 // Get returns the value for the given key, ie: (value, true).
 // If the value does not exists it returns (nil, false)
 func (c *BaseCtx) Get(key string) (val any, ok bool) {
@@ -926,12 +936,13 @@ func (c *BaseCtx) GetAs(key string, v any) error {
 	return ErrDataTypeNotSupport
 }
 
-func (c *BaseCtx) Redirect(to string, stCode ...int) {
+func (c *BaseCtx) Redirect(to string, stCode ...int) error {
 	code := StatusTemporaryRedirect
 	if len(stCode) > 0 {
 		code = stCode[0]
 	}
 	http.Redirect(c.W, c.R, to, code)
+	return nil
 }
 
 func (c *BaseCtx) RedirectJS(to string, msg ...string) {
