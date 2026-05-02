@@ -35,7 +35,7 @@ Signature: 0c4326158df7444daf4ea1e29b01181c,f847401436f4851d3ea4dc85e733e8b6b892
     "id": "0c4326158df7444daf4ea1e29b01181c",
     "created_at": "2024-10-16T17:52:14.117493+08:00",
     "updated_at": "2024-10-25T11:26:57.33316+08:00",
-    "name": "Gmwin",
+    "name": "Example",
     "balance": 11,
     "total_balance": 111,
     "frozen_balance": 100,

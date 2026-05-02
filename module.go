@@ -6,6 +6,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"golang.org/x/sync/errgroup"
 )
 
 func (app *Core) addHandler(h handler) {
@@ -20,7 +22,7 @@ func (app *Core) addHandler(h handler) {
 		prefix = "/"
 	}
 	group := app.Group(prefix, app.processedHandler(h.Preload)).(*Group)
-	for i := 0; i < methodCount; i++ {
+	for i := range methodCount {
 		m := refCtl.Method(i)
 		name := toNamer(m.Name)
 		switch fn := (valFn.Method(i).Interface()).(type) {
@@ -103,6 +105,10 @@ func (app *Core) loadMods() {
 		<-app.Ctx.Done()
 		return nil
 	})
+}
+
+func (app *Core) ErrGroup() *errgroup.Group {
+	return app.eg
 }
 
 func (app *Core) shutdown() {

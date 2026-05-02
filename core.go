@@ -20,6 +20,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/quic-go/quic-go/http3"
 	"github.com/xs23933/core/v3/middleware/view"
 	"github.com/xs23933/core/v3/reuseport"
 	"golang.org/x/crypto/acme"
@@ -28,8 +29,16 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+type CertMagicConfig struct {
+	APIToken string
+	Email    string
+	Domains  []string
+	CacheDir string
+}
+
 type Core struct {
 	*http.Server
+	h3    *http3.Server
 	mutex sync.Mutex
 
 	trees []*RouteNode
@@ -54,6 +63,10 @@ type Core struct {
 	TextEngine         view.ITextEngine
 	// acme
 	certManager *autocert.Manager
+
+	// certmagic
+	certMagicConfig  CertMagicConfig
+	certMagicEnabled bool
 }
 
 // core implements Router.
@@ -128,6 +141,24 @@ func New(options ...Options) *Core {
 					HostPolicy: autocert.HostWhitelist(domains...),
 					Cache:      autocert.DirCache(acme.GetString("cache", "./certs")),
 				}
+				app.addr = ":https"
+			}
+		}
+
+		// certMagic
+		certMagic := Options{}
+		if err := app.Conf.GetAs("certmagic", &certMagic); err == nil {
+			token := certMagic.GetString("api_token", "")
+			domains := certMagic.GetStrings("domains", []string{})
+			email := certMagic.GetString("email", "")
+			if token != "" && len(domains) > 0 {
+				app.certMagicConfig = CertMagicConfig{
+					APIToken: token,
+					Email:    email,
+					Domains:  domains,
+					CacheDir: certMagic.GetString("cache", "./certs"),
+				}
+				app.certMagicEnabled = true
 				app.addr = ":https"
 			}
 		}
@@ -248,6 +279,49 @@ func (app *Core) Serve(ln net.Listener) error {
 		D("Listen: http://%s\n", port)
 	}
 	app.runProcess()
+
+	// 优先使用 certMagic
+	if app.certMagicEnabled {
+		if err := app.setupCertMagic(); err != nil {
+			Erro("CertMagic setup error: %v", err)
+			return err
+		}
+
+		app.eg.Go(func() error {
+			ln, err := reuseport.ListenUDPWithReusePort("udp", app.addr)
+			if err != nil {
+				Erro("UDP listener(%s) error: %v", app.addr, err)
+				return err
+			}
+			defer ln.Close()
+			tls3 := &tls.Config{
+				MinVersion:     app.TLSConfig.MinVersion,
+				GetCertificate: app.TLSConfig.GetCertificate,
+				NextProtos:     append([]string{"h3"}, app.TLSConfig.NextProtos...),
+			}
+			app.h3 = &http3.Server{
+				Addr:      app.addr,
+				Handler:   app,
+				TLSConfig: tls3,
+			}
+			Info("Starting HTTP/3 (%s) server", app.addr)
+			return app.h3.Serve(ln)
+		})
+		tls := &tls.Config{
+			MinVersion:     app.TLSConfig.MinVersion,
+			GetCertificate: app.TLSConfig.GetCertificate,
+			NextProtos:     append([]string{"h2"}, app.TLSConfig.NextProtos...),
+		}
+		app.Server.TLSConfig = tls
+		http2.ConfigureServer(app.Server, &http2.Server{})
+
+		// CertMagic 的 TLS 配置已经设置好了
+		if err := app.Server.ServeTLS(ln, "", ""); err != nil {
+			return err
+		}
+		return nil
+
+	}
 
 	if app.certManager != nil {
 		app.Server.TLSConfig = &tls.Config{

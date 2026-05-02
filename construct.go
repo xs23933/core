@@ -24,6 +24,7 @@ const (
 	METHOD_CONNECT
 	METHOD_TRACE
 	METHOD_PATCH
+	METHOD_ALL
 	METHOD_USE
 )
 
@@ -38,6 +39,7 @@ var (
 		"CONNECT",
 		"TRACE",
 		"PATCH",
+		"ALL",
 		"USE",
 	}
 	methodMap = map[string]int{
@@ -50,7 +52,8 @@ var (
 		"CONNECT": 6,
 		"TRACE":   7,
 		"PATCH":   8,
-		"USE":     9,
+		"ALL":     9,
+		"USE":     10,
 	}
 )
 
@@ -65,6 +68,7 @@ var (
 	MethodConnect = Methods[METHOD_CONNECT]
 	MethodTrace   = Methods[METHOD_TRACE]
 	MethodPatch   = Methods[METHOD_PATCH]
+	MethodAll     = Methods[METHOD_ALL]
 )
 
 // 返回方法位置

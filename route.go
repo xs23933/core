@@ -70,7 +70,7 @@ func (app *Core) processedHandler(hand any) HandlerFuncs {
 
 // 检查 HTTP 方法是否合法
 func (app *Core) validateMethod(method string) error {
-	if method != MethodUse && methodPos(method) == -1 {
+	if method != MethodUse && method != MethodAll && methodPos(method) == -1 {
 		return fmt.Errorf("add: invalid http method %s", method)
 	}
 	return nil
@@ -195,7 +195,7 @@ func (app *Core) AddHandle(methods []string, uri string, group *Group, handler a
 			panic(err)
 		}
 
-		if method == MethodUse {
+		if method == MethodUse || method == MethodAll {
 			if uri == "/" || uri == "" { // 全局中间件
 				for _, root := range app.trees {
 					if root != nil {
@@ -208,6 +208,15 @@ func (app *Core) AddHandle(methods []string, uri string, group *Group, handler a
 						node := root.addRouteNode(uri)
 						node.middlewares = append(node.middlewares, handlers...)
 					}
+				}
+			}
+			continue
+		}
+
+		if method == MethodAll {
+			for i := range app.trees {
+				if app.trees[i] != nil {
+					app.trees[i].addRoute(uri, handlers)
 				}
 			}
 			continue

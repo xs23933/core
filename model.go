@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
-	"github.com/glebarez/sqlite"
 	"github.com/google/uuid"
 	"github.com/xs23933/core/v3/sid"
 	"github.com/xs23933/core/v3/xid"
@@ -24,6 +23,7 @@ import (
 	"gorm.io/driver/clickhouse"
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
+	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 	"gorm.io/gorm/logger"
@@ -1182,7 +1182,7 @@ type Page[T any] struct {
 }
 
 // FindPage Gorm find to page process whr
-func FindPageBy[T any](whr *Map, out *T, db ...*DB) (result Pages, err error) {
+func FindPageBy[T any](whr *Map, out *[]T, db ...*DB) (result Page[T], err error) {
 	var (
 		total    int64
 		tx       *DB
@@ -1194,7 +1194,7 @@ func FindPageBy[T any](whr *Map, out *T, db ...*DB) (result Pages, err error) {
 		tx, pos, lmt = Where(whr)
 	}
 	err = tx.Find(out).Offset(-1).Limit(-1).Count(&total).Error
-	result = Pages{
+	result = Page[T]{
 		P: pos, L: lmt,
 		Total: total,
 		Data:  *out,
@@ -1211,7 +1211,7 @@ type NextPage[T any] struct {
 	Extra any  `json:"extra,omitempty"`
 }
 
-func FindNextBy[T any](whr *Map, out *T, db ...*DB) (result NextPages, err error) {
+func FindNextBy[T any](whr *Map, out *[]T, db ...*DB) (result NextPage[T], err error) {
 	var (
 		lmt = 20
 		pos = 1
@@ -1225,7 +1225,7 @@ func FindNextBy[T any](whr *Map, out *T, db ...*DB) (result NextPages, err error
 	act := tx.Limit(lmt + 1).Find(out)
 	rows := act.RowsAffected
 	err = act.Error
-	result = NextPages{
+	result = NextPage[T]{
 		P: pos, L: lmt,
 		Next: rows > int64(lmt),
 		Prev: pos > 1,
