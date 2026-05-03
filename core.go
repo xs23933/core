@@ -160,6 +160,14 @@ func New(options ...Options) *Core {
 				}
 				app.certMagicEnabled = true
 				app.addr = ":https"
+			} else if email != "" { // 使用 onDemand
+				app.certMagicConfig = CertMagicConfig{
+					Email:    email,
+					Domains:  domains,
+					CacheDir: certMagic.GetString("cache", "./certs"),
+				}
+				app.certMagicEnabled = false
+				app.addr = ":https"
 			}
 		}
 
@@ -281,10 +289,17 @@ func (app *Core) Serve(ln net.Listener) error {
 	app.runProcess()
 
 	// 优先使用 certMagic
-	if app.certMagicEnabled {
-		if err := app.setupCertMagic(); err != nil {
-			Erro("CertMagic setup error: %v", err)
-			return err
+	if app.certMagicEnabled || app.certMagicConfig.Email != "" {
+		if app.certMagicEnabled {
+			if err := app.setupCertMagic(); err != nil {
+				Erro("CertMagic setup error: %v", err)
+				return err
+			}
+		} else if app.certMagicConfig.Email != "" {
+			if err := app.onDemand(app.certMagicConfig.Email, app.certMagicConfig.CacheDir); err != nil {
+				Erro("On-demand certificate error: %v", err)
+				return err
+			}
 		}
 
 		app.eg.Go(func() error {

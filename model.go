@@ -1042,9 +1042,9 @@ func (d *Date) Scan(value interface{}) error {
 
 type Models struct {
 	ID        UUID            `json:"id,omitzero" gorm:"size:32;primaryKey"`
-	CreatedAt *time.Time      `json:"created_at,omitempty" gorm:"<-:create"`
-	UpdatedAt *time.Time      `json:"updated_at,omitempty" gorm:"autoUpdateTime"`
-	DeletedAt *gorm.DeletedAt `json:"deleted_at,omitempty" gorm:"index"`
+	CreatedAt *time.Time      `json:"created_at,omitempty" gorm:"<-:create;comment:创建时间"`
+	UpdatedAt *time.Time      `json:"updated_at,omitempty" gorm:"autoUpdateTime;comment:更新时间"`
+	DeletedAt *gorm.DeletedAt `json:"deleted_at,omitempty" gorm:"index;comment:删除时间"`
 }
 
 func (m *Models) BeforeCreate(tx *DB) error {

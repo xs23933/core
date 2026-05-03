@@ -2,9 +2,13 @@ package core
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/caddyserver/certmagic"
 	"github.com/libdns/cloudflare"
+	"golang.org/x/net/context"
 )
 
 /*
@@ -95,11 +99,16 @@ func (app *Core) setupCertMagic() error {
 		APIToken: app.certMagicConfig.APIToken, // 只需要 API Token
 	}
 
+	// 创建证书存储目录
+	if app.certMagicConfig.CacheDir != "" {
+		// 创建存储目录
+		os.MkdirAll(filepath.Dir(app.certMagicConfig.CacheDir), 0755)
+	}
+
 	// 配置 CertMagic 使用 DNS-01 挑战
 	certmagic.DefaultACME.Agreed = true
 	certmagic.DefaultACME.Email = app.certMagicConfig.Email
 	// 使用生产环境（测试时可以先换成 staging）
-	// certmagic.DefaultACME.CA = certmagic.LetsEncryptStagingCA
 
 	// 关键：设置 DNS 挑战的提供商
 	certmagic.DefaultACME.DNS01Solver = &certmagic.DNS01Solver{
@@ -112,19 +121,98 @@ func (app *Core) setupCertMagic() error {
 	certmagic.DefaultACME.DisableHTTPChallenge = true
 	certmagic.DefaultACME.DisableTLSALPNChallenge = true
 
-	// 获取 TLS 配置
-	tlsConfig, err := certmagic.TLS(app.certMagicConfig.Domains)
-	if err != nil {
-		return fmt.Errorf("failed to create TLS config: %w", err)
+	storage := &certmagic.FileStorage{Path: app.certMagicConfig.CacheDir}
+	magic := certmagic.NewDefault()
+
+	// 关键：使用 NewACMEIssuer 函数创建 ACMEIssuer [citation:9]
+	acmeIssuer := certmagic.NewACMEIssuer(magic, certmagic.ACMEIssuer{
+		CA:                      certmagic.LetsEncryptProductionCA,
+		TestCA:                  certmagic.LetsEncryptStagingCA,
+		Email:                   app.certMagicConfig.Email,
+		Agreed:                  true,
+		DisableHTTPChallenge:    true,
+		DisableTLSALPNChallenge: true,
+		DNS01Solver: &certmagic.DNS01Solver{
+			DNSManager: certmagic.DNSManager{
+				DNSProvider: dnsProvider,
+			},
+		},
+	})
+	if app.certMagicConfig.CacheDir != "" {
+		magic.Storage = storage
 	}
 
-	// tlsConfig.NextProtos = append([]string{"h3"}, tlsConfig.NextProtos...)
+	// 测试环境用 Staging CA [citation:9]
+	// if app.Debug {
+	// 	acmeIssuer.CA = certmagic.LetsEncryptStagingCA
+	// }
+	// 关键：设置 Issuers 数组（不是 Issuer） [citation:2][citation:9]
+	magic.Issuers = []certmagic.Issuer{acmeIssuer}
 
+	magic.SubjectTransformer = func(ctx context.Context, domain string) string {
+		primaryDomain := ExtractPrimaryDomain(domain)
+		if strings.HasSuffix(domain, "."+primaryDomain) {
+			return "*." + primaryDomain
+		}
+		return domain
+	}
+
+	// 6. 获取 TLS 配置
+	ctx := context.Background()
+	err := magic.ManageSync(ctx, app.certMagicConfig.Domains)
+	if err != nil {
+		return fmt.Errorf("failed to manage certificates: %w", err)
+	}
 	// 其他共享可调用
-	app.Server.TLSConfig = tlsConfig
+	app.Server.TLSConfig = magic.TLSConfig()
 
 	Info("CertMagic enabled with Cloudflare DNS-01 challenge for domains: %v",
 		app.certMagicConfig.Domains)
+
+	return nil
+}
+
+// onDemand 获取证书
+//
+// email 管理员邮箱
+// path 证书存储路径
+//
+// certmagic:
+//
+//	email: string
+//	path: string
+func (app *Core) onDemand(email, path string) error {
+	// if app.Debug {
+	// 	certmagic.DefaultACME.CA = certmagic.LetsEncryptStagingCA
+	// } else {
+	// 	certmagic.DefaultACME.CA = certmagic.LetsEncryptProductionCA
+	// }
+
+	// 配置 onDemand 获得证书
+	certmagic.DefaultACME.Agreed = true // 同意 Let's Encrypt 的条款
+	certmagic.DefaultACME.Email = email
+
+	magic := certmagic.NewDefault()
+	magic.OnDemand = &certmagic.OnDemandConfig{
+		DecisionFunc: func(ctx context.Context, name string) error {
+			return nil
+		},
+	}
+
+	magic.SubjectTransformer = func(ctx context.Context, domain string) string {
+		primaryDomain := ExtractPrimaryDomain(domain)
+		if strings.HasSuffix(domain, "."+primaryDomain) {
+			return "*." + primaryDomain
+		}
+		return domain
+	}
+
+	if path != "" {
+		os.MkdirAll(filepath.Dir(path), 0755)
+		magic.Storage = &certmagic.FileStorage{Path: path}
+	}
+
+	app.Server.TLSConfig = magic.TLSConfig()
 
 	return nil
 }

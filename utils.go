@@ -789,3 +789,34 @@ func Filter[T any](slice []T, test func(T) bool) []T {
 	}
 	return result
 }
+
+// ExtractPrimaryDomain 提取一级域名（主域名）
+// 示例：
+//
+//	"webin.work" -> "webin.work"
+//	"www.webin.work" -> "webin.work"
+//	"api.webin.work" -> "webin.work"
+//	"customer.com" -> "customer.com"
+//	"www.customer.com" -> "customer.com"
+func ExtractPrimaryDomain(host string) string {
+	// 移除端口号（如果有）
+	if idx := strings.Index(host, ":"); idx != -1 {
+		host = host[:idx]
+	}
+
+	// 转为小写
+	host = strings.ToLower(host)
+
+	// 移除常见的 www 前缀
+	host = strings.TrimPrefix(host, "www.")
+
+	// 处理多级子域名的情况（如 api.webin.work）
+	// 方法1：简单的去掉第一个标签（适用于大部分情况）
+	parts := strings.Split(host, ".")
+	if len(parts) >= 2 {
+		// 这里简单返回最后两个部分
+		return strings.Join(parts[len(parts)-2:], ".")
+	}
+
+	return host
+}
