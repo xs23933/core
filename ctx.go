@@ -31,6 +31,7 @@ import (
 type Ctx interface {
 	Context() context.Context // Request().Context()
 	Ctx() context.Context
+	Host() string
 	Response() ResponseWriter                                                   // Response() return http.ResponseWriter
 	Request() *http.Request                                                     // Request() return *http.Request
 	RedirectJS(to string, msg ...string)                                        // use js redirect
@@ -159,7 +160,11 @@ func (c *BaseCtx) Ctx() context.Context {
 }
 
 func (c *BaseCtx) Context() context.Context {
-	return c.Request().Context()
+	return c.Ctx()
+}
+
+func (c *BaseCtx) Host() string {
+	return c.R.Host
 }
 
 func (c *BaseCtx) SetParams(key, val string) {
