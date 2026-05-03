@@ -501,7 +501,7 @@ func (app *Core) PATCH(path string, handler any, middleware ...any) Router {
 }
 
 func (app *Core) ALL(path string, handler any, middleware ...any) Router {
-	return app.Add([]string{MethodGet, MethodHead, MethodPost, MethodPut, MethodDelete, MethodConnect, MethodOptions, MethodTrace, MethodPatch}, path, handler, middleware...)
+	return app.Add([]string{MethodAll}, path, handler, middleware...)
 }
 
 func (app *Core) Static(relativePath, root string) Router {
