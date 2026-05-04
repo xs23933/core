@@ -118,6 +118,9 @@ func (app *Core) shutdown() {
 			mod.Stop(app)
 		}
 	}
+
+	// 关闭 gRPC
+	app.shutdownGRPC()
 }
 
 func (app *Core) getModules(scope string) []ModuleInfo {

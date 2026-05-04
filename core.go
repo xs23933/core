@@ -27,6 +27,7 @@ import (
 	"golang.org/x/crypto/acme/autocert"
 	"golang.org/x/net/http2"
 	"golang.org/x/sync/errgroup"
+	"google.golang.org/grpc"
 )
 
 type CertMagicConfig struct {
@@ -67,6 +68,11 @@ type Core struct {
 	// certmagic
 	certMagicConfig  CertMagicConfig
 	certMagicEnabled bool
+
+	// 添加 gRPC 支持
+	grpcServer  *grpc.Server
+	grpcAddr    string
+	grpcEnabled bool
 }
 
 // core implements Router.
@@ -159,7 +165,7 @@ func New(options ...Options) *Core {
 					CacheDir: certMagic.GetString("cache", "./certs"),
 				}
 				app.certMagicEnabled = true
-				app.addr = ":https"
+				// app.addr = ":https"
 			} else if email != "" { // 使用 onDemand
 				app.certMagicConfig = CertMagicConfig{
 					Email:    email,
@@ -167,7 +173,7 @@ func New(options ...Options) *Core {
 					CacheDir: certMagic.GetString("cache", "./certs"),
 				}
 				app.certMagicEnabled = false
-				app.addr = ":https"
+				// app.addr = ":https"
 			}
 		}
 
@@ -236,6 +242,10 @@ func New(options ...Options) *Core {
 		app.Static(prefix, v.(string))
 	}
 
+	// 初始化 gRPC 配置
+	app.grpcEnabled = app.Conf.GetBool("grpc.enabled", false)
+	app.grpcAddr = app.Conf.GetString("grpc.addr", ":50051")
+
 	return app
 }
 
@@ -288,6 +298,14 @@ func (app *Core) Serve(ln net.Listener) error {
 	}
 	app.runProcess()
 
+	// 启动 gRPC 服务器（如果启用）
+	if err := app.startGRPCServer(); err != nil {
+		return err
+	}
+
+	// 确保关闭时也关闭 gRPC
+	defer app.shutdownGRPC()
+
 	// 优先使用 certMagic
 	if app.certMagicEnabled || app.certMagicConfig.Email != "" {
 		if app.certMagicEnabled {
@@ -303,7 +321,7 @@ func (app *Core) Serve(ln net.Listener) error {
 		}
 
 		app.eg.Go(func() error {
-			ln, err := reuseport.ListenUDPWithReusePort("udp", app.addr)
+			ln, err := reuseport.ListenUDPWithReusePort("udp", ":https")
 			if err != nil {
 				Erro("UDP listener(%s) error: %v", app.addr, err)
 				return err
@@ -319,7 +337,7 @@ func (app *Core) Serve(ln net.Listener) error {
 				Handler:   app,
 				TLSConfig: tls3,
 			}
-			Info("Starting HTTP/3 (%s) server", app.addr)
+			Info("Starting HTTP/3 (%s) server", ":https")
 			return app.h3.Serve(ln)
 		})
 		tls := &tls.Config{

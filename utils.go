@@ -683,10 +683,36 @@ func Contains[S ~[]E, E comparable](s S, v E) bool {
 // 删除指定元素
 func Remove[T comparable](elems []T, v T) []T {
 	idx := Index(elems, v)
-	if idx > -1 {
-		elems = append(elems[:idx], elems[idx+1:]...)
+	if idx < 0 {
+		return elems
 	}
-	return elems
+	return append(elems[:idx], elems[idx+1:]...)
+}
+
+// RemoveAll 删除所有匹配的元素
+func RemoveAll[S ~[]E, E comparable](s S, v E) S {
+	result := make(S, 0, len(s))
+	for _, item := range s {
+		if item != v {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+// Unique 去重
+//
+// uniqueScopes := core.Unique(scopes)
+func Unique[S ~[]E, E comparable](s S) S {
+	seen := make(map[E]struct{})
+	result := make(S, 0, len(s))
+	for _, v := range s {
+		if _, ok := seen[v]; !ok {
+			seen[v] = struct{}{}
+			result = append(result, v)
+		}
+	}
+	return result
 }
 
 func PrintJSON(v any, tags ...any) {
@@ -780,6 +806,11 @@ func ContainsAny(elems Array, v any) bool {
 	return false
 }
 
+// Filter 过滤
+//
+//	activeUsers := core.Filter(users, func(u User) bool {
+//	    return u.Status == "active"
+//	})
 func Filter[T any](slice []T, test func(T) bool) []T {
 	result := make([]T, 0)
 	for _, item := range slice {
