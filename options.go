@@ -408,53 +408,60 @@ func (opt *Options) GetPathBool(path string, def ...bool) bool {
 	return false
 }
 
-// GetPathStrings 获取布尔值
+// GetPathStrings 获取字符串数组类型的配置值
 func (opt *Options) GetPathStrings(path string, def ...[]string) []string {
 	keys := strings.Split(path, ".")
-	current := *opt
+	return opt.getPathStringsRecursive(keys, def...)
+}
 
-	for i, key := range keys {
-		val, exists := current[key]
-		if !exists {
+func (opt *Options) getPathStringsRecursive(keys []string, def ...[]string) []string {
+	if len(keys) == 0 {
+		if len(def) > 0 {
+			return def[0]
+		}
+		return []string{}
+	}
+
+	current, exists := (*opt)[keys[0]]
+	if !exists {
+		if len(def) > 0 {
+			return def[0]
+		}
+		return []string{}
+	}
+
+	// 如果是最后一层
+	if len(keys) == 1 {
+		switch v := current.(type) {
+		case []string:
+			return v
+		case []any:
+			result := make([]string, len(v))
+			for i, item := range v {
+				result[i] = fmt.Sprintf("%v", item)
+			}
+			return result
+		default:
 			if len(def) > 0 {
 				return def[0]
 			}
 			return []string{}
 		}
-
-		if i == len(keys)-1 {
-			switch v := val.(type) {
-			case []string:
-				return v
-			case []any:
-				s := make([]string, len(v))
-				for i, v := range v {
-					s[i] = fmt.Sprintf("%v", v)
-				}
-				return s
-			}
-			if len(def) > 0 {
-				return def[0]
-			}
-			return []string{}
-		}
-
-		next, ok := val.(Options)
-		if !ok {
-			if m, ok := val.(map[string]any); ok {
-				next = Options(m)
-			} else {
-				if len(def) > 0 {
-					return def[0]
-				}
-				return []string{}
-			}
-		}
-		current = next
 	}
 
-	if len(def) > 0 {
-		return def[0]
+	// 继续向下查找
+	var nextOpt Options
+	switch v := current.(type) {
+	case Options:
+		nextOpt = v
+	case map[string]any:
+		nextOpt = Options(v)
+	default:
+		if len(def) > 0 {
+			return def[0]
+		}
+		return []string{}
 	}
-	return []string{}
+
+	return nextOpt.getPathStringsRecursive(keys[1:], def...)
 }

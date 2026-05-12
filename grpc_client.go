@@ -2,7 +2,6 @@ package core
 
 import (
 	"errors"
-	"fmt"
 	"sync"
 	"time"
 
@@ -24,17 +23,7 @@ func (app *Core) GrpcClient(serviceName string, opts ...grpc.DialOption) (*grpc.
 		etcd.InitEtcdResolver(app.etcdDiscovery)
 	})
 
-	// build target
-	target := fmt.Sprintf("etcd:///%s", serviceName)
-
-	// default options
-	defaultOpts := []grpc.DialOption{
-		grpc.WithDefaultServiceConfig(`{"loadBalancingPolicy":"round_robin"}`),
-	}
-
-	opts = append(defaultOpts, opts...)
-
-	conn, err := grpc.NewClient(target, opts...)
+	conn, err := etcd.Dial(serviceName, opts...)
 	return conn, err
 }
 

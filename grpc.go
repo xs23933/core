@@ -106,17 +106,19 @@ func (app *Core) shutdownGRPC() {
 	}
 }
 
-// 集成到 Core
+// EnableEtcdRegistry 启用 etcd 服务注册
 func (app *Core) EnableEtcdRegistry(opts *etcd.Options) error {
 	if opts == nil {
 		opts = etcd.DefaultOptions()
-		opts.Endpoints = app.Conf.GetStrings("etcd.endpoints", []string{"127.0.0.1:2379"})
-		opts.ServiceName = app.Conf.GetString("etcd.service_name", "")
-		opts.ServiceAddr = app.Conf.GetString("etcd.service_addr", app.addr)
-		opts.ServiceID = app.Conf.GetString("etcd.service_id", "")
-		opts.TTL = app.Conf.GetInt64("etcd.ttl", 10)
-		opts.Version = app.Conf.GetString("etcd.version", "1.0.0")
 	}
+
+	// 从配置读取（仅当 opts 未设置时）
+	opts.Endpoints = app.Conf.GetStrings("etcd.endpoints", []string{"127.0.0.1:2379"})
+	opts.ServiceName = app.Conf.GetString("etcd.service_name", "")
+	opts.ServiceAddr = app.Conf.GetString("etcd.service_addr", app.addr)
+	opts.ServiceID = app.Conf.GetString("etcd.service_id", "")
+	opts.TTL = app.Conf.GetInt64("etcd.ttl", 10)
+	opts.Version = app.Conf.GetString("etcd.version", "1.0.0")
 
 	registry, err := etcd.NewRegistry(opts)
 	if err != nil {
@@ -142,6 +144,10 @@ func (app *Core) EnableEtcdRegistry(opts *etcd.Options) error {
 func (app *Core) EnableEtcdDiscovery(opts *etcd.Options) error {
 	if opts == nil {
 		opts = etcd.DefaultOptions()
+	}
+
+	// 从配置读取（仅当 opts 未设置时）
+	if len(opts.Endpoints) == 0 {
 		opts.Endpoints = app.Conf.GetStrings("etcd.endpoints", []string{"127.0.0.1:2379"})
 	}
 
@@ -151,10 +157,16 @@ func (app *Core) EnableEtcdDiscovery(opts *etcd.Options) error {
 	}
 
 	app.etcdDiscovery = discovery
+
+	app.OnShutdown(func() {
+		if app.etcdDiscovery != nil {
+			app.etcdDiscovery.Close()
+		}
+	})
 	return nil
 }
 
-// 添加关闭钩子
+// OnShutdown 添加关闭钩子
 func (app *Core) OnShutdown(fn func()) {
 	app.shutdownHooks = append(app.shutdownHooks, fn)
 }

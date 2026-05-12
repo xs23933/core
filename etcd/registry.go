@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
@@ -56,7 +57,7 @@ func NewRegistry(opts *Options) (*Registry, error) {
 }
 
 // Register 注册服务
-func (r *Registry) Register() error {
+func (r *Registry) doRegister() error {
 	serviceInfo := ServiceInfo{
 		Name:     r.opts.ServiceName,
 		Addr:     r.opts.ServiceAddr,
@@ -65,7 +66,6 @@ func (r *Registry) Register() error {
 		Metadata: r.opts.Metadata,
 		TTL:      r.opts.TTL,
 	}
-
 	// 序列化服务信息
 	value, err := json.Marshal(serviceInfo)
 	if err != nil {
@@ -96,6 +96,18 @@ func (r *Registry) Register() error {
 	return nil
 }
 
+func (r *Registry) Register() error {
+	var err error
+	for i := range 3 {
+		if err = r.doRegister(); err == nil {
+			return nil
+		}
+
+		time.Sleep(time.Duration(i+1) * time.Second) // 指数退避
+	}
+	return fmt.Errorf("register failed after 3 attempts: %v", err)
+}
+
 // keepAlive 监听续约
 func (r *Registry) keepAlive() {
 	for {
@@ -122,6 +134,10 @@ func (r *Registry) Deregister() error {
 		return fmt.Errorf("deregister service: %w", err)
 	}
 
-	// core.Info("Service deregistered: %s", r.opts.ServiceKey())
-	return r.client.Close()
+	// 关闭 etcd 客户端
+	if err := r.client.Close(); err != nil {
+		return fmt.Errorf("close etcd client: %w", err)
+	}
+
+	return nil
 }

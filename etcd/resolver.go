@@ -11,33 +11,59 @@ import (
 
 const Scheme = "etcd"
 
-type etcdResolverBuilder struct {
+type EtcdResolverBuilder struct {
 	discovery *Discovery
+	once      sync.Once
 }
 
 type etcdResolver struct {
-	ctx       context.Context
-	cancel    context.CancelFunc
-	cc        resolver.ClientConn
-	discovery *Discovery
-	rn        chan struct{}
-	wg        sync.WaitGroup
+	cc          resolver.ClientConn
+	discovery   *Discovery
+	serviceName string
+
+	cancelWatch func()
+
+	ctx    context.Context
+	cancel context.CancelFunc
+
+	rn chan struct{}
+	wg sync.WaitGroup
 }
 
-func (e *etcdResolverBuilder) Build(target resolver.Target, cc resolver.ClientConn, opts resolver.BuildOptions) (resolver.Resolver, error) {
+func InitEtcdResolver(discovery *Discovery) {
+	resolver.Register(&EtcdResolverBuilder{
+		discovery: discovery,
+	})
+}
+
+func (b *EtcdResolverBuilder) Scheme() string {
+	return Scheme
+}
+
+func (b *EtcdResolverBuilder) Build(
+	target resolver.Target,
+	cc resolver.ClientConn,
+	opts resolver.BuildOptions,
+) (resolver.Resolver, error) {
+
 	serviceName := target.Endpoint()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	r := &etcdResolver{
-		ctx:       ctx,
-		cancel:    cancel,
-		cc:        cc,
-		discovery: e.discovery,
-		rn:        make(chan struct{}, 1),
+	if err := b.discovery.Watch(serviceName); err != nil {
+		return nil, err
 	}
 
-	// 监听服务变化
-	r.discovery.OnChange(func(services []*ServiceInfo) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	r := &etcdResolver{
+		cc:          cc,
+		discovery:   b.discovery,
+		serviceName: serviceName,
+		ctx:         ctx,
+		cancel:      cancel,
+		rn:          make(chan struct{}, 1),
+	}
+
+	r.cancelWatch = b.discovery.Subscribe(serviceName, func() {
 		select {
 		case r.rn <- struct{}{}:
 		default:
@@ -45,49 +71,49 @@ func (e *etcdResolverBuilder) Build(target resolver.Target, cc resolver.ClientCo
 	})
 
 	r.wg.Add(1)
-	go r.watch(serviceName)
+	go r.watchLoop()
 
-	// 先同步获取服务列表，填充缓存
-	if _, err := r.discovery.GetServicesFromEtcd(serviceName); err != nil {
-		fmt.Printf("Failed to get services from etcd: %v\n", err)
-	}
-
-	// 触发初始更新
-	r.resolve(serviceName)
+	r.resolve()
 
 	return r, nil
 }
 
-func (e *etcdResolverBuilder) Scheme() string {
-	return Scheme
-}
-
-func (r *etcdResolver) watch(serviceName string) {
+func (r *etcdResolver) watchLoop() {
 	defer r.wg.Done()
 
 	for {
 		select {
+
 		case <-r.rn:
-			r.resolve(serviceName)
+			r.resolve()
+
 		case <-r.ctx.Done():
 			return
 		}
 	}
 }
 
-func (r *etcdResolver) resolve(serviceName string) {
-	services := r.discovery.GetServices(serviceName)
+func (r *etcdResolver) resolve() {
+	services := r.discovery.GetServices(r.serviceName)
 
-	var addrs []resolver.Address
+	addrs := make([]resolver.Address, 0, len(services))
+
 	for _, svc := range services {
 		addrs = append(addrs, resolver.Address{
-			Addr:       svc.Addr,
-			ServerName: svc.Name,
-			Metadata:   svc.Metadata,
+			Addr: svc.Addr,
 		})
 	}
 
-	r.cc.UpdateState(resolver.State{Addresses: addrs})
+	if len(addrs) == 0 {
+		r.cc.UpdateState(resolver.State{
+			Addresses: []resolver.Address{},
+		})
+		return
+	}
+
+	r.cc.UpdateState(resolver.State{
+		Addresses: addrs,
+	})
 }
 
 func (r *etcdResolver) ResolveNow(o resolver.ResolveNowOptions) {
@@ -99,18 +125,14 @@ func (r *etcdResolver) ResolveNow(o resolver.ResolveNowOptions) {
 
 func (r *etcdResolver) Close() {
 	r.cancel()
+
+	if r.cancelWatch != nil {
+		r.cancelWatch()
+	}
+
 	r.wg.Wait()
 }
 
-// Init 初始化 etcd resolver
-func InitEtcdResolver(discovery *Discovery) {
-	rb := &etcdResolverBuilder{
-		discovery: discovery,
-	}
-	resolver.Register(rb)
-}
-
-// 方便客户端使用的 Dial 方法
 func Dial(serviceName string, opts ...grpc.DialOption) (*grpc.ClientConn, error) {
 	target := fmt.Sprintf("%s:///%s", Scheme, serviceName)
 
@@ -120,5 +142,5 @@ func Dial(serviceName string, opts ...grpc.DialOption) (*grpc.ClientConn, error)
 
 	opts = append(defaultOpts, opts...)
 
-	return grpc.Dial(target, opts...)
+	return grpc.NewClient(target, opts...)
 }

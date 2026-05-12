@@ -4,20 +4,28 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"sync"
-	"time"
+	"sync/atomic"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
 type Discovery struct {
-	client    *clientv3.Client
-	opts      *Options
-	services  map[string]*ServiceInfo
-	mu        sync.RWMutex
-	watchers  map[string]context.CancelFunc
-	callbacks []func(services []*ServiceInfo)
+	client *clientv3.Client
+	opts   *Options
+
+	mu sync.RWMutex
+
+	// serviceName -> instanceKey -> service
+	services map[string]map[string]*ServiceInfo
+
+	// serviceName -> cancel
+	watchers map[string]context.CancelFunc
+
+	// serviceName -> subscriberID -> callback
+	subscribers map[string]map[uint64]func()
+
+	subID atomic.Uint64
 }
 
 func NewDiscovery(opts *Options) (*Discovery, error) {
@@ -32,179 +40,180 @@ func NewDiscovery(opts *Options) (*Discovery, error) {
 		DialTimeout: opts.DialTimeout,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("create etcd client: %w", err)
+		return nil, err
 	}
 
 	return &Discovery{
-		client:   client,
-		opts:     opts,
-		services: make(map[string]*ServiceInfo),
-		watchers: make(map[string]context.CancelFunc),
+		client:      client,
+		opts:        opts,
+		services:    make(map[string]map[string]*ServiceInfo),
+		watchers:    make(map[string]context.CancelFunc),
+		subscribers: make(map[string]map[uint64]func()),
 	}, nil
 }
 
-// Watch 监听服务变化
 func (d *Discovery) Watch(serviceName string) error {
 	d.mu.Lock()
-	defer d.mu.Unlock()
 
-	// 如果已经在监听，先取消
-	if cancel, ok := d.watchers[serviceName]; ok {
-		cancel()
+	// already watching
+	if _, ok := d.watchers[serviceName]; ok {
+		d.mu.Unlock()
+		return nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second) // 添加超时
+	ctx, cancel := context.WithCancel(context.Background())
 	d.watchers[serviceName] = cancel
+
+	if d.services[serviceName] == nil {
+		d.services[serviceName] = make(map[string]*ServiceInfo)
+	}
+
+	d.mu.Unlock()
 
 	prefix := fmt.Sprintf("/services/%s/", serviceName)
 
-	// 先获取现有服务
+	// initial load
 	resp, err := d.client.Get(ctx, prefix, clientv3.WithPrefix())
 	if err != nil {
 		cancel()
-		return fmt.Errorf("get services: %w", err)
+		return err
 	}
 
-	// 清空旧数据
-	for key := range d.services {
-		if strings.HasPrefix(key, prefix) {
-			delete(d.services, key)
-		}
-	}
+	d.mu.Lock()
 
-	// 添加现有服务
 	for _, kv := range resp.Kvs {
-		var info ServiceInfo
-		if err := json.Unmarshal(kv.Value, &info); err != nil {
-			fmt.Printf("Unmarshal service info: %v\n", err)
+		var svc ServiceInfo
+
+		if err := json.Unmarshal(kv.Value, &svc); err != nil {
 			continue
 		}
-		d.services[string(kv.Key)] = &info
+
+		d.services[serviceName][string(kv.Key)] = &svc
 	}
 
-	fmt.Printf("Found %d services for %s\n", len(resp.Kvs), serviceName)
+	d.mu.Unlock()
 
-	// 通知变化
-	d.notify()
+	d.notify(serviceName)
 
-	// 创建新的 context 用于监听
-	watchCtx, watchCancel := context.WithCancel(context.Background())
-
-	// 监听变化（非阻塞）
-	go func() {
-		defer watchCancel()
-		watchCh := d.client.Watch(watchCtx, prefix, clientv3.WithPrefix())
-		for watchResp := range watchCh {
-			for _, ev := range watchResp.Events {
-				switch ev.Type {
-				case clientv3.EventTypePut:
-					var info ServiceInfo
-					if err := json.Unmarshal(ev.Kv.Value, &info); err != nil {
-						fmt.Printf("Unmarshal service info: %v\n", err)
-						continue
-					}
-					d.mu.Lock()
-					d.services[string(ev.Kv.Key)] = &info
-					d.mu.Unlock()
-					fmt.Printf("Service added/updated: %s -> %s\n", ev.Kv.Key, info.Addr)
-
-				case clientv3.EventTypeDelete:
-					d.mu.Lock()
-					delete(d.services, string(ev.Kv.Key))
-					d.mu.Unlock()
-					fmt.Printf("Service removed: %s\n", ev.Kv.Key)
-				}
-			}
-			d.notify()
-		}
-	}()
-
-	// 更新 watcher 的取消函数
-	d.watchers[serviceName] = watchCancel
+	// watch
+	go d.watchLoop(ctx, serviceName, prefix)
 
 	return nil
 }
+func (d *Discovery) watchLoop(
+	ctx context.Context,
+	serviceName string,
+	prefix string,
+) {
+	watchCh := d.client.Watch(ctx, prefix, clientv3.WithPrefix())
 
-// GetServices 获取所有服务实例
+	for resp := range watchCh {
+
+		changed := false
+
+		d.mu.Lock()
+
+		for _, ev := range resp.Events {
+
+			key := string(ev.Kv.Key)
+
+			switch ev.Type {
+
+			case clientv3.EventTypePut:
+
+				var svc ServiceInfo
+
+				if err := json.Unmarshal(ev.Kv.Value, &svc); err != nil {
+					continue
+				}
+
+				if d.services[serviceName] == nil {
+					d.services[serviceName] = map[string]*ServiceInfo{}
+				}
+
+				d.services[serviceName][key] = &svc
+
+				changed = true
+
+			case clientv3.EventTypeDelete:
+
+				if d.services[serviceName] != nil {
+					delete(d.services[serviceName], key)
+				}
+
+				changed = true
+			}
+		}
+
+		d.mu.Unlock()
+
+		if changed {
+			d.notify(serviceName)
+		}
+	}
+}
+
 func (d *Discovery) GetServices(serviceName string) []*ServiceInfo {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
-	var services []*ServiceInfo
-	prefix := fmt.Sprintf("/services/%s/", serviceName)
+	m := d.services[serviceName]
 
-	for key, info := range d.services {
-		if strings.HasPrefix(key, prefix) {
-			services = append(services, info)
-		}
+	services := make([]*ServiceInfo, 0, len(m))
+
+	for _, svc := range m {
+		services = append(services, svc)
 	}
 
 	return services
 }
 
-// OnChange 注册服务变化回调
-func (d *Discovery) OnChange(callback func(services []*ServiceInfo)) {
+func (d *Discovery) Subscribe(serviceName string, fn func()) func() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.callbacks = append(d.callbacks, callback)
+
+	if d.subscribers[serviceName] == nil {
+		d.subscribers[serviceName] = make(map[uint64]func())
+	}
+
+	id := d.subID.Add(1)
+
+	d.subscribers[serviceName][id] = fn
+
+	return func() {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+
+		if subs, ok := d.subscribers[serviceName]; ok {
+			delete(subs, id)
+		}
+	}
 }
 
-func (d *Discovery) notify() {
+func (d *Discovery) notify(serviceName string) {
 	d.mu.RLock()
-	services := make([]*ServiceInfo, 0, len(d.services))
-	for _, info := range d.services {
-		services = append(services, info)
+
+	subs := make([]func(), 0)
+
+	for _, fn := range d.subscribers[serviceName] {
+		subs = append(subs, fn)
 	}
-	callbacks := d.callbacks
+
 	d.mu.RUnlock()
 
-	for _, callback := range callbacks {
-		callback(services)
+	for _, fn := range subs {
+		fn()
 	}
 }
 
-// Close 关闭发现
 func (d *Discovery) Close() error {
 	d.mu.Lock()
-	defer d.mu.Unlock()
 
 	for _, cancel := range d.watchers {
 		cancel()
 	}
 
-	return d.client.Close()
-}
-
-// GetServicesFromEtcd 直接从 etcd 获取服务列表（不依赖缓存）
-func (d *Discovery) GetServicesFromEtcd(serviceName string) ([]*ServiceInfo, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	prefix := fmt.Sprintf("/services/%s/", serviceName)
-	resp, err := d.client.Get(ctx, prefix, clientv3.WithPrefix())
-	if err != nil {
-		return nil, fmt.Errorf("get services from etcd: %w", err)
-	}
-
-	var services []*ServiceInfo
-	for _, kv := range resp.Kvs {
-		var info ServiceInfo
-		if err := json.Unmarshal(kv.Value, &info); err != nil {
-			continue
-		}
-		services = append(services, &info)
-	}
-
-	// 更新缓存
-	d.mu.Lock()
-	for _, svc := range services {
-		key := fmt.Sprintf("/services/%s/%s", svc.Name, svc.ID)
-		if svc.ID == "" {
-			key = fmt.Sprintf("/services/%s/%s", svc.Name, svc.Addr)
-		}
-		d.services[key] = svc
-	}
 	d.mu.Unlock()
 
-	return services, nil
+	return d.client.Close()
 }
