@@ -10,6 +10,7 @@ import (
 	"github.com/xs23933/core/v3/etcd"
 	"github.com/xs23933/core/v3/reuseport"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/reflection"
 )
 
 // EnableGRPC 启用 gRPC 支持
@@ -33,6 +34,7 @@ func (app *Core) GetGRPCServer() *grpc.Server {
 	if app.grpcAddr == "" {
 		app.grpcAddr = app.addr
 	}
+	reflection.Register(app.grpcServer)
 	return app.grpcServer
 }
 
