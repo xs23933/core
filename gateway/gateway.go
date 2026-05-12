@@ -134,6 +134,7 @@ func (gw *EtcdGateway) discoverAndConnectServices() {
 	go gw.watchEtcdServices()
 }
 
+// connectService 连接服务并自动注册路由（支持重连）
 func (gw *EtcdGateway) connectService(serviceName, serviceAddr string) {
 	proxy, err := NewReflectionProxy(serviceAddr)
 	if err != nil {
@@ -145,6 +146,8 @@ func (gw *EtcdGateway) connectService(serviceName, serviceAddr string) {
 	gw.proxies[serviceName] = proxy
 	gw.proxyMu.Unlock()
 
+	// 清除旧路由后重新注册
+	gw.removeAutoRoutes(serviceName)
 	gw.autoRegisterRoutes(serviceName, proxy)
 
 	log.Printf("[Gateway] ✅ 服务 %s 已连接，方法已自动注册", serviceName)
@@ -172,13 +175,13 @@ func (gw *EtcdGateway) watchEtcdServices() {
 					continue
 				}
 
-				gw.proxyMu.RLock()
-				_, exists := gw.proxies[serviceName]
-				gw.proxyMu.RUnlock()
-
-				if exists {
-					continue
+				// 关闭旧 proxy，重新连接以获取新方法
+				gw.proxyMu.Lock()
+				if old, ok := gw.proxies[serviceName]; ok {
+					old.Close()
+					delete(gw.proxies, serviceName)
 				}
+				gw.proxyMu.Unlock()
 
 				gw.connectService(serviceName, info.Addr)
 
@@ -192,6 +195,19 @@ func (gw *EtcdGateway) watchEtcdServices() {
 
 				log.Printf("[Gateway] 服务 %s 已断开", serviceName)
 			}
+		}
+	}
+}
+
+// removeAutoRoutes 清除指定服务的自动注册路由
+func (gw *EtcdGateway) removeAutoRoutes(serviceName string) {
+	gw.mu.Lock()
+	defer gw.mu.Unlock()
+
+	for id, route := range gw.routes {
+		if strings.HasPrefix(id, "auto-"+serviceName+"-") {
+			gw.unregisterRoute(route)
+			delete(gw.routes, id)
 		}
 	}
 }
