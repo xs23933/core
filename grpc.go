@@ -1,4 +1,55 @@
-// grpc.go
+/*
+* grpc.go
+
+yaml
+
+etcd:
+
+	endpoints:
+	  - 192.168.31.5:2379
+	username: ""
+	password: ""
+	service_name: "auth-service"
+	service_addr: "192.168.31.2:8080"
+	service_id: "auth-service-1"
+	ttl: 10
+	version: "1.0.0"
+
+package main
+
+import (
+
+	"flag"
+	"fmt"
+	"os"
+	"xauth/service"
+
+	"github.com/xs23933/core/v3"
+
+)
+
+var configFile = flag.String("f", "config.yaml", "Configuration file path")
+
+func main() {
+
+		flag.Parse()
+		conf := core.LoadConfigFile(*configFile)
+
+		app := core.New(conf)
+
+		// 启用 etcd 服务注册
+		if err := app.EnableEtcdRegistry(nil); err != nil {
+			fmt.Printf("Failed to enable etcd registry: %v\n", err)
+			os.Exit(1)
+		}
+
+		service.NewUserService(app.GetGRPCServer())
+
+		if err := app.Run(); err != nil {
+			panic(err)
+		}
+	}
+*/
 package core
 
 import (
@@ -106,7 +157,60 @@ func (app *Core) shutdownGRPC() {
 	}
 }
 
-// EnableEtcdRegistry 启用 etcd 服务注册
+/*
+	EnableEtcdRegistry 启用 etcd 服务注册
+
+----
+
+yaml
+
+etcd:
+
+	endpoints:
+	  - 192.168.31.5:2379
+	username: ""
+	password: ""
+	service_name: "auth-service"
+	service_addr: "192.168.31.2:8080"
+	service_id: "auth-service-1"
+	ttl: 10
+	version: "1.0.0"
+
+package main
+
+import (
+
+	"flag"
+	"fmt"
+	"os"
+	"xauth/service"
+
+	"github.com/xs23933/core/v3"
+
+)
+
+var configFile = flag.String("f", "config.yaml", "Configuration file path")
+
+func main() {
+
+		flag.Parse()
+		conf := core.LoadConfigFile(*configFile)
+
+		app := core.New(conf)
+
+		// 启用 etcd 服务注册
+		if err := app.EnableEtcdRegistry(nil); err != nil {
+			fmt.Printf("Failed to enable etcd registry: %v\n", err)
+			os.Exit(1)
+		}
+
+		service.NewUserService(app.GetGRPCServer())
+
+		if err := app.Run(); err != nil {
+			panic(err)
+		}
+	}
+*/
 func (app *Core) EnableEtcdRegistry(opts *etcd.Options) error {
 	if opts == nil {
 		opts = etcd.DefaultOptions()
