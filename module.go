@@ -24,7 +24,7 @@ func (app *Core) addHandler(h handler) {
 	group := app.Group(prefix, app.processedHandler(h.Preload)).(*Group)
 	for i := range methodCount {
 		m := refCtl.Method(i)
-		name := toNamer(m.Name)
+		name := ToNamer(m.Name)
 		switch fn := (valFn.Method(i).Interface()).(type) {
 
 		case HandlerFunc, HandlerFun, HandlerFuncs:

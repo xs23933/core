@@ -3,12 +3,12 @@ package gateway
 import (
 	"context"
 	"fmt"
-	"log"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/jhump/protoreflect/grpcreflect"
+	"github.com/xs23933/core/v3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/reflection/grpc_reflection_v1alpha"
@@ -29,6 +29,9 @@ type ReflectionProxy struct {
 
 type MethodDescriptor struct {
 	FullMethod  string
+	Package     string // proto package, e.g. "v1.auth"
+	Service     string // service name, e.g. "UserService"
+	Method      string // method name, e.g. "PostLogin"
 	NewRequest  func() proto.Message
 	NewResponse func() proto.Message
 }
@@ -36,17 +39,15 @@ type MethodDescriptor struct {
 func NewReflectionProxy(addr string) (*ReflectionProxy, error) {
 	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		return nil, fmt.Errorf("连接失败: %w", err)
+		return nil, fmt.Errorf("create client conn failed: %w", err)
 	}
 
 	p := &ReflectionProxy{conn: conn, addr: addr}
 
 	if err := p.discoverAndRegister(); err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("发现服务失败: %w", err)
+		return nil, fmt.Errorf("discover and register failed: %w", err)
 	}
-
-	log.Printf("[ReflectionProxy] 服务 %s 初始化完成，已注册 %d 个方法", addr, p.methodCount())
 	return p, nil
 }
 
@@ -55,15 +56,14 @@ func (p *ReflectionProxy) discoverAndRegister() error {
 	defer cancel()
 
 	stub := grpc_reflection_v1alpha.NewServerReflectionClient(p.conn)
-	refClient := grpcreflect.NewClient(ctx, stub)
+	refClient := grpcreflect.NewClientV1Alpha(ctx, stub)
 	defer refClient.Reset()
 
 	services, err := refClient.ListServices()
 	if err != nil {
-		return fmt.Errorf("列出服务失败: %w", err)
+		return fmt.Errorf("list services failed: %w", err)
 	}
 
-	// 按服务维度构建 FileDescriptorSet，避免重复创建
 	for _, serviceName := range services {
 		if strings.Contains(serviceName, "grpc.reflection") {
 			continue
@@ -71,11 +71,10 @@ func (p *ReflectionProxy) discoverAndRegister() error {
 
 		svcDesc, err := refClient.ResolveService(serviceName)
 		if err != nil {
-			log.Printf("[ReflectionProxy] 解析服务 %s 失败: %v", serviceName, err)
+			core.Erro("[ReflectionProxy] resolve service %s failed: %v", serviceName, err)
 			continue
 		}
 
-		// 收集该服务所有方法涉及的 proto 文件（去重）
 		seen := make(map[string]bool)
 		fdSet := &descriptorpb.FileDescriptorSet{}
 
@@ -95,7 +94,7 @@ func (p *ReflectionProxy) discoverAndRegister() error {
 		// 一次构建 FileDescriptor
 		files, err := protodesc.NewFiles(fdSet)
 		if err != nil {
-			log.Printf("[ReflectionProxy] 创建文件描述符失败: %v", err)
+			core.Erro("[ReflectionProxy] build file descriptor set failed: %v", err)
 			continue
 		}
 
@@ -110,15 +109,18 @@ func (p *ReflectionProxy) discoverAndRegister() error {
 			respDesc := msgDescMap[method.GetOutputType().GetFullyQualifiedName()]
 
 			if reqDesc == nil || respDesc == nil {
-				log.Printf("[ReflectionProxy] 找不到消息类型: %s/%s",
-					method.GetInputType().GetFullyQualifiedName(),
-					method.GetOutputType().GetFullyQualifiedName())
 				continue
 			}
 
+			// 提取 proto package
+			pkg := svcDesc.GetFile().GetPackage()
+
 			req, resp := reqDesc, respDesc // capture for closure
 			p.methodCache.Store(fullMethod, &MethodDescriptor{
-				FullMethod: fullMethod,
+				FullMethod:  fullMethod,
+				Package:     pkg,
+				Service:     serviceName,
+				Method:      method.GetName(),
 				NewRequest:  func() proto.Message { return dynamicpb.NewMessage(req) },
 				NewResponse: func() proto.Message { return dynamicpb.NewMessage(resp) },
 			})
@@ -128,7 +130,6 @@ func (p *ReflectionProxy) discoverAndRegister() error {
 	return nil
 }
 
-// buildMessageIndex 构建 fullName -> MessageDescriptor 的索引，避免遍历查找
 func buildMessageIndex(files *protoregistry.Files) map[string]protoreflect.MessageDescriptor {
 	idx := make(map[string]protoreflect.MessageDescriptor)
 	files.RangeFiles(func(fd protoreflect.FileDescriptor) bool {
@@ -149,14 +150,14 @@ func collectMessages(messages protoreflect.MessageDescriptors, idx map[string]pr
 func (p *ReflectionProxy) Invoke(ctx context.Context, fullMethod string, jsonReq []byte) ([]byte, error) {
 	cached, ok := p.methodCache.Load(fullMethod)
 	if !ok {
-		return nil, fmt.Errorf("方法未注册: %s", fullMethod)
+		return nil, fmt.Errorf("metho not found: %s", fullMethod)
 	}
 
 	desc := cached.(*MethodDescriptor)
 
 	req := desc.NewRequest()
 	if err := (&protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(jsonReq, req); err != nil {
-		return nil, fmt.Errorf("解析请求失败: %w", err)
+		return nil, fmt.Errorf("parse request failed: %w", err)
 	}
 
 	resp := desc.NewResponse()

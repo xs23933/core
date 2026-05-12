@@ -165,7 +165,7 @@ func (ln tcpKeepAliveListener) Accept() (net.Conn, error) {
 	return tc, err
 }
 
-func toNamer(name string) string {
+func ToNamer(name string) string {
 	if name == "" {
 		return ""
 	}

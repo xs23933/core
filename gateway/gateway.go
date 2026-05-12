@@ -63,7 +63,7 @@ func NewEtcdGateway(app *core.Core, config *Config) (*EtcdGateway, error) {
 		DialTimeout: config.EtcdDialTimeout,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("创建 etcd 客户端失败: %w", err)
+		return nil, fmt.Errorf("created etcd client failed: %w", err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -79,7 +79,7 @@ func NewEtcdGateway(app *core.Core, config *Config) (*EtcdGateway, error) {
 	}
 
 	if err := gw.loadAllRoutes(); err != nil {
-		core.D("[Gateway] 加载现有路由失败: %v", err)
+		core.D("[Gateway] load all routes failed: %v", err)
 	}
 
 	gw.discoverAndConnectServices()
@@ -90,7 +90,7 @@ func NewEtcdGateway(app *core.Core, config *Config) (*EtcdGateway, error) {
 
 	app.OnShutdown(func() { gw.Close() })
 
-	core.D("[Gateway] ✅ Etcd 网关启动成功")
+	core.D("[Gateway] ✅ Etcd Gateway started")
 	return gw, nil
 }
 
@@ -121,7 +121,7 @@ func (gw *EtcdGateway) discoverAndConnectServices() {
 	}
 
 	if len(serviceSet) == 0 {
-		core.D("[Gateway] etcd 中没有发现任何服务")
+		core.D("[Gateway] etcd has no services")
 		return
 	}
 
@@ -147,7 +147,7 @@ func (gw *EtcdGateway) connectService(serviceName, serviceAddr string) {
 	gw.removeAutoRoutes(serviceName)
 	gw.autoRegisterRoutes(serviceName, proxy)
 
-	core.D("[Gateway] ✅ 服务 %s 已连接，方法已自动注册", serviceName)
+	core.D("[Gateway] ✅ service %s connected ", serviceName)
 }
 
 // watchEtcdServices 监听 etcd 中的服务变化
@@ -172,7 +172,6 @@ func (gw *EtcdGateway) watchEtcdServices() {
 					continue
 				}
 
-				// 关闭旧 proxy，重新连接以获取新方法
 				gw.proxyMu.Lock()
 				if old, ok := gw.proxies[serviceName]; ok {
 					old.Close()
@@ -190,7 +189,7 @@ func (gw *EtcdGateway) watchEtcdServices() {
 				}
 				gw.proxyMu.Unlock()
 
-				core.D("[Gateway] 服务 %s 已断开", serviceName)
+				core.D("[Gateway] service %s disconnected", serviceName)
 			}
 		}
 	}
@@ -216,13 +215,15 @@ func (gw *EtcdGateway) autoRegisterRoutes(serviceName string, proxy *ReflectionP
 	gw.mu.Lock()
 	defer gw.mu.Unlock()
 
-	for fullMethod := range methods {
+	for fullMethod, desc := range methods {
+		httpMethod, httpPath := grpcToHTTP(desc.Package, desc.Service, desc.Method)
+
 		routeID := fmt.Sprintf("auto-%s-%s", serviceName, strings.TrimPrefix(fullMethod, "/"))
 
 		gw.routes[routeID] = &Route{
 			ID:          routeID,
-			Method:      "POST",
-			Path:        fullMethod,
+			Method:      httpMethod,
+			Path:        httpPath,
 			ServiceName: serviceName,
 			GRPCMethod:  fullMethod,
 			Description: fmt.Sprintf("auto-registered from %s", serviceName),
@@ -233,6 +234,51 @@ func (gw *EtcdGateway) autoRegisterRoutes(serviceName string, proxy *ReflectionP
 
 		gw.registerRoute(gw.routes[routeID])
 	}
+}
+
+// grpcToHTTP 将 gRPC 方法转换为 HTTP 路由
+// e.g. ("v1.auth", "v1.auth.UserService", "PostLogin") -> ("POST", "/v1/auth/user/login")
+func grpcToHTTP(pkg, service, method string) (httpMethod, path string) {
+	// 1. HTTP method from method name prefix
+	httpMethod = "POST"
+	methodName := method
+	for _, prefix := range []string{"Post", "Get", "Put", "Delete"} {
+		if strings.HasPrefix(method, prefix) {
+			httpMethod = strings.ToUpper(prefix)
+			methodName = strings.TrimPrefix(method, prefix)
+			break
+		}
+	}
+
+	// 2. Package to path: "v1.auth" -> "/v1/auth"
+	pkgPath := "/" + strings.ReplaceAll(pkg, ".", "/")
+
+	// 3. Service name: extract short name (last part), remove "Service" suffix
+	serviceParts := strings.Split(service, ".")
+	shortService := serviceParts[len(serviceParts)-1] // "UserService"
+	svcName := strings.ToLower(strings.TrimSuffix(shortService, "Service"))
+
+	// 4. Method name: CamelCase to kebab-case
+	methodPath := camelToKebab(methodName)
+
+	return httpMethod, fmt.Sprintf("%s/%s/%s", pkgPath, svcName, methodPath)
+}
+
+// camelToKebab CamelCase -> kebab-case
+func camelToKebab(s string) string {
+	var result []byte
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if i > 0 && 'A' <= c && c <= 'Z' {
+			result = append(result, '-')
+			result = append(result, c+32) // to lowercase
+		} else if 'A' <= c && c <= 'Z' {
+			result = append(result, c+32)
+		} else {
+			result = append(result, c)
+		}
+	}
+	return string(result)
 }
 
 func (gw *EtcdGateway) loadAllRoutes() error {
@@ -311,7 +357,7 @@ func (gw *EtcdGateway) removeRouteByID(routeID string) {
 func (gw *EtcdGateway) registerRoute(route *Route) {
 	handler := gw.createProxyHandler(route)
 
-	core.Info("注册路由: %s %s -> %s", route.Method, route.Path, route.GRPCMethod)
+	core.D("Add Route ✅: %s %s -> %s", route.Method, route.Path, route.GRPCMethod)
 
 	switch strings.ToUpper(route.Method) {
 	case "GET":
