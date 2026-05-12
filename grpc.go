@@ -9,8 +9,6 @@ import (
 
 	"github.com/xs23933/core/v3/etcd"
 	"github.com/xs23933/core/v3/reuseport"
-	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
 	"google.golang.org/grpc"
 )
 
@@ -72,22 +70,6 @@ func (app *Core) startGRPCServer() error {
 	})
 
 	return nil
-}
-
-func (app *Core) setupSharedHandler2() {
-	originalHandler := app.Handler
-
-	h2s := &http2.Server{}
-
-	app.Handler = h2c.NewHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		PrintJSON(r.Header)
-		if app.isGRPCRequest(r) {
-			app.grpcServer.ServeHTTP(w, r)
-			return
-		}
-
-		originalHandler.ServeHTTP(w, r)
-	}), h2s)
 }
 
 func (app *Core) setupSharedHandler() {

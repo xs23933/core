@@ -47,6 +47,11 @@ func (e *etcdResolverBuilder) Build(target resolver.Target, cc resolver.ClientCo
 	r.wg.Add(1)
 	go r.watch(serviceName)
 
+	// 先同步获取服务列表，填充缓存
+	if _, err := r.discovery.GetServicesFromEtcd(serviceName); err != nil {
+		fmt.Printf("Failed to get services from etcd: %v\n", err)
+	}
+
 	// 触发初始更新
 	r.resolve(serviceName)
 
