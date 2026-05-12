@@ -77,7 +77,7 @@ func (g *Group) Use(fn ...any) Router {
 		prefixes = append(prefixes, prefix)
 	}
 	for _, prefix := range prefixes {
-		g.Core.AddHandle([]string{MethodUse}, getGroupPath(g.Prefix, prefix), g, nil, g.Core.processedHandler(handlers)...)
+		g.Core.AddHandle([]string{MethodUse}, getGroupPath(g.Prefix, prefix), g, nil, g.Core.ProcessedHandler(handlers)...)
 	}
 	return g
 }
@@ -128,7 +128,7 @@ func (g *Group) Add(methods []string, path string, handler any, middleware ...an
 	}
 	uri := getGroupPath(g.Prefix, path)
 	D("route: %s %s", strings.Join(methods, ","), uri)
-	return g.Core.AddHandle(methods, uri, g, handler, g.Core.processedHandler(handlers)...)
+	return g.Core.AddHandle(methods, uri, g, handler, g.Core.ProcessedHandler(handlers)...)
 }
 
 func (g *Group) Group(prefix string, handlers ...HandlerFuncs) Router {

@@ -258,20 +258,63 @@ func grpcToHTTP(pkg, service, method string) (httpMethod, path string) {
 	shortService := serviceParts[len(serviceParts)-1] // "UserService"
 	svcName := strings.ToLower(strings.TrimSuffix(shortService, "Service"))
 
-	// 4. Method name: CamelCase to kebab-case
-	methodPath := camelToKebab(methodName)
+	// 4. Method name: parse By keyword or CamelCase to kebab-case
+	methodPath := parseMethodName(methodName)
 
 	return httpMethod, fmt.Sprintf("%s/%s/%s", pkgPath, svcName, methodPath)
 }
 
-// camelToKebab CamelCase -> kebab-case
-func camelToKebab(s string) string {
+// parseMethodName 解析方法名，处理 By 关键字
+// e.g. "UserInfoById" -> "user/info/:id"
+func parseMethodName(methodName string) string {
+	before, after, ok := strings.Cut(methodName, "By")
+	if !ok {
+		return camelToKebab(methodName)
+	}
+
+	resource := before // "UserInfo"
+	param := after     // "Id"
+
+	// resource: CamelCase -> camel/case
+	resourcePath := camelToSlash(resource)
+	// param: -> :param
+	paramPath := ":" + strings.ToLower(param)
+
+	return resourcePath + paramPath
+}
+
+// camelToSlash CamelCase -> camel/case
+func camelToSlash(s string) string {
 	var result []byte
 	for i := 0; i < len(s); i++ {
 		c := s[i]
 		if i > 0 && 'A' <= c && c <= 'Z' {
+			result = append(result, '/')
+			result = append(result, c+32)
+		} else if 'A' <= c && c <= 'Z' {
+			result = append(result, c+32)
+		} else {
+			result = append(result, c)
+		}
+	}
+	return string(result)
+}
+
+// camelToKebab CamelCase -> kebab-case, underscore -> hyphen
+func camelToKebab(s string) string {
+	var result []byte
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '_' {
 			result = append(result, '-')
-			result = append(result, c+32) // to lowercase
+			// 下划线后不管大小写都直接小写，不作为新 CamelCase 段
+			if i+1 < len(s) && 'A' <= s[i+1] && s[i+1] <= 'Z' {
+				result = append(result, s[i+1]+32)
+				i++ // skip next char
+			}
+		} else if i > 0 && 'A' <= c && c <= 'Z' {
+			result = append(result, '-')
+			result = append(result, c+32)
 		} else if 'A' <= c && c <= 'Z' {
 			result = append(result, c+32)
 		} else {
@@ -361,13 +404,13 @@ func (gw *EtcdGateway) registerRoute(route *Route) {
 
 	switch strings.ToUpper(route.Method) {
 	case "GET":
-		gw.app.GET(route.Path, handler)
+		gw.app.AddHandle([]string{"GET"}, route.Path, nil, handler)
 	case "POST":
-		gw.app.POST(route.Path, handler)
+		gw.app.AddHandle([]string{"POST"}, route.Path, nil, handler)
 	case "PUT":
-		gw.app.PUT(route.Path, handler)
+		gw.app.AddHandle([]string{"PUT"}, route.Path, nil, handler)
 	case "DELETE":
-		gw.app.DELETE(route.Path, handler)
+		gw.app.AddHandle([]string{"DELETE"}, route.Path, nil, handler)
 	}
 }
 

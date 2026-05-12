@@ -21,7 +21,7 @@ func (app *Core) addHandler(h handler) {
 	if prefix == "" {
 		prefix = "/"
 	}
-	group := app.Group(prefix, app.processedHandler(h.Preload)).(*Group)
+	group := app.Group(prefix, app.ProcessedHandler(h.Preload)).(*Group)
 	for i := range methodCount {
 		m := refCtl.Method(i)
 		name := ToNamer(m.Name)
@@ -31,7 +31,7 @@ func (app *Core) addHandler(h handler) {
 			for _, method := range app.RequestMethods {
 				if strings.HasPrefix(name, strings.ToLower(method)) {
 					name = FixURI(prefix, name, method)
-					group.core().AddHandle([]string{method}, name, group, nil, app.processedHandler(fn)...)
+					group.core().AddHandle([]string{method}, name, group, nil, app.ProcessedHandler(fn)...)
 					D("route: %s %s > %s.%s", method, name, h.HandName(), m.Name)
 					h.PushHandler(method, name)
 				}

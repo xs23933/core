@@ -591,7 +591,7 @@ func (app *Core) Add(methods []string, path string, handler any, middleware ...a
 	}
 	D("route: %s %s", strings.Join(methods, ","), path)
 
-	return app.AddHandle(methods, path, nil, handler, app.processedHandler(handlers)...)
+	return app.AddHandle(methods, path, nil, handler, app.ProcessedHandler(handlers)...)
 }
 
 func (app *Core) Group(prefix string, handlers ...HandlerFuncs) Router {
@@ -600,7 +600,7 @@ func (app *Core) Group(prefix string, handlers ...HandlerFuncs) Router {
 		Core:   app,
 	}
 	if len(handlers) > 0 {
-		app.AddHandle([]string{MethodUse}, prefix, g, nil, app.processedHandler(handlers)...)
+		app.AddHandle([]string{MethodUse}, prefix, g, nil, app.ProcessedHandler(handlers)...)
 	}
 	return g
 }
@@ -622,7 +622,7 @@ func anyToHandlers(app *Core, fn ...any) (prefixes []string, handlers HandlerFun
 		case view.IEngine:
 			app.Views = arg
 		case HandlerFun, HandlerFunc, http.HandlerFunc, http.Handler:
-			handlers = append(handlers, app.processedHandler(arg)...)
+			handlers = append(handlers, app.ProcessedHandler(arg)...)
 		case HandlerFuncs:
 			handlers = append(handlers, arg...)
 		default:

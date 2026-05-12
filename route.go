@@ -24,7 +24,7 @@ type Router interface {
 	Group(prefix string, handlers ...HandlerFuncs) Router
 }
 
-func (app *Core) processedHandler(hand any) HandlerFuncs {
+func (app *Core) ProcessedHandler(hand any) HandlerFuncs {
 	hands := make(HandlerFuncs, 0)
 
 	switch h := hand.(type) {
@@ -44,7 +44,7 @@ func (app *Core) processedHandler(hand any) HandlerFuncs {
 	case []any:
 		has := make(HandlerFuncs, 0)
 		for _, v := range h {
-			has = append(has, app.processedHandler(v)...)
+			has = append(has, app.ProcessedHandler(v)...)
 		}
 		hands = append(hands, has...)
 	case http.HandlerFunc:
@@ -179,7 +179,7 @@ func (app *Core) AddHandle(methods []string, uri string, group *Group, handler a
 
 	// 添加主处理器
 	if handler != nil {
-		handlers = append(handlers, app.processedHandler(handler)...)
+		handlers = append(handlers, app.ProcessedHandler(handler)...)
 	}
 
 	if len(handlers) == 0 {
