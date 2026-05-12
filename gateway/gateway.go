@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -80,7 +79,7 @@ func NewEtcdGateway(app *core.Core, config *Config) (*EtcdGateway, error) {
 	}
 
 	if err := gw.loadAllRoutes(); err != nil {
-		log.Printf("[Gateway] 加载现有路由失败: %v", err)
+		core.D("[Gateway] 加载现有路由失败: %v", err)
 	}
 
 	gw.discoverAndConnectServices()
@@ -91,7 +90,7 @@ func NewEtcdGateway(app *core.Core, config *Config) (*EtcdGateway, error) {
 
 	app.OnShutdown(func() { gw.Close() })
 
-	log.Printf("[Gateway] ✅ Etcd 网关启动成功")
+	core.D("[Gateway] ✅ Etcd 网关启动成功")
 	return gw, nil
 }
 
@@ -102,7 +101,6 @@ func (gw *EtcdGateway) discoverAndConnectServices() {
 
 	resp, err := gw.etcdCli.Get(ctx, "/services/", clientv3.WithPrefix())
 	if err != nil {
-		log.Printf("[Gateway] 扫描服务失败: %v", err)
 		return
 	}
 
@@ -123,7 +121,7 @@ func (gw *EtcdGateway) discoverAndConnectServices() {
 	}
 
 	if len(serviceSet) == 0 {
-		log.Printf("[Gateway] etcd 中没有发现任何服务")
+		core.D("[Gateway] etcd 中没有发现任何服务")
 		return
 	}
 
@@ -138,7 +136,6 @@ func (gw *EtcdGateway) discoverAndConnectServices() {
 func (gw *EtcdGateway) connectService(serviceName, serviceAddr string) {
 	proxy, err := NewReflectionProxy(serviceAddr)
 	if err != nil {
-		log.Printf("[Gateway] 创建代理失败 %s: %v", serviceName, err)
 		return
 	}
 
@@ -150,7 +147,7 @@ func (gw *EtcdGateway) connectService(serviceName, serviceAddr string) {
 	gw.removeAutoRoutes(serviceName)
 	gw.autoRegisterRoutes(serviceName, proxy)
 
-	log.Printf("[Gateway] ✅ 服务 %s 已连接，方法已自动注册", serviceName)
+	core.D("[Gateway] ✅ 服务 %s 已连接，方法已自动注册", serviceName)
 }
 
 // watchEtcdServices 监听 etcd 中的服务变化
@@ -193,7 +190,7 @@ func (gw *EtcdGateway) watchEtcdServices() {
 				}
 				gw.proxyMu.Unlock()
 
-				log.Printf("[Gateway] 服务 %s 已断开", serviceName)
+				core.D("[Gateway] 服务 %s 已断开", serviceName)
 			}
 		}
 	}
