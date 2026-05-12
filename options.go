@@ -226,8 +226,6 @@ func LoadConfigFile(file string, opts ...Options) Options {
 			"static": "./static",
 		}
 		conf["restful"] = defaultRestful
-
-		conf["log"] = "./app.log"
 		conf["colorful"] = true
 
 		yml, _ := yaml.Marshal(conf)
