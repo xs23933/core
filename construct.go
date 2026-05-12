@@ -10,7 +10,7 @@ import (
 	"golang.org/x/text/language"
 )
 
-const VERSION = "v3.0.0"
+const VERSION = "v3"
 
 type MethodType uint8
 

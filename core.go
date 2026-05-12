@@ -77,7 +77,7 @@ type Core struct {
 
 	// etcd 相关
 	etcdRegistry  *etcd.Registry
-	etcdDiscovery *etcd.Discovery
+	EtcdDiscovery *etcd.Discovery
 	shutdownHooks []func()
 }
 

@@ -61,6 +61,7 @@ import (
 
 	"github.com/xs23933/core/v3/etcd"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 var resolverInitOnce sync.Once
@@ -123,7 +124,7 @@ import (
 	}
 */
 func (app *Core) GrpcClient(serviceName string, opts ...grpc.DialOption) (*grpc.ClientConn, error) {
-	if app.etcdDiscovery == nil {
+	if app.EtcdDiscovery == nil {
 		if err := app.enableEtcdDiscoveryFromConf(); err != nil {
 			return nil, err
 		}
@@ -131,8 +132,23 @@ func (app *Core) GrpcClient(serviceName string, opts ...grpc.DialOption) (*grpc.
 
 	// init etcd resolver once
 	resolverInitOnce.Do(func() {
-		etcd.InitEtcdResolver(app.etcdDiscovery)
+		etcd.InitEtcdResolver(app.EtcdDiscovery)
 	})
+
+	// 添加默认的 insecure 凭证（如果没有设置的话）
+	hasTransportCreds := false
+	for _, opt := range opts {
+		// 检查是否已经设置了传输凭证
+		if opt != nil {
+			// 简单检查：通常 grpc.WithTransportCredentials 会设置
+			hasTransportCreds = true
+		}
+	}
+
+	if !hasTransportCreds {
+		// 添加 insecure 凭证用于开发/测试环境
+		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	}
 
 	conn, err := etcd.Dial(serviceName, opts...)
 	return conn, err

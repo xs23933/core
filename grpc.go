@@ -260,11 +260,11 @@ func (app *Core) EnableEtcdDiscovery(opts *etcd.Options) error {
 		return err
 	}
 
-	app.etcdDiscovery = discovery
+	app.EtcdDiscovery = discovery
 
 	app.OnShutdown(func() {
-		if app.etcdDiscovery != nil {
-			app.etcdDiscovery.Close()
+		if app.EtcdDiscovery != nil {
+			app.EtcdDiscovery.Close()
 		}
 	})
 	return nil

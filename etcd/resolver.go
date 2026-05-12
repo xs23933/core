@@ -3,6 +3,7 @@ package etcd
 import (
 	"context"
 	"fmt"
+	"log"
 	"sync"
 
 	"google.golang.org/grpc"
@@ -96,6 +97,13 @@ func (r *etcdResolver) watchLoop() {
 func (r *etcdResolver) resolve() {
 	services := r.discovery.GetServices(r.serviceName)
 
+	// ✅ 添加调试日志
+	log.Printf("[DEBUG] resolve service: %s, found %d instances", r.serviceName, len(services))
+
+	for _, svc := range services {
+		log.Printf("[DEBUG]   instance: %s (ID: %s)", svc.Addr, svc.ID)
+	}
+
 	addrs := make([]resolver.Address, 0, len(services))
 
 	for _, svc := range services {
@@ -105,11 +113,15 @@ func (r *etcdResolver) resolve() {
 	}
 
 	if len(addrs) == 0 {
+		log.Printf("[WARN] no instances found for service: %s", r.serviceName)
+
 		r.cc.UpdateState(resolver.State{
 			Addresses: []resolver.Address{},
 		})
 		return
 	}
+
+	log.Printf("[INFO] updating state with %d addresses for service: %s", len(addrs), r.serviceName)
 
 	r.cc.UpdateState(resolver.State{
 		Addresses: addrs,

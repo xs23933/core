@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
@@ -43,6 +45,17 @@ func NewDiscovery(opts *Options) (*Discovery, error) {
 		return nil, err
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err = client.Get(ctx, "health")
+	if err != nil {
+		client.Close()
+		return nil, fmt.Errorf("etcd connection test failed: %w", err)
+	}
+
+	log.Printf("[INFO] etcd client connected to %v", opts.Endpoints)
+
 	return &Discovery{
 		client:      client,
 		opts:        opts,
@@ -71,23 +84,31 @@ func (d *Discovery) Watch(serviceName string) error {
 	d.mu.Unlock()
 
 	prefix := fmt.Sprintf("/services/%s/", serviceName)
+	log.Printf("[INFO] Watching service: %s, prefix: %s", serviceName, prefix)
+
+	getCtx, getCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer getCancel()
 
 	// initial load
-	resp, err := d.client.Get(ctx, prefix, clientv3.WithPrefix())
+	resp, err := d.client.Get(getCtx, prefix, clientv3.WithPrefix())
 	if err != nil {
+		log.Printf("[ERROR] initial load failed: %v", err)
 		cancel()
 		return err
 	}
 
+	log.Printf("[INFO] initial load found %d keys", len(resp.Kvs))
 	d.mu.Lock()
 
 	for _, kv := range resp.Kvs {
 		var svc ServiceInfo
 
 		if err := json.Unmarshal(kv.Value, &svc); err != nil {
+			log.Printf("[ERROR] unmarshal failed for key %s: %v", string(kv.Key), err)
 			continue
 		}
 
+		log.Printf("[INFO] loaded service: %s -> %s", string(kv.Key), svc.Addr)
 		d.services[serviceName][string(kv.Key)] = &svc
 	}
 
@@ -158,6 +179,8 @@ func (d *Discovery) GetServices(serviceName string) []*ServiceInfo {
 	defer d.mu.RUnlock()
 
 	m := d.services[serviceName]
+
+	log.Printf("[DEBUG] GetServices: %s, internal map size: %d", serviceName, len(m))
 
 	services := make([]*ServiceInfo, 0, len(m))
 

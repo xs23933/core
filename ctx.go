@@ -32,38 +32,39 @@ type Ctx interface {
 	Context() context.Context // Request().Context()
 	Ctx() context.Context
 	Host() string
-	Response() ResponseWriter                                                   // Response() return http.ResponseWriter
-	Request() *http.Request                                                     // Request() return *http.Request
-	RedirectJS(to string, msg ...string)                                        // use js redirect
-	Redirect(to string, stCode ...int) error                                    // base redirect
-	RemoteIP() net.IP                                                           // remote client ip
-	SetCookie(name, value string, exp time.Time, path string, args ...any)      // set cookie
-	RemoveCookie(name, path string, dom ...string)                              // remove some cookie
-	Cookie(cookie *http.Cookie)                                                 // set cookie with cookie object
-	Cookies(name string) (string, error)                                        // get some cookie
-	ReadBody(out any, debug ...bool) error                                      // read put post any request body to struct or map
-	Bind(out any, debug ...bool) error                                          // ReadBody alias  read put post form data to struct or map
-	BodyParser(out any) error                                                   // read put post form data to struct or map
-	Validate(out any) error                                                     // validate struct or map
-	Next() error                                                                // next HandlerFunc
-	Path() string                                                               // return http.Request.URI.path
-	init(*Core, http.ResponseWriter, *http.Request)                             // Core call
-	release()                                                                   // Core called
-	Send(buf []byte) error                                                      // send []byte data
-	SendString(msg ...any) error                                                // send string to body
-	SendStatus(code int, msg ...string) error                                   // send status to client, options msg with display
-	SetHeader(key string, value string)                                         // set response header
-	GetHeader(key string, defaultValue ...string) string                        // get request header
-	Method() string                                                             // return method e.g: GET,POST,PUT,DELETE,OPTION,HEAD...
-	GetStatus() int                                                             // get response status
-	Status(code int) Ctx                                                        // set response status
-	Core() *Core                                                                // return app(*Core)
-	Abort(args ...any) Ctx                                                      // Deprecated: As of v2.0.0, this function simply calls Ctx.Format.
-	JSON(any, ...int) error                                                     // send json
-	JSONP(data any, callback ...string) error                                   // send jsonp
-	ToJSON(data any, msg ...any) error                                          // send json with status
-	ToJSONCode(data any, msg ...any) error                                      // send have code to json
-	StartAt(t ...time.Time) time.Time                                           // set ctx start time if t set, else get start at
+	Response() ResponseWriter                                              // Response() return http.ResponseWriter
+	Request() *http.Request                                                // Request() return *http.Request
+	RedirectJS(to string, msg ...string)                                   // use js redirect
+	Redirect(to string, stCode ...int) error                               // base redirect
+	RemoteIP() net.IP                                                      // remote client ip
+	SetCookie(name, value string, exp time.Time, path string, args ...any) // set cookie
+	RemoveCookie(name, path string, dom ...string)                         // remove some cookie
+	Cookie(cookie *http.Cookie)                                            // set cookie with cookie object
+	Cookies(name string) (string, error)                                   // get some cookie
+	ReadBody(out any, debug ...bool) error                                 // read put post any request body to struct or map
+	Bind(out any, debug ...bool) error                                     // ReadBody alias  read put post form data to struct or map
+	BodyParser(out any) error                                              // read put post form data to struct or map
+	Validate(out any) error                                                // validate struct or map
+	Next() error                                                           // next HandlerFunc
+	Path() string                                                          // return http.Request.URI.path
+	init(*Core, http.ResponseWriter, *http.Request)                        // Core call
+	release()                                                              // Core called
+	Send(buf []byte) error                                                 // send []byte data
+	SendString(msg ...any) error                                           // send string to body
+	SendStatus(code int, msg ...string) error                              // send status to client, options msg with display
+	SetHeader(key string, value string)                                    // set response header
+	GetHeader(key string, defaultValue ...string) string                   // get request header
+	Method() string                                                        // return method e.g: GET,POST,PUT,DELETE,OPTION,HEAD...
+	GetStatus() int                                                        // get response status
+	Status(code int) Ctx                                                   // set response status
+	Core() *Core                                                           // return app(*Core)
+	Abort(args ...any) Ctx                                                 // Deprecated: As of v2.0.0, this function simply calls Ctx.Format.
+	JSON(any, ...int) error                                                // send json
+	JSONP(data any, callback ...string) error                              // send jsonp
+	ToJSON(data any, msg ...any) error                                     // send json with status
+	ToJSONCode(data any, msg ...any) error                                 // send have code to json
+	StartAt(t ...time.Time) time.Time                                      // set ctx start time if t set, else get start at
+	ParamsMaps() map[string]string
 	Params(key string, defaultValue ...string) string                           // get Param data e.g c.Param("param")
 	ParamsUid(key string, defaultValue ...uid.UID) (uid.UID, error)             // get Param UID type, return uid.Nil if failed
 	GetParamSid(key string, defaultValue ...sid.ID) (sid.ID, error)             // get Param ID type, return sid.Nil if failed
@@ -1417,7 +1418,9 @@ func (c *BaseCtx) Method() string {
 func (c *BaseCtx) Path() string {
 	return c.path
 }
-
+func (c *BaseCtx) ParamsMaps() map[string]string {
+	return c.params
+}
 func (c *BaseCtx) Params(key string, defaultValue ...string) string {
 	if val, ok := c.params[key]; ok {
 		return val
