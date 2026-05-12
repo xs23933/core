@@ -2,6 +2,7 @@ package core
 
 import (
 	"bytes"
+	"context"
 	"database/sql/driver"
 	"encoding/json"
 	"fmt"
@@ -19,6 +20,8 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
 	"github.com/xs23933/uid"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/peer"
 )
 
 func IsNumeric(s string) bool {
@@ -850,4 +853,68 @@ func ExtractPrimaryDomain(host string) string {
 	}
 
 	return host
+}
+
+var ipHeaders = []string{"Cf-Connecting-Ip", "X-Real-Ip", "X-Forwarded-For"}
+
+type iGet interface {
+	Get(key string) string
+}
+
+func RemoteIP(h iGet, ip string) net.IP {
+	// 按照优先级检查各个HTTP头
+	for _, header := range ipHeaders {
+		ip := strings.TrimSpace(h.Get(header))
+		if ip == "" {
+			continue
+		}
+		// 多个 IP 时取第一个（用户真实 IP）
+		if header == "X-Forwarded-For" {
+			parts := strings.Split(ip, ",")
+			ip = strings.TrimSpace(parts[0])
+		}
+		if realIP := net.ParseIP(ip); realIP != nil {
+			return realIP
+		}
+	}
+
+	// 最后 RemoteAddr
+	if host, _, err := net.SplitHostPort(strings.TrimSpace(ip)); err == nil {
+		if realIP := net.ParseIP(host); realIP != nil {
+			return realIP
+		}
+	}
+
+	return nil
+}
+
+type mda struct {
+	md metadata.MD
+}
+
+func (m *mda) Get(key string) string {
+	v := m.md.Get(key)
+	if len(v) > 0 {
+		return v[0]
+	}
+	return ""
+}
+
+type ClientInfo struct {
+	IP string
+	UA string
+}
+
+func ExtractClientInfo(ctx context.Context) *ClientInfo {
+	peerInfo, _ := peer.FromContext(ctx)
+
+	result := &ClientInfo{}
+	if p, ok := metadata.FromIncomingContext(ctx); ok {
+		ip := RemoteIP(&mda{md: p}, peerInfo.Addr.String())
+		result.IP = ip.String()
+		if ua := p.Get("user-agent"); len(ua) > 0 {
+			result.UA = ua[0]
+		}
+	}
+	return result
 }

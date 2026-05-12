@@ -107,6 +107,9 @@ func (d Options) As(k string, v any) error {
 }
 
 func (opt *Options) GetStrings(k string, def ...[]string) []string {
+	if strings.Contains(k, ".") {
+		return opt.GetPathStrings(k, def...)
+	}
 	if val, ok := (*opt)[k]; ok && val != nil {
 		if v, ok := val.([]string); ok {
 			return v
@@ -403,4 +406,55 @@ func (opt *Options) GetPathBool(path string, def ...bool) bool {
 		return def[0]
 	}
 	return false
+}
+
+// GetPathStrings 获取布尔值
+func (opt *Options) GetPathStrings(path string, def ...[]string) []string {
+	keys := strings.Split(path, ".")
+	current := *opt
+
+	for i, key := range keys {
+		val, exists := current[key]
+		if !exists {
+			if len(def) > 0 {
+				return def[0]
+			}
+			return []string{}
+		}
+
+		if i == len(keys)-1 {
+			switch v := val.(type) {
+			case []string:
+				return v
+			case []any:
+				s := make([]string, len(v))
+				for i, v := range v {
+					s[i] = fmt.Sprintf("%v", v)
+				}
+				return s
+			}
+			if len(def) > 0 {
+				return def[0]
+			}
+			return []string{}
+		}
+
+		next, ok := val.(Options)
+		if !ok {
+			if m, ok := val.(map[string]any); ok {
+				next = Options(m)
+			} else {
+				if len(def) > 0 {
+					return def[0]
+				}
+				return []string{}
+			}
+		}
+		current = next
+	}
+
+	if len(def) > 0 {
+		return def[0]
+	}
+	return []string{}
 }

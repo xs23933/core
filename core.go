@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/quic-go/quic-go/http3"
+	"github.com/xs23933/core/v3/etcd"
 	"github.com/xs23933/core/v3/middleware/view"
 	"github.com/xs23933/core/v3/reuseport"
 	"golang.org/x/crypto/acme"
@@ -73,6 +74,11 @@ type Core struct {
 	grpcServer  *grpc.Server
 	grpcAddr    string
 	grpcEnabled bool
+
+	// etcd 相关
+	etcdRegistry  *etcd.Registry
+	etcdDiscovery *etcd.Discovery
+	shutdownHooks []func()
 }
 
 // core implements Router.
@@ -244,7 +250,7 @@ func New(options ...Options) *Core {
 
 	// 初始化 gRPC 配置
 	app.grpcEnabled = app.Conf.GetBool("grpc.enabled", false)
-	app.grpcAddr = app.Conf.GetString("grpc.addr", ":50051")
+	app.grpcAddr = app.Conf.GetString("grpc.addr")
 
 	return app
 }

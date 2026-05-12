@@ -647,36 +647,35 @@ func (c *BaseCtx) Cookies(name string) (string, error) {
 	return val, nil
 }
 
-var ipHeaders = []string{"Cf-Connecting-Ip", "X-Real-Ip", "X-Forwarded-For"}
-
 // RemoteIP parses the IP from Request.RemoteAddr, normalizes and returns the IP (without the port).
 // It also checks if the remoteIP is a trusted proxy or not.
 // In order to perform this validation, it will see if the IP is contained within at least one of the CIDR blocks
 func (c *BaseCtx) RemoteIP() net.IP {
+	return RemoteIP(c.R.Header, c.R.RemoteAddr)
 	// 按照优先级检查各个HTTP头
-	for _, header := range ipHeaders {
-		ip := strings.TrimSpace(c.GetHeader(header))
-		if ip == "" {
-			continue
-		}
-		// 多个 IP 时取第一个（用户真实 IP）
-		if header == "X-Forwarded-For" {
-			parts := strings.Split(ip, ",")
-			ip = strings.TrimSpace(parts[0])
-		}
-		if realIP := net.ParseIP(ip); realIP != nil {
-			return realIP
-		}
-	}
+	// for _, header := range ipHeaders {
+	// 	ip := strings.TrimSpace(c.GetHeader(header))
+	// 	if ip == "" {
+	// 		continue
+	// 	}
+	// 	// 多个 IP 时取第一个（用户真实 IP）
+	// 	if header == "X-Forwarded-For" {
+	// 		parts := strings.Split(ip, ",")
+	// 		ip = strings.TrimSpace(parts[0])
+	// 	}
+	// 	if realIP := net.ParseIP(ip); realIP != nil {
+	// 		return realIP
+	// 	}
+	// }
 
-	// 最后 RemoteAddr
-	if host, _, err := net.SplitHostPort(strings.TrimSpace(c.R.RemoteAddr)); err == nil {
-		if realIP := net.ParseIP(host); realIP != nil {
-			return realIP
-		}
-	}
+	// // 最后 RemoteAddr
+	// if host, _, err := net.SplitHostPort(strings.TrimSpace(c.R.RemoteAddr)); err == nil {
+	// 	if realIP := net.ParseIP(host); realIP != nil {
+	// 		return realIP
+	// 	}
+	// }
 
-	return nil
+	// return nil
 }
 
 // set locals var

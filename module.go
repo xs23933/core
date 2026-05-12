@@ -112,6 +112,11 @@ func (app *Core) ErrGroup() *errgroup.Group {
 }
 
 func (app *Core) shutdown() {
+	// 执行关闭钩子
+	for _, hook := range app.shutdownHooks {
+		hook()
+	}
+
 	for _, m := range app.getModules(app.modName) {
 		mo := m.Instance()
 		if mod, ok := mo.(canShutdown); ok {
