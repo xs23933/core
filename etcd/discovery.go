@@ -48,8 +48,7 @@ func NewDiscovery(opts *Options) (*Discovery, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err = client.Get(ctx, "health")
-	if err != nil {
+	if _, err = client.Get(ctx, "health"); err != nil {
 		client.Close()
 		return nil, fmt.Errorf("etcd connection test failed: %w", err)
 	}
@@ -67,8 +66,6 @@ func NewDiscovery(opts *Options) (*Discovery, error) {
 
 func (d *Discovery) Watch(serviceName string) error {
 	d.mu.Lock()
-
-	// already watching
 	if _, ok := d.watchers[serviceName]; ok {
 		d.mu.Unlock()
 		return nil
@@ -80,92 +77,65 @@ func (d *Discovery) Watch(serviceName string) error {
 	if d.services[serviceName] == nil {
 		d.services[serviceName] = make(map[string]*ServiceInfo)
 	}
-
 	d.mu.Unlock()
 
 	prefix := fmt.Sprintf("/services/%s/", serviceName)
-	log.Printf("[INFO] Watching service: %s, prefix: %s", serviceName, prefix)
 
 	getCtx, getCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer getCancel()
 
-	// initial load
 	resp, err := d.client.Get(getCtx, prefix, clientv3.WithPrefix())
 	if err != nil {
-		log.Printf("[ERROR] initial load failed: %v", err)
 		cancel()
 		return err
 	}
 
-	log.Printf("[INFO] initial load found %d keys", len(resp.Kvs))
 	d.mu.Lock()
-
 	for _, kv := range resp.Kvs {
 		var svc ServiceInfo
-
 		if err := json.Unmarshal(kv.Value, &svc); err != nil {
-			log.Printf("[ERROR] unmarshal failed for key %s: %v", string(kv.Key), err)
 			continue
 		}
-
-		log.Printf("[INFO] loaded service: %s -> %s", string(kv.Key), svc.Addr)
 		d.services[serviceName][string(kv.Key)] = &svc
 	}
-
 	d.mu.Unlock()
 
 	d.notify(serviceName)
 
-	// watch
 	go d.watchLoop(ctx, serviceName, prefix)
 
 	return nil
 }
-func (d *Discovery) watchLoop(
-	ctx context.Context,
-	serviceName string,
-	prefix string,
-) {
+
+func (d *Discovery) watchLoop(ctx context.Context, serviceName string, prefix string) {
 	watchCh := d.client.Watch(ctx, prefix, clientv3.WithPrefix())
 
 	for resp := range watchCh {
-
 		changed := false
 
 		d.mu.Lock()
-
 		for _, ev := range resp.Events {
-
 			key := string(ev.Kv.Key)
 
 			switch ev.Type {
-
 			case clientv3.EventTypePut:
-
 				var svc ServiceInfo
-
 				if err := json.Unmarshal(ev.Kv.Value, &svc); err != nil {
 					continue
 				}
-
 				if d.services[serviceName] == nil {
-					d.services[serviceName] = map[string]*ServiceInfo{}
+					d.services[serviceName] = make(map[string]*ServiceInfo)
 				}
-
 				d.services[serviceName][key] = &svc
-
 				changed = true
 
 			case clientv3.EventTypeDelete:
-
 				if d.services[serviceName] != nil {
 					delete(d.services[serviceName], key)
 				}
-
 				changed = true
 			}
 		}
-
 		d.mu.Unlock()
 
 		if changed {
@@ -179,15 +149,10 @@ func (d *Discovery) GetServices(serviceName string) []*ServiceInfo {
 	defer d.mu.RUnlock()
 
 	m := d.services[serviceName]
-
-	log.Printf("[DEBUG] GetServices: %s, internal map size: %d", serviceName, len(m))
-
 	services := make([]*ServiceInfo, 0, len(m))
-
 	for _, svc := range m {
 		services = append(services, svc)
 	}
-
 	return services
 }
 
@@ -200,13 +165,11 @@ func (d *Discovery) Subscribe(serviceName string, fn func()) func() {
 	}
 
 	id := d.subID.Add(1)
-
 	d.subscribers[serviceName][id] = fn
 
 	return func() {
 		d.mu.Lock()
 		defer d.mu.Unlock()
-
 		if subs, ok := d.subscribers[serviceName]; ok {
 			delete(subs, id)
 		}
@@ -215,13 +178,10 @@ func (d *Discovery) Subscribe(serviceName string, fn func()) func() {
 
 func (d *Discovery) notify(serviceName string) {
 	d.mu.RLock()
-
-	subs := make([]func(), 0)
-
+	subs := make([]func(), 0, len(d.subscribers[serviceName]))
 	for _, fn := range d.subscribers[serviceName] {
 		subs = append(subs, fn)
 	}
-
 	d.mu.RUnlock()
 
 	for _, fn := range subs {
@@ -231,11 +191,9 @@ func (d *Discovery) notify(serviceName string) {
 
 func (d *Discovery) Close() error {
 	d.mu.Lock()
-
 	for _, cancel := range d.watchers {
 		cancel()
 	}
-
 	d.mu.Unlock()
 
 	return d.client.Close()

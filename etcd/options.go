@@ -24,12 +24,7 @@ type Options struct {
 }
 
 func DefaultOptions() *Options {
-	return &Options{
-		Endpoints:   []string{"127.0.0.1:2379"},
-		DialTimeout: 5 * time.Second,
-		TTL:         10,
-		Version:     "1.0.0",
-	}
+	return &Options{}
 }
 
 // 生成 etcd key

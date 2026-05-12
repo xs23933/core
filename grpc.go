@@ -1,55 +1,4 @@
-/*
-* grpc.go
-
-yaml
-
-etcd:
-
-	endpoints:
-	  - 192.168.31.5:2379
-	username: ""
-	password: ""
-	service_name: "auth-service"
-	service_addr: "192.168.31.2:8080"
-	service_id: "auth-service-1"
-	ttl: 10
-	version: "1.0.0"
-
-package main
-
-import (
-
-	"flag"
-	"fmt"
-	"os"
-	"xauth/service"
-
-	"github.com/xs23933/core/v3"
-
-)
-
-var configFile = flag.String("f", "config.yaml", "Configuration file path")
-
-func main() {
-
-		flag.Parse()
-		conf := core.LoadConfigFile(*configFile)
-
-		app := core.New(conf)
-
-		// 启用 etcd 服务注册
-		if err := app.EnableEtcdRegistry(nil); err != nil {
-			fmt.Printf("Failed to enable etcd registry: %v\n", err)
-			os.Exit(1)
-		}
-
-		service.NewUserService(app.GetGRPCServer())
-
-		if err := app.Run(); err != nil {
-			panic(err)
-		}
-	}
-*/
+// grpc.go
 package core
 
 import (
@@ -111,7 +60,6 @@ func (app *Core) startGRPCServer() error {
 
 	Info("gRPC server listening on %s (protocol: HTTP/2 over TCP)", app.grpcAddr)
 
-	// 在单独的 goroutine 中运行 gRPC 服务器
 	app.eg.Go(func() error {
 		if err := app.grpcServer.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			Erro("gRPC server error: %v", err)
@@ -131,22 +79,12 @@ func (app *Core) setupSharedHandler() {
 	app.Protocols.SetUnencryptedHTTP2(true)
 
 	app.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if app.isGRPCRequest(r) {
+		if r.ProtoMajor == 2 && strings.HasPrefix(r.Header.Get("Content-Type"), "application/grpc") {
 			app.grpcServer.ServeHTTP(w, r)
 			return
 		}
-
 		originalHandler.ServeHTTP(w, r)
 	})
-}
-
-// isGRPCRequest 判断是否为 gRPC 请求
-func (app *Core) isGRPCRequest(r *http.Request) bool {
-	// gRPC 请求特征：
-	// 1. 必须是 HTTP/2
-	// 2. Content-Type 以 application/grpc 开头
-	return r.ProtoMajor == 2 &&
-		strings.HasPrefix(r.Header.Get("Content-Type"), "application/grpc")
 }
 
 // shutdownGRPC 优雅关闭 gRPC 服务器
@@ -157,72 +95,32 @@ func (app *Core) shutdownGRPC() {
 	}
 }
 
-/*
-	EnableEtcdRegistry 启用 etcd 服务注册
-
-----
-
-yaml
-
-etcd:
-
-	endpoints:
-	  - 192.168.31.5:2379
-	username: ""
-	password: ""
-	service_name: "auth-service"
-	service_addr: "192.168.31.2:8080"
-	service_id: "auth-service-1"
-	ttl: 10
-	version: "1.0.0"
-
-package main
-
-import (
-
-	"flag"
-	"fmt"
-	"os"
-	"xauth/service"
-
-	"github.com/xs23933/core/v3"
-
-)
-
-var configFile = flag.String("f", "config.yaml", "Configuration file path")
-
-func main() {
-
-		flag.Parse()
-		conf := core.LoadConfigFile(*configFile)
-
-		app := core.New(conf)
-
-		// 启用 etcd 服务注册
-		if err := app.EnableEtcdRegistry(nil); err != nil {
-			fmt.Printf("Failed to enable etcd registry: %v\n", err)
-			os.Exit(1)
-		}
-
-		service.NewUserService(app.GetGRPCServer())
-
-		if err := app.Run(); err != nil {
-			panic(err)
-		}
-	}
-*/
+// EnableEtcdRegistry 启用 etcd 服务注册
+// 当 opts 为 nil 时，从配置文件读取；当 opts 已设置字段时，保留用户值
 func (app *Core) EnableEtcdRegistry(opts *etcd.Options) error {
 	if opts == nil {
 		opts = etcd.DefaultOptions()
 	}
 
-	// 从配置读取（仅当 opts 未设置时）
-	opts.Endpoints = app.Conf.GetStrings("etcd.endpoints", []string{"127.0.0.1:2379"})
-	opts.ServiceName = app.Conf.GetString("etcd.service_name", "")
-	opts.ServiceAddr = app.Conf.GetString("etcd.service_addr", app.addr)
-	opts.ServiceID = app.Conf.GetString("etcd.service_id", "")
-	opts.TTL = app.Conf.GetInt64("etcd.ttl", 10)
-	opts.Version = app.Conf.GetString("etcd.version", "1.0.0")
+	// 仅在用户未设置时从配置读取
+	if len(opts.Endpoints) == 0 {
+		opts.Endpoints = app.Conf.GetStrings("etcd.endpoints", []string{"127.0.0.1:2379"})
+	}
+	if opts.ServiceName == "" {
+		opts.ServiceName = app.Conf.GetString("etcd.service_name", "")
+	}
+	if opts.ServiceAddr == "" {
+		opts.ServiceAddr = app.Conf.GetString("etcd.service_addr", app.addr)
+	}
+	if opts.ServiceID == "" {
+		opts.ServiceID = app.Conf.GetString("etcd.service_id", "")
+	}
+	if opts.TTL == 0 {
+		opts.TTL = app.Conf.GetInt64("etcd.ttl", 10)
+	}
+	if opts.Version == "" {
+		opts.Version = app.Conf.GetString("etcd.version", "1.0.0")
+	}
 
 	registry, err := etcd.NewRegistry(opts)
 	if err != nil {
@@ -231,12 +129,10 @@ func (app *Core) EnableEtcdRegistry(opts *etcd.Options) error {
 
 	app.etcdRegistry = registry
 
-	// 注册服务
 	if err := registry.Register(); err != nil {
 		return err
 	}
 
-	// 在关闭时注销
 	app.OnShutdown(func() {
 		registry.Deregister()
 	})
@@ -244,13 +140,12 @@ func (app *Core) EnableEtcdRegistry(opts *etcd.Options) error {
 	return nil
 }
 
-// 集成到 Core
+// EnableEtcdDiscovery 启用 etcd 服务发现
 func (app *Core) EnableEtcdDiscovery(opts *etcd.Options) error {
 	if opts == nil {
 		opts = etcd.DefaultOptions()
 	}
 
-	// 从配置读取（仅当 opts 未设置时）
 	if len(opts.Endpoints) == 0 {
 		opts.Endpoints = app.Conf.GetStrings("etcd.endpoints", []string{"127.0.0.1:2379"})
 	}
@@ -263,10 +158,9 @@ func (app *Core) EnableEtcdDiscovery(opts *etcd.Options) error {
 	app.EtcdDiscovery = discovery
 
 	app.OnShutdown(func() {
-		if app.EtcdDiscovery != nil {
-			app.EtcdDiscovery.Close()
-		}
+		discovery.Close()
 	})
+
 	return nil
 }
 

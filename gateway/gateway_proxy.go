@@ -1,4 +1,3 @@
-// gateway/reflection_proxy.go
 package gateway
 
 import (
@@ -15,6 +14,10 @@ import (
 	"google.golang.org/grpc/reflection/grpc_reflection_v1alpha"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protodesc"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/reflect/protoregistry"
+	"google.golang.org/protobuf/types/descriptorpb"
 	"google.golang.org/protobuf/types/dynamicpb"
 )
 
@@ -22,7 +25,6 @@ type ReflectionProxy struct {
 	conn        *grpc.ClientConn
 	methodCache sync.Map
 	addr        string
-	serviceName string
 }
 
 type MethodDescriptor struct {
@@ -32,25 +34,19 @@ type MethodDescriptor struct {
 }
 
 func NewReflectionProxy(addr string) (*ReflectionProxy, error) {
-	log.Printf("[ReflectionProxy] 连接服务: %s", addr)
-
 	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		return nil, fmt.Errorf("连接失败: %w", err)
 	}
 
-	p := &ReflectionProxy{
-		conn: conn,
-		addr: addr,
-	}
+	p := &ReflectionProxy{conn: conn, addr: addr}
 
 	if err := p.discoverAndRegister(); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("发现服务失败: %w", err)
 	}
 
-	count := p.methodCount()
-	log.Printf("[ReflectionProxy] ✅ 服务 %s 初始化完成，已注册 %d 个方法", addr, count)
+	log.Printf("[ReflectionProxy] 服务 %s 初始化完成，已注册 %d 个方法", addr, p.methodCount())
 	return p, nil
 }
 
@@ -58,58 +54,96 @@ func (p *ReflectionProxy) discoverAndRegister() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// 使用 grpcreflect 包（需要先安装）
-	// go get github.com/jhump/protoreflect/grpcreflect
 	stub := grpc_reflection_v1alpha.NewServerReflectionClient(p.conn)
 	refClient := grpcreflect.NewClient(ctx, stub)
+	defer refClient.Reset()
 
-	// 获取所有服务
 	services, err := refClient.ListServices()
 	if err != nil {
 		return fmt.Errorf("列出服务失败: %w", err)
 	}
 
-	log.Printf("[ReflectionProxy] 发现服务: %v", services)
-
-	// 为每个服务加载方法
+	// 按服务维度构建 FileDescriptorSet，避免重复创建
 	for _, serviceName := range services {
 		if strings.Contains(serviceName, "grpc.reflection") {
 			continue
 		}
 
-		// 获取服务描述符
 		svcDesc, err := refClient.ResolveService(serviceName)
 		if err != nil {
 			log.Printf("[ReflectionProxy] 解析服务 %s 失败: %v", serviceName, err)
 			continue
 		}
 
+		// 收集该服务所有方法涉及的 proto 文件（去重）
+		seen := make(map[string]bool)
+		fdSet := &descriptorpb.FileDescriptorSet{}
+
+		methods := svcDesc.GetMethods()
+		for _, method := range methods {
+			for _, fd := range []*descriptorpb.FileDescriptorProto{
+				method.GetInputType().GetFile().AsFileDescriptorProto(),
+				method.GetOutputType().GetFile().AsFileDescriptorProto(),
+			} {
+				if fd != nil && !seen[fd.GetName()] {
+					seen[fd.GetName()] = true
+					fdSet.File = append(fdSet.File, fd)
+				}
+			}
+		}
+
+		// 一次构建 FileDescriptor
+		files, err := protodesc.NewFiles(fdSet)
+		if err != nil {
+			log.Printf("[ReflectionProxy] 创建文件描述符失败: %v", err)
+			continue
+		}
+
+		// 预构建消息描述符查找表
+		msgDescMap := buildMessageIndex(files)
+
 		// 注册所有方法
-		for i := 0; i < svcDesc.GetMethodCount(); i++ {
-			method := svcDesc.GetMethod(i)
+		for _, method := range methods {
 			fullMethod := fmt.Sprintf("/%s/%s", serviceName, method.GetName())
 
-			// 创建动态消息工厂
-			reqDesc := method.GetInputType()
-			respDesc := method.GetOutputType()
+			reqDesc := msgDescMap[method.GetInputType().GetFullyQualifiedName()]
+			respDesc := msgDescMap[method.GetOutputType().GetFullyQualifiedName()]
 
-			desc := &MethodDescriptor{
-				FullMethod: fullMethod,
-				NewRequest: func() proto.Message {
-					return dynamicpb.NewMessage(reqDesc)
-				},
-				NewResponse: func() proto.Message {
-					return dynamicpb.NewMessage(respDesc)
-				},
+			if reqDesc == nil || respDesc == nil {
+				log.Printf("[ReflectionProxy] 找不到消息类型: %s/%s",
+					method.GetInputType().GetFullyQualifiedName(),
+					method.GetOutputType().GetFullyQualifiedName())
+				continue
 			}
 
-			p.methodCache.Store(fullMethod, desc)
-			log.Printf("[ReflectionProxy] 注册方法: %s", fullMethod)
+			req, resp := reqDesc, respDesc // capture for closure
+			p.methodCache.Store(fullMethod, &MethodDescriptor{
+				FullMethod: fullMethod,
+				NewRequest:  func() proto.Message { return dynamicpb.NewMessage(req) },
+				NewResponse: func() proto.Message { return dynamicpb.NewMessage(resp) },
+			})
 		}
-		p.serviceName = serviceName
 	}
 
 	return nil
+}
+
+// buildMessageIndex 构建 fullName -> MessageDescriptor 的索引，避免遍历查找
+func buildMessageIndex(files *protoregistry.Files) map[string]protoreflect.MessageDescriptor {
+	idx := make(map[string]protoreflect.MessageDescriptor)
+	files.RangeFiles(func(fd protoreflect.FileDescriptor) bool {
+		collectMessages(fd.Messages(), idx)
+		return true
+	})
+	return idx
+}
+
+func collectMessages(messages protoreflect.MessageDescriptors, idx map[string]protoreflect.MessageDescriptor) {
+	for i := 0; i < messages.Len(); i++ {
+		msg := messages.Get(i)
+		idx[string(msg.FullName())] = msg
+		collectMessages(msg.Messages(), idx)
+	}
 }
 
 func (p *ReflectionProxy) Invoke(ctx context.Context, fullMethod string, jsonReq []byte) ([]byte, error) {
@@ -121,10 +155,7 @@ func (p *ReflectionProxy) Invoke(ctx context.Context, fullMethod string, jsonReq
 	desc := cached.(*MethodDescriptor)
 
 	req := desc.NewRequest()
-	unmarshaler := protojson.UnmarshalOptions{
-		DiscardUnknown: true,
-	}
-	if err := unmarshaler.Unmarshal(jsonReq, req); err != nil {
+	if err := (&protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(jsonReq, req); err != nil {
 		return nil, fmt.Errorf("解析请求失败: %w", err)
 	}
 
@@ -133,10 +164,17 @@ func (p *ReflectionProxy) Invoke(ctx context.Context, fullMethod string, jsonReq
 		return nil, err
 	}
 
-	marshaler := protojson.MarshalOptions{
-		UseProtoNames: true,
-	}
-	return marshaler.Marshal(resp)
+	return (&protojson.MarshalOptions{UseProtoNames: true}).Marshal(resp)
+}
+
+// Methods 返回所有已注册的方法
+func (p *ReflectionProxy) Methods() map[string]*MethodDescriptor {
+	result := make(map[string]*MethodDescriptor, p.methodCount())
+	p.methodCache.Range(func(key, value interface{}) bool {
+		result[key.(string)] = value.(*MethodDescriptor)
+		return true
+	})
+	return result
 }
 
 func (p *ReflectionProxy) methodCount() int {
