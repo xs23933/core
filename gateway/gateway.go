@@ -513,13 +513,24 @@ func (gw *EtcdGateway) getOrCreateProxy(serviceName string) (*ReflectionProxy, e
 	return proxy, nil
 }
 
-// setupAdminAPI 管理 API
+// setupAdminAPI 管理 API（仅限本地访问） Added an Admin API, accessible only from local addresses.
 func (gw *EtcdGateway) setupAdminAPI() {
-	gw.app.POST("/admin/gateway/routes", gw.createRoute)
-	gw.app.PUT("/admin/gateway/routes/:id", gw.updateRoute)
-	gw.app.DELETE("/admin/gateway/routes/:id", gw.deleteRoute)
-	gw.app.GET("/admin/gateway/routes", gw.listRoutes)
-	gw.app.GET("/admin/gateway/routes/:id", gw.getRoute)
+	gw.app.POST("/admin/gateway/routes", gw.localOnly(gw.createRoute))
+	gw.app.PUT("/admin/gateway/routes/:id", gw.localOnly(gw.updateRoute))
+	gw.app.DELETE("/admin/gateway/routes/:id", gw.localOnly(gw.deleteRoute))
+	gw.app.GET("/admin/gateway/routes", gw.localOnly(gw.listRoutes))
+	gw.app.GET("/admin/gateway/routes/:id", gw.localOnly(gw.getRoute))
+}
+
+// localOnly 限制仅本地访问
+func (gw *EtcdGateway) localOnly(fn func(core.Ctx) error) func(core.Ctx) error {
+	return func(ctx core.Ctx) error {
+		ip := ctx.Request().RemoteAddr
+		if !strings.HasPrefix(ip, "127.") && !strings.HasPrefix(ip, "::1") && ip != "localhost" && ip != "[::1]" {
+			return ctx.Status(403).JSON(core.Map{"code": 403, "message": "forbidden"})
+		}
+		return fn(ctx)
+	}
 }
 
 func (gw *EtcdGateway) createRoute(ctx core.Ctx) error {
