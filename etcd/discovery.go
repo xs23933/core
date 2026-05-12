@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -52,8 +51,6 @@ func NewDiscovery(opts *Options) (*Discovery, error) {
 		client.Close()
 		return nil, fmt.Errorf("etcd connection test failed: %w", err)
 	}
-
-	log.Printf("[INFO] etcd client connected to %v", opts.Endpoints)
 
 	return &Discovery{
 		client:      client,

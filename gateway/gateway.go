@@ -22,7 +22,7 @@ type Route struct {
 	ServiceName string            `json:"service_name"`
 	GRPCMethod  string            `json:"grpc_method"`
 	Description string            `json:"description"`
-	Headers     map[string]string `json:"headers"`
+	Headers     map[string]string `json:"headers,omitempty"`
 	Enabled     bool              `json:"enabled"`
 	CreatedAt   time.Time         `json:"created_at"`
 	UpdatedAt   time.Time         `json:"updated_at"`
@@ -84,7 +84,10 @@ func NewEtcdGateway(app *core.Core, config *Config) (*EtcdGateway, error) {
 
 	gw.discoverAndConnectServices()
 
-	go gw.watchRoutes()
+	app.ErrGroup().Go(func() error {
+		gw.watchRoutes()
+		return nil
+	})
 
 	gw.setupAdminAPI()
 
@@ -129,7 +132,10 @@ func (gw *EtcdGateway) discoverAndConnectServices() {
 		gw.connectService(serviceName, serviceAddr)
 	}
 
-	go gw.watchEtcdServices()
+	gw.app.ErrGroup().Go(func() error {
+		gw.watchEtcdServices()
+		return nil
+	})
 }
 
 // connectService 连接服务并自动注册路由（支持重连）
@@ -473,7 +479,7 @@ func (gw *EtcdGateway) createProxyHandler(route *Route) core.HandlerFunc {
 			})
 		}
 
-		var result interface{}
+		var result any
 		sonic.Unmarshal(jsonResp, &result)
 
 		return ctx.JSON(result)
