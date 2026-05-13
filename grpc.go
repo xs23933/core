@@ -34,7 +34,6 @@ func (app *Core) GetGRPCServer() *grpc.Server {
 	if app.grpcAddr == "" {
 		app.grpcAddr = app.addr
 	}
-	reflection.Register(app.grpcServer)
 	return app.grpcServer
 }
 
@@ -138,6 +137,14 @@ func (app *Core) EnableEtcdRegistry(opts *etcd.Options) error {
 	app.OnShutdown(func() {
 		registry.Deregister()
 	})
+	if app.grpcServer == nil {
+		app.grpcServer = grpc.NewServer()
+		app.grpcEnabled = true
+	}
+	if app.grpcAddr == "" {
+		app.grpcAddr = app.addr
+	}
+	reflection.Register(app.grpcServer)
 
 	return nil
 }
