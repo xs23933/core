@@ -1,6 +1,7 @@
 package core
 
 import (
+	"fmt"
 	"errors"
 	"sync"
 	"time"
@@ -11,6 +12,15 @@ import (
 )
 
 var resolverInitOnce sync.Once
+
+// MustGrpcClient 创建 gRPC 客户端连接，失败则 panic
+func (app *Core) MustGrpcClient(serviceName string, opts ...grpc.DialOption) *grpc.ClientConn {
+	conn, err := app.GrpcClient(serviceName, opts...)
+	if err != nil {
+		panic(fmt.Sprintf("grpc client %s: %v", serviceName, err))
+	}
+	return conn
+}
 
 // GrpcClient 创建 gRPC 客户端连接（基于 etcd 服务发现）
 func (app *Core) GrpcClient(serviceName string, opts ...grpc.DialOption) (*grpc.ClientConn, error) {
