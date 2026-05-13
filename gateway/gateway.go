@@ -423,8 +423,8 @@ func parseMethodName(methodName string) string {
 
 	// resource: CamelCase -> camel/case
 	resourcePath := camelToSlash(resource)
-	// param: -> :param
-	paramPath := ":" + strings.ToLower(param)
+	// param: -> /:param
+	paramPath := "/:" + strings.ToLower(param)
 
 	return resourcePath + paramPath
 }
