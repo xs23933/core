@@ -3,7 +3,9 @@ package core
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql/driver"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -917,4 +919,9 @@ func ExtractClientInfo(ctx context.Context) *ClientInfo {
 		}
 	}
 	return result
+}
+
+func SHA256(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
 }
