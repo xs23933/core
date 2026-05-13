@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"net/http"
@@ -599,7 +600,16 @@ func (gw *EtcdGateway) createProxyHandler(route *Route) core.HandlerFunc {
 
 		jsonResp, err := proxy.Invoke(callCtx, route.GRPCMethod, jsonReq)
 		if err != nil {
-			return ctx.ToJSONCode(nil, err)
+			if gw.app.Debug {
+				return ctx.Status(core.StatusServiceUnavailable).ToJSONCode(nil, err)
+			}
+			if strings.Contains(err.Error(), "code = Unavailable") {
+				return ctx.Status(core.StatusServiceUnavailable).ToJSONCode(nil, core.NewError(503, "service %s unavailable", route.ServiceName))
+			}
+			if errors.Is(err, core.ErrNotFound) {
+				return ctx.SendStatus(core.ErrNotFound.Code, core.ErrNotFound.Message)
+			}
+			return ctx.Status(core.StatusServiceUnavailable).ToJSONCode(nil, err)
 		}
 		return ctx.Type("json").Send(jsonResp)
 	}

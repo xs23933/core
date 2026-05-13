@@ -164,7 +164,7 @@ func (p *ReflectionProxy) Invoke(ctx context.Context, fullMethod string, jsonReq
 		if p.app.Debug {
 			return nil, fmt.Errorf("method not found: %s", fullMethod)
 		}
-		return nil, fmt.Errorf("not found")
+		return nil, core.ErrNotFound
 	}
 
 	desc := cached.(*MethodDescriptor)
