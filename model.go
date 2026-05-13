@@ -59,7 +59,7 @@ func NewModel(conf Options, debug, colorful bool) (map[string]*DB, error) {
 		}
 		dbsType[name] = c.GetString("type")
 		conns[name] = db
-		D("Opened database connection %s %s", dbsType[name], name)
+		D("Opened database connection %s conn:[%s]", dbsType[name], name)
 	}
 	return conns, nil
 }

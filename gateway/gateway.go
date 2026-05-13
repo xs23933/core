@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"strings"
 	"sync"
@@ -467,9 +468,7 @@ func (gw *EtcdGateway) createProxyHandler(route *Route) core.HandlerFunc {
 		if ctx.Method() != "GET" {
 			var bodyMap core.Map
 			if err := ctx.Bind(&bodyMap); err == nil {
-				for k, v := range bodyMap {
-					reqBody[k] = v
-				}
+				maps.Copy(reqBody, bodyMap)
 			}
 		}
 
@@ -495,12 +494,10 @@ func (gw *EtcdGateway) createProxyHandler(route *Route) core.HandlerFunc {
 
 		jsonResp, err := proxy.Invoke(callCtx, route.GRPCMethod, jsonReq)
 		if err != nil {
-			core.Erro("[Gateway] connectService failed: %v", err)
-			return ctx.Status(http.StatusInternalServerError).JSON(core.Map{
-				"code": 500, "message": err.Error(),
-			})
+			return ctx.ToJSONCode(nil, err)
 		}
 
+		core.Info("[Gateway] received response: %s", string(jsonResp))
 		var result any
 		sonic.Unmarshal(jsonResp, &result)
 
@@ -510,7 +507,7 @@ func (gw *EtcdGateway) createProxyHandler(route *Route) core.HandlerFunc {
 
 func (gw *EtcdGateway) getOrCreateProxy(serviceName string) (*ReflectionProxy, error) {
 	const maxRetries = 3
-	for i := 0; i < maxRetries; i++ {
+	for range maxRetries {
 		proxy := gw.doGetProxy(serviceName)
 		if proxy != nil {
 			return proxy, nil
@@ -645,7 +642,7 @@ func (gw *EtcdGateway) getRoute(ctx core.Ctx) error {
 	if !exists {
 		return ctx.Status(404).JSON(core.Map{"code": 404, "message": "route not found"})
 	}
-	return ctx.JSON(core.Map{"code": 0, "data": route})
+	return ctx.ToJSONCode(route)
 }
 
 func (gw *EtcdGateway) Close() error {
