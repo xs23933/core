@@ -75,20 +75,30 @@ func (p *ReflectionProxy) discoverAndRegister() error {
 			continue
 		}
 
+		// 递归收集文件及其所有依赖（包括 google/protobuf/timestamp.proto 等 well-known types）
 		seen := make(map[string]bool)
 		fdSet := &descriptorpb.FileDescriptorSet{}
 
-		methods := svcDesc.GetMethods()
-		for _, method := range methods {
-			for _, fd := range []*descriptorpb.FileDescriptorProto{
-				method.GetInputType().GetFile().AsFileDescriptorProto(),
-				method.GetOutputType().GetFile().AsFileDescriptorProto(),
-			} {
-				if fd != nil && !seen[fd.GetName()] {
-					seen[fd.GetName()] = true
-					fdSet.File = append(fdSet.File, fd)
+		var collectDeps func(fd *descriptorpb.FileDescriptorProto)
+		collectDeps = func(fd *descriptorpb.FileDescriptorProto) {
+			if fd == nil || seen[fd.GetName()] {
+				return
+			}
+			seen[fd.GetName()] = true
+			fdSet.File = append(fdSet.File, fd)
+			// 递归收集所有依赖
+			for _, dep := range fd.Dependency {
+				depFD, _ := refClient.FileByFilename(dep)
+				if depFD != nil {
+					collectDeps(depFD.AsFileDescriptorProto())
 				}
 			}
+		}
+
+		methods := svcDesc.GetMethods()
+		for _, method := range methods {
+			collectDeps(method.GetInputType().GetFile().AsFileDescriptorProto())
+			collectDeps(method.GetOutputType().GetFile().AsFileDescriptorProto())
 		}
 
 		// 一次构建 FileDescriptor

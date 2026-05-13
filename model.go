@@ -130,8 +130,8 @@ func openDB(conf Options, debug, colorful bool) (db *DB, err error) {
 
 type Model struct {
 	ID        uid.UID         `gorm:"size:12;primaryKey" json:"id,omitempty"`
-	CreatedAt time.Time       `json:"created_at,omitempty" gorm:"<-:create"`
-	UpdatedAt time.Time       `json:"updated_at,omitempty" gorm:"autoUpdateTime"`
+	CreatedAt *time.Time      `json:"created_at,omitempty" gorm:"<-:create"`
+	UpdatedAt *time.Time      `json:"updated_at,omitempty" gorm:"autoUpdateTime"`
 	DeletedAt *gorm.DeletedAt `json:"deleted_at,omitempty" gorm:"index"`
 }
 
@@ -1092,14 +1092,14 @@ func (id *IntID) Encode() string {
 }
 
 type IModel struct {
-	ID        IntID           `gorm:"primarykey;comment:主键" json:"id,omitzero"`
+	ID        IntID           `gorm:"primarykey;autoIncrement:false;comment:主键" json:"id,omitzero"`
 	CreatedAt *time.Time      `gorm:"<-:create;comment:创建时间" json:"created_at,omitempty"`
 	UpdatedAt *time.Time      `gorm:"autoUpdateTime;comment:更新时间" json:"updated_at,omitempty"`
 	DeletedAt *gorm.DeletedAt `gorm:"index;comment:删除时间" json:"deleted_at,omitempty"`
 }
 
 type SModels struct {
-	ID        sid.ID          `json:"id,omitzero" gorm:"primaryKey;comment:主键"`
+	ID        sid.ID          `json:"id,omitzero" gorm:"primaryKey;autoIncrement:false;comment:主键"`
 	CreatedAt *time.Time      `json:"created_at,omitempty" gorm:"<-:create;comment:创建时间"`
 	UpdatedAt *time.Time      `json:"updated_at,omitempty" gorm:"autoUpdateTime;comment:更新时间"`
 	DeletedAt *gorm.DeletedAt `json:"deleted_at,omitempty" gorm:"index;comment:删除时间"`
