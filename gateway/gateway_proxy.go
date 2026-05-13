@@ -25,6 +25,7 @@ type ReflectionProxy struct {
 	conn        *grpc.ClientConn
 	methodCache sync.Map
 	addr        string
+	app         *core.Core
 }
 
 type MethodDescriptor struct {
@@ -36,13 +37,13 @@ type MethodDescriptor struct {
 	NewResponse func() proto.Message
 }
 
-func NewReflectionProxy(addr string) (*ReflectionProxy, error) {
+func NewReflectionProxy(app *core.Core, addr string) (*ReflectionProxy, error) {
 	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		return nil, fmt.Errorf("create client conn failed: %w", err)
 	}
 
-	p := &ReflectionProxy{conn: conn, addr: addr}
+	p := &ReflectionProxy{conn: conn, addr: addr, app: app}
 
 	if err := p.discoverAndRegister(); err != nil {
 		conn.Close()
@@ -160,7 +161,10 @@ func collectMessages(messages protoreflect.MessageDescriptors, idx map[string]pr
 func (p *ReflectionProxy) Invoke(ctx context.Context, fullMethod string, jsonReq []byte) ([]byte, error) {
 	cached, ok := p.methodCache.Load(fullMethod)
 	if !ok {
-		return nil, fmt.Errorf("metho not found: %s", fullMethod)
+		if p.app.Debug {
+			return nil, fmt.Errorf("method not found: %s", fullMethod)
+		}
+		return nil, fmt.Errorf("not found")
 	}
 
 	desc := cached.(*MethodDescriptor)

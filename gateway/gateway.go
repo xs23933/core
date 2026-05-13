@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -264,7 +265,7 @@ func (gw *EtcdGateway) connectService(serviceName, serviceAddr string) {
 			core.D("[Gateway] connectService: retry %d for %s", i+1, serviceName)
 		}
 
-		pool = gw.connPool.GetOrCreate(serviceName, addrs, poolSize)
+		pool = gw.connPool.GetOrCreate(gw.app, serviceName, addrs, poolSize)
 		if pool != nil {
 			break
 		}
@@ -284,8 +285,6 @@ func (gw *EtcdGateway) connectService(serviceName, serviceAddr string) {
 		return
 	}
 
-	// 清除旧路由后重新注册
-	gw.removeAutoRoutes(serviceName)
 	gw.autoRegisterRoutes(serviceName, proxy)
 
 	core.D("[Gateway] ✅ service %s connected (pool size: %d)", serviceName, pool.Size())
@@ -321,6 +320,9 @@ func (gw *EtcdGateway) watchEtcdServices() {
 				}
 				gw.proxyMu.Unlock()
 
+				// 销毁旧连接池，强制创建新连接（reflection 缓存可能过期）
+				gw.connPool.Remove(serviceName)
+
 				go func(sn, addr string) {
 					gw.connectService(sn, addr)
 				}(serviceName, info.Addr)
@@ -340,19 +342,6 @@ func (gw *EtcdGateway) watchEtcdServices() {
 	}
 }
 
-// removeAutoRoutes 清除指定服务的自动注册路由
-func (gw *EtcdGateway) removeAutoRoutes(serviceName string) {
-	gw.mu.Lock()
-	defer gw.mu.Unlock()
-
-	for id, route := range gw.routes {
-		if strings.HasPrefix(id, "auto-"+serviceName+"-") {
-			gw.unregisterRoute(route)
-			delete(gw.routes, id)
-		}
-	}
-}
-
 // autoRegisterRoutes 自动为 gRPC 方法注册 HTTP 路由
 func (gw *EtcdGateway) autoRegisterRoutes(serviceName string, proxy *ReflectionProxy) {
 	methods := proxy.Methods()
@@ -363,8 +352,18 @@ func (gw *EtcdGateway) autoRegisterRoutes(serviceName string, proxy *ReflectionP
 	for fullMethod, desc := range methods {
 		httpMethod, httpPath := grpcToHTTP(desc.Package, desc.Service, desc.Method)
 
-		routeID := fmt.Sprintf("auto-%s-%s", serviceName, strings.TrimPrefix(fullMethod, "/"))
+		// 用 gRPC 服务名做路由分组，而非 etcd 服务名
+		serviceParts := strings.Split(desc.Service, ".")
+		shortService := serviceParts[len(serviceParts)-1]
+		grpcServiceName := strings.ToLower(strings.TrimSuffix(shortService, "Service"))
+
+		routeID := fmt.Sprintf("auto-%s-%s", grpcServiceName, strings.TrimPrefix(fullMethod, "/"))
 		routeIDHash := core.SHA256(routeID)
+
+		// 先注销旧路由再注册（避免重复）
+		if old, exists := gw.routes[routeIDHash]; exists {
+			gw.unregisterRoute(old)
+		}
 
 		gw.routes[routeIDHash] = &Route{
 			ID:          routeIDHash,
@@ -410,40 +409,19 @@ func grpcToHTTP(pkg, service, method string) (httpMethod, path string) {
 	return httpMethod, fmt.Sprintf("%s/%s/%s", pkgPath, svcName, methodPath)
 }
 
+var re = regexp.MustCompile(`(?i)by/?`)
+
 // parseMethodName 解析方法名，处理 By 关键字
 // e.g. "UserInfoById" -> "user/info/:id"
 func parseMethodName(methodName string) string {
-	before, after, ok := strings.Cut(methodName, "By")
-	if !ok {
-		return camelToKebab(methodName)
-	}
 
-	resource := before // "UserInfo"
-	param := after     // "Id"
+	base := camelToKebab(methodName)
 
-	// resource: CamelCase -> camel/case
-	resourcePath := camelToSlash(resource)
-	// param: -> /:param
-	paramPath := "/:" + strings.ToLower(param)
+	result := re.ReplaceAllStringFunc(base, func(match string) string {
+		return ":"
+	})
 
-	return resourcePath + paramPath
-}
-
-// camelToSlash CamelCase -> camel/case
-func camelToSlash(s string) string {
-	var result []byte
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if i > 0 && 'A' <= c && c <= 'Z' {
-			result = append(result, '/')
-			result = append(result, c+32)
-		} else if 'A' <= c && c <= 'Z' {
-			result = append(result, c+32)
-		} else {
-			result = append(result, c)
-		}
-	}
-	return string(result)
+	return result
 }
 
 // camelToKebab CamelCase -> kebab-case, underscore -> hyphen
@@ -547,6 +525,7 @@ func (gw *EtcdGateway) removeRouteByID(routeID string) {
 func (gw *EtcdGateway) registerRoute(route *Route) {
 	handler := gw.createProxyHandler(route)
 
+	route.Path = strings.TrimSuffix(route.Path, "/")
 	core.D("Add Route ✅: %s %s -> %s", route.Method, route.Path, route.GRPCMethod)
 
 	switch strings.ToUpper(route.Method) {
@@ -626,18 +605,6 @@ func (gw *EtcdGateway) createProxyHandler(route *Route) core.HandlerFunc {
 	}
 }
 
-func (gw *EtcdGateway) getOrCreateProxy(serviceName string) (*ReflectionProxy, error) {
-	const maxRetries = 3
-	for range maxRetries {
-		proxy := gw.doGetProxy(serviceName)
-		if proxy != nil {
-			return proxy, nil
-		}
-		gw.removeProxy(serviceName)
-	}
-	return nil, fmt.Errorf("service %s unavailable", serviceName)
-}
-
 func (gw *EtcdGateway) doGetProxy(serviceName string) *ReflectionProxy {
 	// 检查熔断器
 	if !gw.circuitBreakerCheck(serviceName) {
@@ -669,7 +636,7 @@ func (gw *EtcdGateway) doGetProxy(serviceName string) *ReflectionProxy {
 		addrs[i] = s.Addr
 	}
 
-	newPool := gw.connPool.GetOrCreate(serviceName, addrs, gw.config.PoolSize)
+	newPool := gw.connPool.GetOrCreate(gw.app, serviceName, addrs, gw.config.PoolSize)
 	proxy := newPool.Get()
 	if proxy == nil {
 		gw.circuitBreakerRecordFailure(serviceName)
@@ -678,15 +645,6 @@ func (gw *EtcdGateway) doGetProxy(serviceName string) *ReflectionProxy {
 
 	gw.circuitBreakerRecordSuccess(serviceName)
 	return proxy
-}
-
-func (gw *EtcdGateway) removeProxy(serviceName string) {
-	gw.proxyMu.Lock()
-	defer gw.proxyMu.Unlock()
-	if proxy, ok := gw.proxies[serviceName]; ok {
-		proxy.Close()
-		delete(gw.proxies, serviceName)
-	}
 }
 
 // setupAdminAPI 管理 API（仅限本地访问） Added an Admin API, accessible only from local addresses.

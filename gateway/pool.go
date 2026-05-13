@@ -4,22 +4,23 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/xs23933/core/v3"
 	"google.golang.org/grpc/connectivity"
 )
 
 // ServicePool 服务连接池（多个连接 round-robin）
 type ServicePool struct {
-	name      string
-	addrs     []string
-	size      int
-	proxies   []*ReflectionProxy
-	idx       uint64 // atomic round-robin index
-	mu        sync.RWMutex
-	onClose   func(string) // callback when pool closes (for cleanup)
+	name    string
+	addrs   []string
+	size    int
+	proxies []*ReflectionProxy
+	idx     uint64 // atomic round-robin index
+	mu      sync.RWMutex
+	app     *core.Core
 }
 
 // NewServicePool 创建服务连接池
-func NewServicePool(name string, addrs []string, size int, onClose func(string)) *ServicePool {
+func NewServicePool(app *core.Core, name string, addrs []string, size int) *ServicePool {
 	if size <= 0 {
 		size = 3 // default 3 connections per service
 	}
@@ -32,13 +33,13 @@ func NewServicePool(name string, addrs []string, size int, onClose func(string))
 		addrs:   addrs,
 		size:    size,
 		proxies: make([]*ReflectionProxy, 0, size),
-		onClose: onClose,
+		app:     app,
 	}
 
 	// 预热连接，每个地址创建 size 个连接
 	for i := 0; i < size; i++ {
 		addr := addrs[i%len(addrs)]
-		proxy, err := NewReflectionProxy(addr)
+		proxy, err := NewReflectionProxy(app, addr)
 		if err != nil {
 			continue
 		}
@@ -89,7 +90,7 @@ func (p *ServicePool) MarkFailed(proxy *ReflectionProxy) {
 			// 用下一个地址重建
 			if len(p.addrs) > 1 {
 				newAddr := p.addrs[(i+1)%len(p.addrs)]
-				if newProxy, err := NewReflectionProxy(newAddr); err == nil {
+				if newProxy, err := NewReflectionProxy(p.app, newAddr); err == nil {
 					p.proxies[i] = newProxy
 					return
 				}
@@ -118,10 +119,6 @@ func (p *ServicePool) Close() {
 		proxy.Close()
 	}
 	p.proxies = nil
-
-	if p.onClose != nil {
-		p.onClose(p.name)
-	}
 }
 
 // ConnectionPool 连接池管理器
@@ -138,7 +135,7 @@ func NewConnectionPool() *ConnectionPool {
 }
 
 // GetOrCreate 获取或创建服务连接池
-func (cp *ConnectionPool) GetOrCreate(serviceName string, addrs []string, size int) *ServicePool {
+func (cp *ConnectionPool) GetOrCreate(app *core.Core, serviceName string, addrs []string, size int) *ServicePool {
 	// 快速路径：已有池且有可用连接
 	cp.poolsMu.RLock()
 	if pool, ok := cp.pools[serviceName]; ok {
@@ -155,9 +152,7 @@ func (cp *ConnectionPool) GetOrCreate(serviceName string, addrs []string, size i
 	}
 
 	// 创建新池
-	pool := NewServicePool(serviceName, addrs, size, func(name string) {
-		cp.Remove(name)
-	})
+	pool := NewServicePool(app, serviceName, addrs, size)
 	if pool == nil {
 		return nil
 	}
@@ -178,21 +173,28 @@ func (cp *ConnectionPool) Get(serviceName string) *ServicePool {
 // Remove 移除服务连接池
 func (cp *ConnectionPool) Remove(serviceName string) {
 	cp.poolsMu.Lock()
-	defer cp.poolsMu.Unlock()
-
-	if pool, ok := cp.pools[serviceName]; ok {
-		pool.Close()
+	pool, ok := cp.pools[serviceName]
+	if ok {
 		delete(cp.pools, serviceName)
+	}
+	cp.poolsMu.Unlock()
+
+	if pool != nil {
+		pool.Close()
 	}
 }
 
 // Close 关闭所有连接池
 func (cp *ConnectionPool) Close() {
 	cp.poolsMu.Lock()
-	defer cp.poolsMu.Unlock()
-
+	pools := make(map[string]*ServicePool, len(cp.pools))
 	for name, pool := range cp.pools {
+		pools[name] = pool
+	}
+	cp.pools = pools
+	cp.poolsMu.Unlock()
+
+	for _, pool := range pools {
 		pool.Close()
-		delete(cp.pools, name)
 	}
 }
