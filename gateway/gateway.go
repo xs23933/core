@@ -13,7 +13,6 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/xs23933/core/v3"
 	clientv3 "go.etcd.io/etcd/client/v3"
-	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/metadata"
 )
 
@@ -48,10 +47,12 @@ const (
 	circuitCooldown      = 30 * time.Second // 熔断后 30s 尝试恢复
 )
 
+// ConnectionPool 连接池管理器
 type EtcdGateway struct {
 	app     *core.Core
 	etcdCli *clientv3.Client
 	prefix  string
+	config  *Config
 
 	mu     sync.RWMutex
 	routes map[string]*Route
@@ -59,9 +60,13 @@ type EtcdGateway struct {
 	watchCtx    context.Context
 	watchCancel context.CancelFunc
 
+	// proxies 保留用于兼容，仍可按需使用
 	proxies       map[string]*ReflectionProxy
 	proxyMu       sync.RWMutex
 	circuitStates sync.Map // map[string]*CircuitBreaker
+
+	// 连接池
+	connPool *ConnectionPool
 }
 
 type Config struct {
@@ -69,6 +74,7 @@ type Config struct {
 	EtcdDialTimeout time.Duration `yaml:"etcd_dial_timeout"`
 	RoutePrefix     string        `yaml:"route_prefix"`
 	HTTPAddr        string        `yaml:"http_addr"`
+	PoolSize        int           `yaml:"pool_size"` // 每个服务的连接数，默认 3
 }
 
 // circuitBreakerCheck 检查熔断器状态，返回 true 表示可以尝试连接
@@ -134,6 +140,7 @@ func NewEtcdGateway(app *core.Core, conf ...*Config) (*EtcdGateway, error) {
 		config = &Config{}
 		config.EtcdEndpoints = app.Conf.GetStrings("etcd.endpoints")
 		config.EtcdDialTimeout = time.Duration(app.Conf.GetInt64("etcd.dial_timeout", 5)) * time.Second
+		config.PoolSize = app.Conf.GetInt("etcd.pool_size", 0)
 	}
 	if config.RoutePrefix == "" {
 		config.RoutePrefix = "/gateway/routes/"
@@ -157,10 +164,12 @@ func NewEtcdGateway(app *core.Core, conf ...*Config) (*EtcdGateway, error) {
 		app:         app,
 		etcdCli:     cli,
 		prefix:      config.RoutePrefix,
+		config:      config,
 		routes:      make(map[string]*Route),
 		watchCtx:    ctx,
 		watchCancel: cancel,
 		proxies:     make(map[string]*ReflectionProxy),
+		connPool:    NewConnectionPool(),
 	}
 
 	if err := gw.loadAllRoutes(); err != nil {
@@ -224,37 +233,62 @@ func (gw *EtcdGateway) discoverAndConnectServices() {
 	})
 }
 
-// connectService 连接服务并自动注册路由（支持重连和重试）
+// connectService 连接服务并自动注册路由（支持连接池、重试和熔断）
 func (gw *EtcdGateway) connectService(serviceName, serviceAddr string) {
-	var proxy *ReflectionProxy
-	var err error
+	core.D("[Gateway] connectService: %s @ %s", serviceName, serviceAddr)
 
-	// 重试 3 次，每次等待递增时间
-	for i := 0; i < 3; i++ {
-		proxy, err = NewReflectionProxy(serviceAddr)
-		if err == nil {
+	// 收集所有可用地址
+	addrs := []string{serviceAddr}
+	if gw.app.EtcdDiscovery != nil {
+		if services := gw.app.EtcdDiscovery.GetServices(serviceName); len(services) > 0 {
+			addrs = make([]string, 0, len(services))
+			for _, s := range services {
+				addrs = append(addrs, s.Addr)
+			}
+		}
+	}
+
+	core.D("[Gateway] connectService: addrs=%v", addrs)
+
+	// poolSize 默认 3
+	poolSize := gw.config.PoolSize
+	if poolSize <= 0 {
+		poolSize = 3
+	}
+
+	// 重试 3 次，每次间隔 500ms
+	var pool *ServicePool
+	for i := range 3 {
+		if i > 0 {
+			time.Sleep(time.Duration(200*(i+1)) * time.Millisecond)
+			core.D("[Gateway] connectService: retry %d for %s", i+1, serviceName)
+		}
+
+		pool = gw.connPool.GetOrCreate(serviceName, addrs, poolSize)
+		if pool != nil {
 			break
 		}
-		core.D("[Gateway] connectService retry %d/3 for %s at %s: %v", i+1, serviceName, serviceAddr, err)
-		time.Sleep(time.Duration(i+1) * 200 * time.Millisecond)
 	}
-	if err != nil {
-		core.Erro("[Gateway] connectService failed: %v", err)
+
+	if pool == nil {
+		core.Erro("[Gateway] connectService: failed after 3 retries for %s, addrs=%v", serviceName, addrs)
 		gw.circuitBreakerRecordFailure(serviceName)
 		return
 	}
 
 	gw.circuitBreakerRecordSuccess(serviceName)
 
-	gw.proxyMu.Lock()
-	gw.proxies[serviceName] = proxy
-	gw.proxyMu.Unlock()
+	// 使用连接池的 proxy 获取一个连接用于注册路由
+	proxy := pool.Get()
+	if proxy == nil {
+		return
+	}
 
 	// 清除旧路由后重新注册
 	gw.removeAutoRoutes(serviceName)
 	gw.autoRegisterRoutes(serviceName, proxy)
 
-	core.D("[Gateway] ✅ service %s connected ", serviceName)
+	core.D("[Gateway] ✅ service %s connected (pool size: %d)", serviceName, pool.Size())
 }
 
 // watchEtcdServices 监听 etcd 中的服务变化
@@ -425,7 +459,7 @@ func camelToKebab(s string) string {
 				i++ // skip next char
 			}
 		} else if i > 0 && 'A' <= c && c <= 'Z' {
-			result = append(result, '-')
+			result = append(result, '/')
 			result = append(result, c+32)
 		} else if 'A' <= c && c <= 'Z' {
 			result = append(result, c+32)
@@ -533,9 +567,9 @@ func (gw *EtcdGateway) unregisterRoute(route *Route) {
 
 func (gw *EtcdGateway) createProxyHandler(route *Route) core.HandlerFunc {
 	return func(ctx core.Ctx) error {
-		proxy, err := gw.getOrCreateProxy(route.ServiceName)
-		if err != nil {
-			core.Erro("[Gateway] connectService failed: %v", err)
+		proxy := gw.doGetProxy(route.ServiceName)
+		if proxy == nil {
+			core.Erro("[Gateway] proxy not available for service: %s", route.ServiceName)
 			return ctx.Status(http.StatusServiceUnavailable).JSON(core.Map{
 				"code":    503,
 				"message": fmt.Sprintf("service %s unavailable", route.ServiceName),
@@ -552,7 +586,6 @@ func (gw *EtcdGateway) createProxyHandler(route *Route) core.HandlerFunc {
 				reqBody[k] = v[0]
 			}
 		}
-		maps.Copy(reqBody, ctx.Vars())
 		if ctx.Method() != "GET" {
 			var bodyMap core.Map
 			if err := ctx.Bind(&bodyMap); err == nil {
@@ -575,6 +608,11 @@ func (gw *EtcdGateway) createProxyHandler(route *Route) core.HandlerFunc {
 				md.Set(h, val)
 			}
 		}
+
+		for k, v := range ctx.Vars() {
+			md.Set(k, fmt.Sprintf("%v", v))
+		}
+
 		grpcCtx := metadata.NewOutgoingContext(context.Background(), md)
 
 		callCtx, cancel := context.WithTimeout(grpcCtx, 10*time.Second)
@@ -584,11 +622,6 @@ func (gw *EtcdGateway) createProxyHandler(route *Route) core.HandlerFunc {
 		if err != nil {
 			return ctx.ToJSONCode(nil, err)
 		}
-
-		// core.Info("[Gateway] received response: %s", string(jsonResp))
-		// var result any
-		// sonic.Unmarshal(jsonResp, &result)
-
 		return ctx.Type("json").Send(jsonResp)
 	}
 }
@@ -606,22 +639,23 @@ func (gw *EtcdGateway) getOrCreateProxy(serviceName string) (*ReflectionProxy, e
 }
 
 func (gw *EtcdGateway) doGetProxy(serviceName string) *ReflectionProxy {
-	// 优先使用缓存，但检查连接状态
-	gw.proxyMu.RLock()
-	proxy, ok := gw.proxies[serviceName]
-	gw.proxyMu.RUnlock()
-	if ok && proxy != nil && proxy.conn.GetState() == connectivity.Ready {
-		gw.circuitBreakerRecordSuccess(serviceName) // 成功重置熔断
-		return proxy
-	}
-
 	// 检查熔断器
 	if !gw.circuitBreakerCheck(serviceName) {
 		core.D("[Gateway] doGetProxy: %s circuit open, fast fail", serviceName)
 		return nil
 	}
 
-	// 连接不健康或缓存为空，从 etcd 拉新地址
+	// 使用连接池
+	pool := gw.connPool.Get(serviceName)
+	if pool != nil {
+		proxy := pool.Get()
+		if proxy != nil {
+			gw.circuitBreakerRecordSuccess(serviceName)
+			return proxy
+		}
+	}
+
+	// 池为空，尝试创建
 	if gw.app.EtcdDiscovery == nil {
 		return nil
 	}
@@ -629,17 +663,20 @@ func (gw *EtcdGateway) doGetProxy(serviceName string) *ReflectionProxy {
 	if len(services) == 0 {
 		return nil
 	}
-	proxy, err := NewReflectionProxy(services[0].Addr)
-	if err != nil {
-		core.Erro("[Gateway] create proxy for %s failed: %v", serviceName, err)
+
+	addrs := make([]string, len(services))
+	for i, s := range services {
+		addrs[i] = s.Addr
+	}
+
+	newPool := gw.connPool.GetOrCreate(serviceName, addrs, gw.config.PoolSize)
+	proxy := newPool.Get()
+	if proxy == nil {
 		gw.circuitBreakerRecordFailure(serviceName)
 		return nil
 	}
+
 	gw.circuitBreakerRecordSuccess(serviceName)
-	core.D("[Gateway] doGetProxy: created new proxy for %s at %s", serviceName, services[0].Addr)
-	gw.proxyMu.Lock()
-	gw.proxies[serviceName] = proxy
-	gw.proxyMu.Unlock()
 	return proxy
 }
 
@@ -745,6 +782,11 @@ func (gw *EtcdGateway) Close() error {
 	if gw.watchCancel != nil {
 		gw.watchCancel()
 	}
+	// 关闭连接池
+	if gw.connPool != nil {
+		gw.connPool.Close()
+	}
+	// 关闭旧 proxies（兼容）
 	for _, p := range gw.proxies {
 		p.Close()
 	}

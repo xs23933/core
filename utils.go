@@ -917,11 +917,17 @@ func ExtractClientInfo(ctx context.Context) *ClientInfo {
 		if ua := p.Get("user-agent"); len(ua) > 0 {
 			result.UA = ua[0]
 		}
-		for k, v := range p {
-			fmt.Printf("key: %s, value: %s\n", k, v)
-		}
 	}
 	return result
+}
+func GrpcHeader(ctx context.Context, key string) string {
+	if p, ok := metadata.FromIncomingContext(ctx); ok {
+		vals := p.Get(key)
+		if len(vals) > 0 {
+			return vals[0]
+		}
+	}
+	return ""
 }
 
 func SHA256(s string) string {
