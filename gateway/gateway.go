@@ -12,6 +12,7 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/xs23933/core/v3"
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/metadata"
 )
 
@@ -63,6 +64,7 @@ func NewEtcdGateway(app *core.Core, config *Config) (*EtcdGateway, error) {
 		DialTimeout: config.EtcdDialTimeout,
 	})
 	if err != nil {
+		core.Erro("[Gateway] connectService failed: %v", err)
 		return nil, fmt.Errorf("created etcd client failed: %w", err)
 	}
 
@@ -104,6 +106,7 @@ func (gw *EtcdGateway) discoverAndConnectServices() {
 
 	resp, err := gw.etcdCli.Get(ctx, "/services/", clientv3.WithPrefix())
 	if err != nil {
+		core.Erro("[Gateway] connectService failed: %v", err)
 		return
 	}
 
@@ -138,10 +141,22 @@ func (gw *EtcdGateway) discoverAndConnectServices() {
 	})
 }
 
-// connectService 连接服务并自动注册路由（支持重连）
+// connectService 连接服务并自动注册路由（支持重连和重试）
 func (gw *EtcdGateway) connectService(serviceName, serviceAddr string) {
-	proxy, err := NewReflectionProxy(serviceAddr)
+	var proxy *ReflectionProxy
+	var err error
+
+	// 重试 3 次，每次等待递增时间
+	for i := 0; i < 3; i++ {
+		proxy, err = NewReflectionProxy(serviceAddr)
+		if err == nil {
+			break
+		}
+		// core.D("[Gateway] connectService retry %d/3 for %s at %s: %v", i+1, serviceName, serviceAddr, err)
+		time.Sleep(time.Duration(i+1) * 200 * time.Millisecond)
+	}
 	if err != nil {
+		core.Erro("[Gateway] connectService failed: %v", err)
 		return
 	}
 
@@ -177,6 +192,7 @@ func (gw *EtcdGateway) watchEtcdServices() {
 				if err := json.Unmarshal(ev.Kv.Value, &info); err != nil || info.Addr == "" {
 					continue
 				}
+				core.D("[Gateway] watch: service %s registered at %s", serviceName, info.Addr)
 
 				gw.proxyMu.Lock()
 				if old, ok := gw.proxies[serviceName]; ok {
@@ -188,6 +204,7 @@ func (gw *EtcdGateway) watchEtcdServices() {
 				gw.connectService(serviceName, info.Addr)
 
 			case clientv3.EventTypeDelete:
+				core.D("[Gateway] watch: service %s deleted", serviceName)
 				gw.proxyMu.Lock()
 				if proxy, ok := gw.proxies[serviceName]; ok {
 					proxy.Close()
@@ -225,9 +242,10 @@ func (gw *EtcdGateway) autoRegisterRoutes(serviceName string, proxy *ReflectionP
 		httpMethod, httpPath := grpcToHTTP(desc.Package, desc.Service, desc.Method)
 
 		routeID := fmt.Sprintf("auto-%s-%s", serviceName, strings.TrimPrefix(fullMethod, "/"))
+		routeIDHash := core.SHA256(routeID)
 
-		gw.routes[routeID] = &Route{
-			ID:          routeID,
+		gw.routes[routeIDHash] = &Route{
+			ID:          routeIDHash,
 			Method:      httpMethod,
 			Path:        httpPath,
 			ServiceName: serviceName,
@@ -238,7 +256,7 @@ func (gw *EtcdGateway) autoRegisterRoutes(serviceName string, proxy *ReflectionP
 			UpdatedAt:   time.Now(),
 		}
 
-		gw.registerRoute(gw.routes[routeID])
+		gw.registerRoute(gw.routes[routeIDHash])
 	}
 }
 
@@ -336,6 +354,7 @@ func (gw *EtcdGateway) loadAllRoutes() error {
 
 	resp, err := gw.etcdCli.Get(ctx, gw.prefix, clientv3.WithPrefix())
 	if err != nil {
+		core.Erro("[Gateway] connectService failed: %v", err)
 		return err
 	}
 
@@ -428,6 +447,7 @@ func (gw *EtcdGateway) createProxyHandler(route *Route) core.HandlerFunc {
 	return func(ctx core.Ctx) error {
 		proxy, err := gw.getOrCreateProxy(route.ServiceName)
 		if err != nil {
+			core.Erro("[Gateway] connectService failed: %v", err)
 			return ctx.Status(http.StatusServiceUnavailable).JSON(core.Map{
 				"code":    503,
 				"message": fmt.Sprintf("service %s unavailable", route.ServiceName),
@@ -455,6 +475,7 @@ func (gw *EtcdGateway) createProxyHandler(route *Route) core.HandlerFunc {
 
 		jsonReq, err := sonic.Marshal(reqBody)
 		if err != nil {
+			core.Erro("[Gateway] connectService failed: %v", err)
 			return ctx.Status(http.StatusBadRequest).JSON(core.Map{
 				"code": 400, "message": "invalid request body",
 			})
@@ -474,6 +495,7 @@ func (gw *EtcdGateway) createProxyHandler(route *Route) core.HandlerFunc {
 
 		jsonResp, err := proxy.Invoke(callCtx, route.GRPCMethod, jsonReq)
 		if err != nil {
+			core.Erro("[Gateway] connectService failed: %v", err)
 			return ctx.Status(http.StatusInternalServerError).JSON(core.Map{
 				"code": 500, "message": err.Error(),
 			})
@@ -487,36 +509,54 @@ func (gw *EtcdGateway) createProxyHandler(route *Route) core.HandlerFunc {
 }
 
 func (gw *EtcdGateway) getOrCreateProxy(serviceName string) (*ReflectionProxy, error) {
+	const maxRetries = 3
+	for i := 0; i < maxRetries; i++ {
+		proxy := gw.doGetProxy(serviceName)
+		if proxy != nil {
+			return proxy, nil
+		}
+		gw.removeProxy(serviceName)
+	}
+	return nil, fmt.Errorf("service %s unavailable", serviceName)
+}
+
+func (gw *EtcdGateway) doGetProxy(serviceName string) *ReflectionProxy {
+	// 优先使用缓存，但检查连接状态
 	gw.proxyMu.RLock()
 	proxy, ok := gw.proxies[serviceName]
 	gw.proxyMu.RUnlock()
-	if ok {
-		return proxy, nil
+	if ok && proxy != nil && proxy.conn.GetState() == connectivity.Ready {
+		// core.D("[Gateway] doGetProxy: returning cached proxy for %s, state=%v", serviceName, proxy.conn.GetState())
+		return proxy
 	}
 
-	gw.proxyMu.Lock()
-	defer gw.proxyMu.Unlock()
-
-	if proxy, ok = gw.proxies[serviceName]; ok {
-		return proxy, nil
-	}
-
+	// 连接不健康或缓存为空，从 etcd 拉新地址
 	if gw.app.EtcdDiscovery == nil {
-		return nil, fmt.Errorf("etcd discovery not enabled")
+		return nil
 	}
-
 	services := gw.app.EtcdDiscovery.GetServices(serviceName)
 	if len(services) == 0 {
-		return nil, fmt.Errorf("no instance found for service: %s", serviceName)
+		return nil
 	}
-
 	proxy, err := NewReflectionProxy(services[0].Addr)
 	if err != nil {
-		return nil, err
+		core.Erro("[Gateway] create proxy for %s failed: %v", serviceName, err)
+		return nil
 	}
-
+	// core.D("[Gateway] doGetProxy: created new proxy for %s at %s", serviceName, services[0].Addr)
+	gw.proxyMu.Lock()
 	gw.proxies[serviceName] = proxy
-	return proxy, nil
+	gw.proxyMu.Unlock()
+	return proxy
+}
+
+func (gw *EtcdGateway) removeProxy(serviceName string) {
+	gw.proxyMu.Lock()
+	defer gw.proxyMu.Unlock()
+	if proxy, ok := gw.proxies[serviceName]; ok {
+		proxy.Close()
+		delete(gw.proxies, serviceName)
+	}
 }
 
 // setupAdminAPI 管理 API（仅限本地访问） Added an Admin API, accessible only from local addresses.
@@ -545,7 +585,8 @@ func (gw *EtcdGateway) createRoute(ctx core.Ctx) error {
 		return ctx.Status(400).JSON(core.Map{"code": 400, "message": err.Error()})
 	}
 
-	route.ID = fmt.Sprintf("%d", time.Now().UnixNano())
+	routeID := fmt.Sprintf("auto-%s-%s", route.ServiceName, strings.TrimPrefix(route.GRPCMethod, "/"))
+	route.ID = core.SHA256(routeID)
 	route.CreatedAt = time.Now()
 	route.UpdatedAt = time.Now()
 	route.Enabled = true
