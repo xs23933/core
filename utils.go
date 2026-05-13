@@ -917,6 +917,9 @@ func ExtractClientInfo(ctx context.Context) *ClientInfo {
 		if ua := p.Get("user-agent"); len(ua) > 0 {
 			result.UA = ua[0]
 		}
+		for k, v := range p {
+			fmt.Printf("key: %s, value: %s\n", k, v)
+		}
 	}
 	return result
 }

@@ -30,6 +30,24 @@ type Route struct {
 	UpdatedAt   time.Time         `json:"updated_at"`
 }
 
+// CircuitBreaker 熔断器
+type CircuitBreaker struct {
+	lastFailTime time.Time
+	state        int // 0: closed, 1: open, 2: half-open
+	failCount    int
+}
+
+const (
+	circuitClosed   = 0
+	circuitOpen     = 1
+	circuitHalfOpen = 2
+)
+
+const (
+	circuitFailThreshold = 5                // 连续失败 5 次，熔断
+	circuitCooldown      = 30 * time.Second // 熔断后 30s 尝试恢复
+)
+
 type EtcdGateway struct {
 	app     *core.Core
 	etcdCli *clientv3.Client
@@ -41,8 +59,9 @@ type EtcdGateway struct {
 	watchCtx    context.Context
 	watchCancel context.CancelFunc
 
-	proxies map[string]*ReflectionProxy
-	proxyMu sync.RWMutex
+	proxies       map[string]*ReflectionProxy
+	proxyMu       sync.RWMutex
+	circuitStates sync.Map // map[string]*CircuitBreaker
 }
 
 type Config struct {
@@ -52,7 +71,70 @@ type Config struct {
 	HTTPAddr        string        `yaml:"http_addr"`
 }
 
-func NewEtcdGateway(app *core.Core, config *Config) (*EtcdGateway, error) {
+// circuitBreakerCheck 检查熔断器状态，返回 true 表示可以尝试连接
+func (gw *EtcdGateway) circuitBreakerCheck(serviceName string) bool {
+	val, ok := gw.circuitStates.Load(serviceName)
+	if !ok {
+		return true // 没有记录，可以连接
+	}
+	cb := val.(*CircuitBreaker)
+
+	if cb.state == circuitClosed {
+		return true
+	}
+
+	if cb.state == circuitOpen {
+		// 检查是否可以进入 half-open 状态
+		if time.Since(cb.lastFailTime) > circuitCooldown {
+			cb.state = circuitHalfOpen
+			core.D("[Gateway] circuit breaker for %s entering half-open state", serviceName)
+			return true
+		}
+		return false
+	}
+
+	// half-open 状态，允许一次尝试
+	return true
+}
+
+// circuitBreakerRecordSuccess 记录成功，关闭熔断器
+func (gw *EtcdGateway) circuitBreakerRecordSuccess(serviceName string) {
+	val, ok := gw.circuitStates.Load(serviceName)
+	if !ok {
+		return
+	}
+	cb := val.(*CircuitBreaker)
+	if cb.state == circuitHalfOpen || cb.state == circuitOpen {
+		core.D("[Gateway] circuit breaker for %s closed (recovered)", serviceName)
+	}
+	cb.state = circuitClosed
+	cb.failCount = 0
+}
+
+// circuitBreakerRecordFailure 记录失败，达到阈值则熔断
+func (gw *EtcdGateway) circuitBreakerRecordFailure(serviceName string) {
+	val, _ := gw.circuitStates.LoadOrStore(serviceName, &CircuitBreaker{})
+	cb := val.(*CircuitBreaker)
+
+	cb.failCount++
+	cb.lastFailTime = time.Now()
+
+	if cb.failCount >= circuitFailThreshold && cb.state == circuitClosed {
+		cb.state = circuitOpen
+		core.D("[Gateway] circuit breaker for %s opened (tripped after %d failures)", serviceName, cb.failCount)
+	}
+}
+
+func NewEtcdGateway(app *core.Core, conf ...*Config) (*EtcdGateway, error) {
+	var config *Config
+	if len(conf) > 0 {
+		config = conf[0]
+	}
+	if config == nil {
+		config = &Config{}
+		config.EtcdEndpoints = app.Conf.GetStrings("etcd.endpoints")
+		config.EtcdDialTimeout = time.Duration(app.Conf.GetInt64("etcd.dial_timeout", 5)) * time.Second
+	}
 	if config.RoutePrefix == "" {
 		config.RoutePrefix = "/gateway/routes/"
 	}
@@ -133,7 +215,7 @@ func (gw *EtcdGateway) discoverAndConnectServices() {
 	}
 
 	for serviceName, serviceAddr := range serviceSet {
-		gw.connectService(serviceName, serviceAddr)
+		go gw.connectService(serviceName, serviceAddr)
 	}
 
 	gw.app.ErrGroup().Go(func() error {
@@ -153,13 +235,16 @@ func (gw *EtcdGateway) connectService(serviceName, serviceAddr string) {
 		if err == nil {
 			break
 		}
-		// core.D("[Gateway] connectService retry %d/3 for %s at %s: %v", i+1, serviceName, serviceAddr, err)
+		core.D("[Gateway] connectService retry %d/3 for %s at %s: %v", i+1, serviceName, serviceAddr, err)
 		time.Sleep(time.Duration(i+1) * 200 * time.Millisecond)
 	}
 	if err != nil {
 		core.Erro("[Gateway] connectService failed: %v", err)
+		gw.circuitBreakerRecordFailure(serviceName)
 		return
 	}
+
+	gw.circuitBreakerRecordSuccess(serviceName)
 
 	gw.proxyMu.Lock()
 	gw.proxies[serviceName] = proxy
@@ -202,7 +287,9 @@ func (gw *EtcdGateway) watchEtcdServices() {
 				}
 				gw.proxyMu.Unlock()
 
-				gw.connectService(serviceName, info.Addr)
+				go func(sn, addr string) {
+					gw.connectService(sn, addr)
+				}(serviceName, info.Addr)
 
 			case clientv3.EventTypeDelete:
 				core.D("[Gateway] watch: service %s deleted", serviceName)
@@ -465,6 +552,7 @@ func (gw *EtcdGateway) createProxyHandler(route *Route) core.HandlerFunc {
 				reqBody[k] = v[0]
 			}
 		}
+		maps.Copy(reqBody, ctx.Vars())
 		if ctx.Method() != "GET" {
 			var bodyMap core.Map
 			if err := ctx.Bind(&bodyMap); err == nil {
@@ -497,11 +585,11 @@ func (gw *EtcdGateway) createProxyHandler(route *Route) core.HandlerFunc {
 			return ctx.ToJSONCode(nil, err)
 		}
 
-		core.Info("[Gateway] received response: %s", string(jsonResp))
-		var result any
-		sonic.Unmarshal(jsonResp, &result)
+		// core.Info("[Gateway] received response: %s", string(jsonResp))
+		// var result any
+		// sonic.Unmarshal(jsonResp, &result)
 
-		return ctx.JSON(result)
+		return ctx.Type("json").Send(jsonResp)
 	}
 }
 
@@ -523,8 +611,14 @@ func (gw *EtcdGateway) doGetProxy(serviceName string) *ReflectionProxy {
 	proxy, ok := gw.proxies[serviceName]
 	gw.proxyMu.RUnlock()
 	if ok && proxy != nil && proxy.conn.GetState() == connectivity.Ready {
-		// core.D("[Gateway] doGetProxy: returning cached proxy for %s, state=%v", serviceName, proxy.conn.GetState())
+		gw.circuitBreakerRecordSuccess(serviceName) // 成功重置熔断
 		return proxy
+	}
+
+	// 检查熔断器
+	if !gw.circuitBreakerCheck(serviceName) {
+		core.D("[Gateway] doGetProxy: %s circuit open, fast fail", serviceName)
+		return nil
 	}
 
 	// 连接不健康或缓存为空，从 etcd 拉新地址
@@ -538,9 +632,11 @@ func (gw *EtcdGateway) doGetProxy(serviceName string) *ReflectionProxy {
 	proxy, err := NewReflectionProxy(services[0].Addr)
 	if err != nil {
 		core.Erro("[Gateway] create proxy for %s failed: %v", serviceName, err)
+		gw.circuitBreakerRecordFailure(serviceName)
 		return nil
 	}
-	// core.D("[Gateway] doGetProxy: created new proxy for %s at %s", serviceName, services[0].Addr)
+	gw.circuitBreakerRecordSuccess(serviceName)
+	core.D("[Gateway] doGetProxy: created new proxy for %s at %s", serviceName, services[0].Addr)
 	gw.proxyMu.Lock()
 	gw.proxies[serviceName] = proxy
 	gw.proxyMu.Unlock()
