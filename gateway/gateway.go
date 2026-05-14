@@ -315,7 +315,7 @@ func (gw *EtcdGateway) discoverAndConnectServices() {
 				for _, i := range insts {
 					proxy, _, err := pool.AddOrUpdateInstance(i.id, i.addr)
 					if err != nil {
-						core.Erro("[Gateway] connect instance %s/%s at %s failed: %v", sn, i.id, i.addr, err)
+						core.D("[Gateway] connect instance %s/%s at %s failed: %v", sn, i.id, i.addr, err)
 						continue
 					}
 					if healthyProxy == nil {
@@ -360,7 +360,7 @@ func (gw *EtcdGateway) connectInstance(serviceName, instanceID, addr string) {
 	}
 
 	if err != nil {
-		core.Erro("[Gateway] connect instance %s/%s at %s failed: %v", serviceName, instanceID, addr, err)
+		core.D("[Gateway] connect instance %s/%s at %s failed: %v", serviceName, instanceID, addr, err)
 		gw.circuitBreakerRecordFailure(serviceName)
 		return
 	}
