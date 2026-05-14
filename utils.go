@@ -22,8 +22,10 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
 	"github.com/xs23933/uid"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/peer"
+	"google.golang.org/grpc/status"
 )
 
 func IsNumeric(s string) bool {
@@ -101,12 +103,6 @@ func Delete[S ~[]E, E any](s S, i, j int) S {
 	return append(s[:i], s[j:]...)
 }
 
-// Error represents an error that occurred while handling a request.
-type Error struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
-}
-
 type Errors interface {
 	Error() string
 	Errors() (int, string)
@@ -117,27 +113,40 @@ func IsErrors(v any) bool {
 	return ok
 }
 
-// NewError creates a new Error instance with an optional message
-func NewError(code int, args ...any) *Error {
-	err := &Error{
-		Code:    code,
-		Message: StatusMessage(code),
-	}
+type Error struct {
+	status *status.Status
+}
+
+func NewError(code int, args ...any) error {
+	msg := StatusMessage(code)
 	if len(args) > 1 {
-		err.Message = fmt.Sprintf(args[0].(string), args[1:]...)
+		msg = fmt.Sprintf(args[0].(string), args[1:]...)
 	} else if len(args) == 1 {
-		err.Message = args[0].(string)
+		msg = args[0].(string)
 	}
-	return err
+
+	return &Error{
+		status: status.New(codes.Code(code), msg),
+	}
 }
 
-func (e *Error) Errors() (int, string) {
-	return e.Code, e.Message
-}
-
-// Error makes it compatible with the `error` interface.
+// Error 实现 error 接口
 func (e *Error) Error() string {
-	return e.Message
+	return e.status.Message()
+}
+
+// GRPCStatus 实现 gRPC 状态接口，让 status.FromError 能正常工作
+func (e *Error) GRPCStatus() *status.Status {
+	return e.status
+}
+
+// Errors 实现自定义接口，返回业务错误码和消息
+func (e *Error) Errors() (int, string) {
+	return int(e.status.Code()), e.status.Message()
+}
+
+func (e *Error) Unwrap() error {
+	return e.status.Err()
 }
 
 func getGroupPath(prefix, path string) string {

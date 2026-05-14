@@ -2,6 +2,7 @@
 package core
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -10,7 +11,9 @@ import (
 	"github.com/xs23933/core/v3/etcd"
 	"github.com/xs23933/core/v3/reuseport"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/reflection"
+	"google.golang.org/grpc/status"
 )
 
 // EnableGRPC 启用 gRPC 支持
@@ -28,7 +31,7 @@ func (app *Core) EnableGRPC(addr ...string) *Core {
 // GetGRPCServer 获取 gRPC 服务器实例（用于注册服务）
 func (app *Core) GetGRPCServer() *grpc.Server {
 	if app.grpcServer == nil {
-		app.grpcServer = grpc.NewServer()
+		app.grpcServer = grpc.NewServer(grpc.UnaryInterceptor(errorWrapInterceptor))
 		app.grpcEnabled = true
 	}
 	if app.grpcAddr == "" {
@@ -88,6 +91,17 @@ func (app *Core) setupSharedHandler() {
 	})
 }
 
+// errorWrapInterceptor 将非 status.Error 的 error 自动包装为 codes.Internal
+func errorWrapInterceptor(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+	resp, err := handler(ctx, req)
+	if err != nil {
+		if _, ok := status.FromError(err); !ok {
+			err = status.Error(codes.Internal, err.Error())
+		}
+	}
+	return resp, err
+}
+
 // shutdownGRPC 优雅关闭 gRPC 服务器
 func (app *Core) shutdownGRPC() {
 	if app.grpcServer != nil {
@@ -138,7 +152,7 @@ func (app *Core) EnableEtcdRegistry(opts *etcd.Options) error {
 		registry.Deregister()
 	})
 	if app.grpcServer == nil {
-		app.grpcServer = grpc.NewServer()
+		app.grpcServer = grpc.NewServer(grpc.UnaryInterceptor(errorWrapInterceptor))
 		app.grpcEnabled = true
 	}
 	if app.grpcAddr == "" {

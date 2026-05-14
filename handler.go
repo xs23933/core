@@ -17,7 +17,7 @@ func DefaultErrorHandler(c Ctx, err error) error {
 	code := StatusInternalServerError
 	var e *Error
 	if errors.As(err, &e) {
-		code = e.Code
+		code = int(e.status.Code())
 	}
 	c.SetHeader(HeaderContentType, MIMETextPlainCharsetUTF8)
 	return c.SendStatus(code, err.Error())

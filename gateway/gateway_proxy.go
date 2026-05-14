@@ -185,7 +185,7 @@ func (p *ReflectionProxy) Invoke(ctx context.Context, fullMethod string, jsonReq
 // Methods 返回所有已注册的方法
 func (p *ReflectionProxy) Methods() map[string]*MethodDescriptor {
 	result := make(map[string]*MethodDescriptor)
-	p.methodCache.Range(func(key, value interface{}) bool {
+	p.methodCache.Range(func(key, value any) bool {
 		result[key.(string)] = value.(*MethodDescriptor)
 		return true
 	})

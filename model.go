@@ -336,7 +336,7 @@ func (UUID) GormDBDataType(db *gorm.DB, field *schema.Field) string {
 type JSON json.RawMessage
 
 // Scan scan value into Jsonb, implements sql.Scanner interface
-func (j *JSON) Scan(value interface{}) error {
+func (j *JSON) Scan(value any) error {
 	if value == nil {
 		*j = JSON("null")
 		return nil
@@ -1024,7 +1024,7 @@ func (d Date) Value() (driver.Value, error) {
 	return d.Format("2006-01-02T15:04:05"), nil
 }
 
-func (d *Date) Scan(value interface{}) error {
+func (d *Date) Scan(value any) error {
 	switch t := value.(type) {
 	case string:
 		t2, _ := time.Parse("2006-01-02", t)

@@ -3,7 +3,6 @@ package gateway
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"maps"
 	"net/http"
@@ -15,7 +14,9 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/xs23933/core/v3"
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
 
 type Route struct {
@@ -132,6 +133,64 @@ func (gw *EtcdGateway) circuitBreakerRecordFailure(serviceName string) {
 		cb.state = circuitOpen
 		core.D("[Gateway] circuit breaker for %s opened (tripped after %d failures)", serviceName, cb.failCount)
 	}
+}
+
+// grpcStatusToHTTP 将 gRPC status code 映射为 HTTP 状态码
+//
+// 如果错误码大于999，则返回200状态码 由客户端判断code 信息处理错误
+func grpcStatusToHTTP(err error) int {
+	st, ok := status.FromError(err)
+	if !ok {
+		return core.StatusInternalServerError
+	}
+
+	if st.Code() > 999 {
+		return core.StatusOK
+	}
+
+	switch st.Code() {
+	case codes.InvalidArgument:
+		return core.StatusBadRequest
+	case codes.NotFound:
+		return core.StatusNotFound
+	case codes.AlreadyExists:
+		return core.StatusConflict
+	case codes.PermissionDenied:
+		return core.StatusForbidden
+	case codes.Unauthenticated:
+		return core.StatusUnauthorized
+	case codes.ResourceExhausted:
+		return core.StatusTooManyRequests
+	case codes.Unavailable:
+		return core.StatusServiceUnavailable
+	case codes.DeadlineExceeded:
+		return core.StatusGatewayTimeout
+	case codes.Canceled:
+		return 499 // client disconnected
+	default:
+		return core.StatusInternalServerError
+	}
+}
+
+// grpcErrorToResponse 将 gRPC 错误转为前端友好的 JSON 响应
+func grpcErrorToResponse(err error) core.Map {
+	st, ok := status.FromError(err)
+	if !ok {
+		return core.Map{"code": 500, "msg": "internal server error"}
+	}
+
+	code := int(st.Code())
+	msg := st.Message()
+
+	// 特殊处理：隐藏内部错误细节
+	switch st.Code() {
+	case codes.Internal:
+		msg = "internal server error"
+	case codes.Unavailable:
+		msg = "service unavailable"
+	}
+
+	return core.Map{"code": code, "msg": msg}
 }
 
 func NewEtcdGateway(app *core.Core, conf ...*Config) (*EtcdGateway, error) {
@@ -626,16 +685,7 @@ func (gw *EtcdGateway) createProxyHandler(route *Route) core.HandlerFunc {
 
 		jsonResp, err := proxy.Invoke(callCtx, route.GRPCMethod, jsonReq)
 		if err != nil {
-			if gw.app.Debug {
-				return ctx.Status(core.StatusServiceUnavailable).ToJSONCode(nil, err)
-			}
-			if strings.Contains(err.Error(), "code = Unavailable") {
-				return ctx.Status(core.StatusServiceUnavailable).ToJSONCode(nil, core.NewError(503, "service %s unavailable", route.ServiceName))
-			}
-			if errors.Is(err, core.ErrNotFound) {
-				return ctx.SendStatus(core.ErrNotFound.Code, core.ErrNotFound.Message)
-			}
-			return ctx.Status(core.StatusServiceUnavailable).ToJSONCode(nil, err)
+			return ctx.Status(grpcStatusToHTTP(err)).JSON(grpcErrorToResponse(err))
 		}
 		return ctx.Type("json").Send(jsonResp)
 	}

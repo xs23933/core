@@ -43,7 +43,7 @@ func Logger(conf ...LoggerConfig) HandlerFunc {
 				code := StatusInternalServerError
 				var e *Error
 				if errors.As(err, &e) {
-					code = e.Code
+					code = int(e.status.Code())
 				}
 				requestLog(debug, code, c.Method(), c.Path(), time.Since(st).String())
 				c.SetHeader(HeaderContentType, MIMETextPlainCharsetUTF8)
@@ -172,17 +172,14 @@ const (
 	green   = "\033[97;32m"
 	yellow  = "\033[90;43m"
 	red     = "\033[97;41m"
-	blue    = "\033[0;35m"
 	magenta = "\033[97;45m"
-	cyan    = "\033[97;41m"
 	reset   = "\033[0m"
 	gray    = "\033[0;90m"
 
-	info = "[INFO]"
-	dbug = "[DBUG]"
-	trac = "[TRAC]"
-	erro = "[ERRO]"
-	warn = "[WARN]"
+	info = "[I]"
+	dbug = "[D]"
+	erro = "[E]"
+	warn = "[W]"
 )
 
 // timeFormat returns a customized time string for logger.

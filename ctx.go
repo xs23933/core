@@ -1354,8 +1354,8 @@ func (c *BaseCtx) ToJSON(data any, msg ...any) error {
 			dat[c.respJsonKeys.Status] = false
 			dat[c.respJsonKeys.Message] = d.Error()
 		case Error:
-			dat[c.respJsonKeys.Status] = d.Code
-			dat[c.respJsonKeys.Message] = d.Message
+			dat[c.respJsonKeys.Status] = int(d.status.Code())
+			dat[c.respJsonKeys.Message] = d.status.Message()
 		}
 	}
 	return c.JSON(dat)
