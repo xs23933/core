@@ -3,9 +3,7 @@ package core
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"database/sql/driver"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -106,6 +104,7 @@ func Delete[S ~[]E, E any](s S, i, j int) S {
 type Errors interface {
 	Error() string
 	Errors() (int, string)
+	Code() int
 }
 
 func IsErrors(v any) bool {
@@ -117,7 +116,7 @@ type Error struct {
 	status *status.Status
 }
 
-func NewError(code int, args ...any) error {
+func NewError(code int, args ...any) *Error {
 	msg := StatusMessage(code)
 	if len(args) > 1 {
 		msg = fmt.Sprintf(args[0].(string), args[1:]...)
@@ -133,6 +132,11 @@ func NewError(code int, args ...any) error {
 // Error 实现 error 接口
 func (e *Error) Error() string {
 	return e.status.Message()
+}
+
+// Code 实现 自定义接口，返回业务错误码
+func (e *Error) Code() int {
+	return int(e.status.Code())
 }
 
 // GRPCStatus 实现 gRPC 状态接口，让 status.FromError 能正常工作
@@ -940,6 +944,5 @@ func GrpcHeader(ctx context.Context, key string) string {
 }
 
 func SHA256(s string) string {
-	sum := sha256.Sum256([]byte(s))
-	return hex.EncodeToString(sum[:])
+	return SHA256Hash(s)
 }
