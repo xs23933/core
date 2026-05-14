@@ -142,6 +142,8 @@ func (app *Core) EnableEtcdRegistry(opts *etcd.Options) error {
 		return err
 	}
 
+	app.EnableEtcdDiscovery(nil)
+
 	app.etcdRegistry = registry
 
 	if err := registry.Register(); err != nil {

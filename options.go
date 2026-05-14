@@ -2,7 +2,6 @@ package core
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"reflect"
 	"strconv"
@@ -217,23 +216,102 @@ func LoadConfigFile(file string, opts ...Options) Options {
 	if len(opts) > 0 {
 		conf = opts[0]
 	}
-	buf, err := os.ReadFile(file)
-	if err != nil {
-		conf["debug"] = true
-		conf["network"] = "tcp4"
-		conf["listen"] = 8080
-		conf["static"] = Map{
-			"static": "./static",
-		}
-		conf["restful"] = defaultRestful
-		conf["colorful"] = true
 
-		yml, _ := yaml.Marshal(conf)
-		os.WriteFile(file, yml, 0644)
-	} else if err = yaml.Unmarshal(buf, &conf); err != nil {
-		log.Println(err.Error())
+	if strings.HasSuffix(file, ".dat") {
+		return loadEncryptedConfig(file, conf)
 	}
-	confFile = file
+
+	return loadYamlConfig(file, conf)
+}
+
+func loadEncryptedConfig(datFile string, defaultConf Options) Options {
+	yamlFile, _ := strings.CutSuffix(datFile, ".dat")
+	yamlFile += ".yaml"
+
+	if yamlBuf, err := os.ReadFile(yamlFile); err == nil {
+		D("Update config(%s) from %s", datFile, yamlFile)
+		if encryptedBuf, err := EncryptAESBytes(yamlBuf); err == nil {
+			if err := os.WriteFile(datFile, encryptedBuf, 0644); err != nil {
+				Erro("Write %s failed: %v", datFile, err)
+			}
+		} else {
+			Erro("Encrypt %s failed: %v", datFile, err)
+		}
+
+		// 解析 yaml
+		var conf Options
+		if err := yaml.Unmarshal(yamlBuf, &conf); err != nil {
+			return defaultConf
+		}
+		confFile = datFile
+		return conf
+	}
+
+	encryptedBuf, err := os.ReadFile(datFile)
+	if err != nil {
+		return createDefaultConfig(yamlFile, datFile)
+	}
+
+	decryptedBuf, err := DecryptAESBytes(encryptedBuf)
+	if err != nil {
+		// 解密失败，重新创建配置
+		return createDefaultConfig(yamlFile, datFile)
+	}
+
+	var conf Options
+	if err := yaml.Unmarshal(decryptedBuf, &conf); err != nil {
+		return defaultConf
+	}
+
+	confFile = datFile
+	return conf
+}
+
+func loadYamlConfig(yamlFile string, defaultConf Options) Options {
+	buf, err := os.ReadFile(yamlFile)
+	if err != nil {
+		return createDefaultConfig(yamlFile, "")
+	}
+
+	var conf Options
+	if err := yaml.Unmarshal(buf, &conf); err != nil {
+		return defaultConf
+	}
+
+	confFile = yamlFile
+	return conf
+}
+
+func createDefaultConfig(yamlFile, datFile string) Options {
+	conf := make(Options)
+	conf["debug"] = true
+	conf["network"] = "tcp4"
+	conf["listen"] = 8080
+	conf["static"] = Map{
+		"static": "./static",
+	}
+	conf["restful"] = defaultRestful
+	conf["colorful"] = true
+
+	yml, _ := yaml.Marshal(conf)
+
+	// 写入 yaml 文件（明文）
+	if yamlFile != "" {
+		if err := os.WriteFile(yamlFile, yml, 0644); err != nil {
+			Erro("write %s failed: %v", yamlFile, err)
+		}
+		confFile = yamlFile
+	}
+
+	// 写入 dat 文件（加密）
+	if datFile != "" {
+		encryptedBuf, _ := EncryptAESBytes(yml)
+		if err := os.WriteFile(datFile, encryptedBuf, 0644); err != nil {
+			Erro("write %s failed: %v", datFile, err)
+		}
+		confFile = datFile
+	}
+
 	return conf
 }
 
@@ -241,6 +319,12 @@ func SaveConfigFile(conf map[string]any) error {
 	yml, err := yaml.Marshal(conf)
 	if err != nil {
 		return err
+	}
+	if strings.HasSuffix(confFile, ".dat") {
+		yml, err = EncryptAESBytes(yml)
+		if err != nil {
+			return err
+		}
 	}
 	return os.WriteFile(confFile, yml, 0644)
 }
