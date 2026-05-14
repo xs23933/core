@@ -49,7 +49,14 @@ const (
 	circuitCooldown      = 30 * time.Second // 熔断后 30s 尝试恢复
 )
 
-// ConnectionPool 连接池管理器
+// serviceInstance 用于解析 etcd 中注册的服务实例信息
+type serviceInstance struct {
+	Addr    string `json:"addr"`
+	ID      string `json:"id"`
+	Version string `json:"version,omitempty"`
+}
+
+// EtcdGateway etcd 网关
 type EtcdGateway struct {
 	app     *core.Core
 	etcdCli *clientv3.Client
@@ -58,13 +65,12 @@ type EtcdGateway struct {
 
 	mu     sync.RWMutex
 	routes map[string]*Route
+	// grpcServiceRoutes 按 gRPC 服务名索引路由，用于清理已删除方法的旧路由
+	grpcServiceRoutes map[string]map[string]bool
 
 	watchCtx    context.Context
 	watchCancel context.CancelFunc
 
-	// proxies 保留用于兼容，仍可按需使用
-	proxies       map[string]*ReflectionProxy
-	proxyMu       sync.RWMutex
 	circuitStates sync.Map // map[string]*CircuitBreaker
 
 	// 连接池
@@ -76,14 +82,13 @@ type Config struct {
 	EtcdDialTimeout time.Duration `yaml:"etcd_dial_timeout"`
 	RoutePrefix     string        `yaml:"route_prefix"`
 	HTTPAddr        string        `yaml:"http_addr"`
-	PoolSize        int           `yaml:"pool_size"` // 每个服务的连接数，默认 3
 }
 
 // circuitBreakerCheck 检查熔断器状态，返回 true 表示可以尝试连接
 func (gw *EtcdGateway) circuitBreakerCheck(serviceName string) bool {
 	val, ok := gw.circuitStates.Load(serviceName)
 	if !ok {
-		return true // 没有记录，可以连接
+		return true
 	}
 	cb := val.(*CircuitBreaker)
 
@@ -92,7 +97,6 @@ func (gw *EtcdGateway) circuitBreakerCheck(serviceName string) bool {
 	}
 
 	if cb.state == circuitOpen {
-		// 检查是否可以进入 half-open 状态
 		if time.Since(cb.lastFailTime) > circuitCooldown {
 			cb.state = circuitHalfOpen
 			core.D("[Gateway] circuit breaker for %s entering half-open state", serviceName)
@@ -101,11 +105,9 @@ func (gw *EtcdGateway) circuitBreakerCheck(serviceName string) bool {
 		return false
 	}
 
-	// half-open 状态，允许一次尝试
 	return true
 }
 
-// circuitBreakerRecordSuccess 记录成功，关闭熔断器
 func (gw *EtcdGateway) circuitBreakerRecordSuccess(serviceName string) {
 	val, ok := gw.circuitStates.Load(serviceName)
 	if !ok {
@@ -119,7 +121,6 @@ func (gw *EtcdGateway) circuitBreakerRecordSuccess(serviceName string) {
 	cb.failCount = 0
 }
 
-// circuitBreakerRecordFailure 记录失败，达到阈值则熔断
 func (gw *EtcdGateway) circuitBreakerRecordFailure(serviceName string) {
 	val, _ := gw.circuitStates.LoadOrStore(serviceName, &CircuitBreaker{})
 	cb := val.(*CircuitBreaker)
@@ -142,7 +143,6 @@ func NewEtcdGateway(app *core.Core, conf ...*Config) (*EtcdGateway, error) {
 		config = &Config{}
 		config.EtcdEndpoints = app.Conf.GetStrings("etcd.endpoints")
 		config.EtcdDialTimeout = time.Duration(app.Conf.GetInt64("etcd.dial_timeout", 5)) * time.Second
-		config.PoolSize = app.Conf.GetInt("etcd.pool_size", 0)
 	}
 	if config.RoutePrefix == "" {
 		config.RoutePrefix = "/gateway/routes/"
@@ -156,22 +156,21 @@ func NewEtcdGateway(app *core.Core, conf ...*Config) (*EtcdGateway, error) {
 		DialTimeout: config.EtcdDialTimeout,
 	})
 	if err != nil {
-		core.Erro("[Gateway] connectService failed: %v", err)
-		return nil, fmt.Errorf("created etcd client failed: %w", err)
+		return nil, fmt.Errorf("create etcd client failed: %w", err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 
 	gw := &EtcdGateway{
-		app:         app,
-		etcdCli:     cli,
-		prefix:      config.RoutePrefix,
-		config:      config,
-		routes:      make(map[string]*Route),
-		watchCtx:    ctx,
-		watchCancel: cancel,
-		proxies:     make(map[string]*ReflectionProxy),
-		connPool:    NewConnectionPool(),
+		app:               app,
+		etcdCli:           cli,
+		prefix:            config.RoutePrefix,
+		config:            config,
+		routes:            make(map[string]*Route),
+		grpcServiceRoutes: make(map[string]map[string]bool),
+		watchCtx:          ctx,
+		watchCancel:       cancel,
+		connPool:          NewConnectionPool(),
 	}
 
 	if err := gw.loadAllRoutes(); err != nil {
@@ -193,6 +192,30 @@ func NewEtcdGateway(app *core.Core, conf ...*Config) (*EtcdGateway, error) {
 	return gw, nil
 }
 
+// parseServiceKey 解析 etcd key，提取 serviceName 和 instanceID
+// key 格式: /services/{serviceName}/{instanceID}
+func parseServiceKey(key string) (serviceName, instanceID string, ok bool) {
+	parts := strings.Split(key, "/")
+	// /services/auth-service/auth-service-1 -> ["", "services", "auth-service", "auth-service-1"]
+	if len(parts) < 4 {
+		return "", "", false
+	}
+	return parts[2], parts[3], true
+}
+
+// parseServiceInstance 从 etcd value 解析服务实例信息
+func parseServiceInstance(data []byte) (*serviceInstance, error) {
+	var info serviceInstance
+	if err := json.Unmarshal(data, &info); err != nil {
+		return nil, err
+	}
+	if info.Addr == "" {
+		return nil, fmt.Errorf("empty addr")
+	}
+	// 如果 value 中没有 ID，从 key 中提取
+	return &info, nil
+}
+
 // discoverAndConnectServices 启动时发现并连接所有服务
 func (gw *EtcdGateway) discoverAndConnectServices() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -200,33 +223,52 @@ func (gw *EtcdGateway) discoverAndConnectServices() {
 
 	resp, err := gw.etcdCli.Get(ctx, "/services/", clientv3.WithPrefix())
 	if err != nil {
-		core.Erro("[Gateway] connectService failed: %v", err)
+		core.Erro("[Gateway] discover services failed: %v", err)
 		return
 	}
 
-	serviceSet := make(map[string]string, len(resp.Kvs))
+	// 按 serviceName 分组实例
+	type inst struct{ id, addr string }
+	serviceInstances := make(map[string][]inst)
+
 	for _, kv := range resp.Kvs {
-		key := string(kv.Key)
-		parts := strings.Split(key, "/")
-		if len(parts) < 3 {
+		serviceName, instanceID, ok := parseServiceKey(string(kv.Key))
+		if !ok {
 			continue
 		}
-		serviceName := parts[2]
-		var info struct {
-			Addr string `json:"addr"`
+		info, err := parseServiceInstance(kv.Value)
+		if err != nil {
+			continue
 		}
-		if err := json.Unmarshal(kv.Value, &info); err == nil && info.Addr != "" {
-			serviceSet[serviceName] = info.Addr
+		if info.ID == "" {
+			info.ID = instanceID
 		}
+		serviceInstances[serviceName] = append(serviceInstances[serviceName], inst{id: info.ID, addr: info.Addr})
 	}
 
-	if len(serviceSet) == 0 {
+	if len(serviceInstances) == 0 {
 		core.D("[Gateway] etcd has no services")
-		return
-	}
-
-	for serviceName, serviceAddr := range serviceSet {
-		go gw.connectService(serviceName, serviceAddr)
+	} else {
+		for serviceName, instances := range serviceInstances {
+			go func(sn string, insts []inst) {
+				pool := gw.connPool.GetOrCreate(gw.app, sn)
+				var healthyProxy *ReflectionProxy
+				for _, i := range insts {
+					proxy, _, err := pool.AddOrUpdateInstance(i.id, i.addr)
+					if err != nil {
+						core.Erro("[Gateway] connect instance %s/%s at %s failed: %v", sn, i.id, i.addr, err)
+						continue
+					}
+					if healthyProxy == nil {
+						healthyProxy = proxy
+					}
+				}
+				if healthyProxy != nil {
+					gw.autoRegisterRoutes(sn, healthyProxy)
+					core.D("[Gateway] ✅ service %s connected (instances: %d)", sn, pool.Size())
+				}
+			}(serviceName, instances)
+		}
 	}
 
 	gw.app.ErrGroup().Go(func() error {
@@ -235,60 +277,58 @@ func (gw *EtcdGateway) discoverAndConnectServices() {
 	})
 }
 
-// connectService 连接服务并自动注册路由（支持连接池、重试和熔断）
-func (gw *EtcdGateway) connectService(serviceName, serviceAddr string) {
-	core.D("[Gateway] connectService: %s @ %s", serviceName, serviceAddr)
-
-	// 收集所有可用地址
-	addrs := []string{serviceAddr}
-	if gw.app.EtcdDiscovery != nil {
-		if services := gw.app.EtcdDiscovery.GetServices(serviceName); len(services) > 0 {
-			addrs = make([]string, 0, len(services))
-			for _, s := range services {
-				addrs = append(addrs, s.Addr)
-			}
-		}
+// connectInstance 连接单个服务实例（watch PUT 触发），带重试
+func (gw *EtcdGateway) connectInstance(serviceName, instanceID, addr string) {
+	if !gw.circuitBreakerCheck(serviceName) {
+		return
 	}
 
-	core.D("[Gateway] connectService: addrs=%v", addrs)
+	pool := gw.connPool.GetOrCreate(gw.app, serviceName)
 
-	// poolSize 默认 3
-	poolSize := gw.config.PoolSize
-	if poolSize <= 0 {
-		poolSize = 3
-	}
+	// 尝试连接，带重试（服务可能 etcd 注册了但 gRPC 还没启动）
+	var proxy *ReflectionProxy
+	var changed bool
+	var err error
 
-	// 重试 3 次，每次间隔 500ms
-	var pool *ServicePool
-	for i := range 3 {
-		if i > 0 {
-			time.Sleep(time.Duration(200*(i+1)) * time.Millisecond)
-			core.D("[Gateway] connectService: retry %d for %s", i+1, serviceName)
+	for attempt := range 3 {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt*200) * time.Millisecond)
 		}
-
-		pool = gw.connPool.GetOrCreate(gw.app, serviceName, addrs, poolSize)
-		if pool != nil {
+		proxy, changed, err = pool.AddOrUpdateInstance(instanceID, addr)
+		if err == nil {
 			break
 		}
 	}
 
-	if pool == nil {
-		core.Erro("[Gateway] connectService: failed after 3 retries for %s, addrs=%v", serviceName, addrs)
+	if err != nil {
+		core.Erro("[Gateway] connect instance %s/%s at %s failed: %v", serviceName, instanceID, addr, err)
 		gw.circuitBreakerRecordFailure(serviceName)
 		return
 	}
 
 	gw.circuitBreakerRecordSuccess(serviceName)
 
-	// 使用连接池的 proxy 获取一个连接用于注册路由
-	proxy := pool.Get()
-	if proxy == nil {
+	if changed {
+		core.D("[Gateway] ✅ instance %s/%s connected at %s", serviceName, instanceID, addr)
+		gw.autoRegisterRoutes(serviceName, proxy)
+	}
+}
+
+// removeInstance 移除单个服务实例（watch DELETE 触发）
+func (gw *EtcdGateway) removeInstance(serviceName, instanceID string) {
+	pool := gw.connPool.Get(serviceName)
+	if pool == nil {
 		return
 	}
 
-	gw.autoRegisterRoutes(serviceName, proxy)
+	pool.RemoveInstance(instanceID)
+	core.D("[Gateway] instance %s/%s removed", serviceName, instanceID)
 
-	core.D("[Gateway] ✅ service %s connected (pool size: %d)", serviceName, pool.Size())
+	// 如果没有实例了，移除整个池
+	if pool.Size() == 0 {
+		gw.connPool.Remove(serviceName)
+		core.D("[Gateway] service %s fully disconnected", serviceName)
+	}
 }
 
 // watchEtcdServices 监听 etcd 中的服务变化
@@ -298,68 +338,56 @@ func (gw *EtcdGateway) watchEtcdServices() {
 	for resp := range watchChan {
 		for _, ev := range resp.Events {
 			key := string(ev.Kv.Key)
-			parts := strings.Split(key, "/")
-			if len(parts) < 3 {
+			serviceName, instanceID, ok := parseServiceKey(key)
+			if !ok {
 				continue
 			}
-			serviceName := parts[2]
 
 			switch ev.Type {
 			case clientv3.EventTypePut:
-				var info struct {
-					Addr string `json:"addr"`
-				}
-				if err := json.Unmarshal(ev.Kv.Value, &info); err != nil || info.Addr == "" {
+				info, err := parseServiceInstance(ev.Kv.Value)
+				if err != nil {
 					continue
 				}
-				core.D("[Gateway] watch: service %s registered at %s", serviceName, info.Addr)
-
-				gw.proxyMu.Lock()
-				if old, ok := gw.proxies[serviceName]; ok {
-					old.Close()
-					delete(gw.proxies, serviceName)
+				if info.ID == "" {
+					info.ID = instanceID
 				}
-				gw.proxyMu.Unlock()
+				// core.D("[Gateway] watch: %s/%s registered at %s", serviceName, info.ID, info.Addr)
 
-				// 销毁旧连接池，强制创建新连接（reflection 缓存可能过期）
-				gw.connPool.Remove(serviceName)
-
-				go func(sn, addr string) {
-					gw.connectService(sn, addr)
-				}(serviceName, info.Addr)
+				go gw.connectInstance(serviceName, info.ID, info.Addr)
 
 			case clientv3.EventTypeDelete:
-				core.D("[Gateway] watch: service %s deleted", serviceName)
-				gw.proxyMu.Lock()
-				if proxy, ok := gw.proxies[serviceName]; ok {
-					proxy.Close()
-					delete(gw.proxies, serviceName)
-				}
-				gw.proxyMu.Unlock()
-
-				core.D("[Gateway] service %s disconnected", serviceName)
+				core.D("[Gateway] watch: %s/%s deregistered", serviceName, instanceID)
+				go gw.removeInstance(serviceName, instanceID)
 			}
 		}
 	}
 }
 
-// autoRegisterRoutes 自动为 gRPC 方法注册 HTTP 路由
+// autoRegisterRoutes 自动为 gRPC 方法注册 HTTP 路由，同时清理已删除方法的旧路由
 func (gw *EtcdGateway) autoRegisterRoutes(serviceName string, proxy *ReflectionProxy) {
 	methods := proxy.Methods()
 
 	gw.mu.Lock()
 	defer gw.mu.Unlock()
 
+	// 收集本次注册的所有 routeHash，按 gRPC 服务名分组
+	newHashesByService := make(map[string]map[string]bool)
+
 	for fullMethod, desc := range methods {
 		httpMethod, httpPath := grpcToHTTP(desc.Package, desc.Service, desc.Method)
 
-		// 用 gRPC 服务名做路由分组，而非 etcd 服务名
 		serviceParts := strings.Split(desc.Service, ".")
 		shortService := serviceParts[len(serviceParts)-1]
 		grpcServiceName := strings.ToLower(strings.TrimSuffix(shortService, "Service"))
 
 		routeID := fmt.Sprintf("auto-%s-%s", grpcServiceName, strings.TrimPrefix(fullMethod, "/"))
 		routeIDHash := core.SHA256(routeID)
+
+		if newHashesByService[grpcServiceName] == nil {
+			newHashesByService[grpcServiceName] = make(map[string]bool)
+		}
+		newHashesByService[grpcServiceName][routeIDHash] = true
 
 		// 先注销旧路由再注册（避免重复）
 		if old, exists := gw.routes[routeIDHash]; exists {
@@ -380,12 +408,26 @@ func (gw *EtcdGateway) autoRegisterRoutes(serviceName string, proxy *ReflectionP
 
 		gw.registerRoute(gw.routes[routeIDHash])
 	}
+
+	// 清理已删除方法的旧路由：该 gRPC 服务以前有但现在没有的路由
+	for grpcSvc, newHashes := range newHashesByService {
+		if oldHashes, exists := gw.grpcServiceRoutes[grpcSvc]; exists {
+			for oldHash := range oldHashes {
+				if !newHashes[oldHash] {
+					if route, ok := gw.routes[oldHash]; ok {
+						gw.unregisterRoute(route)
+						delete(gw.routes, oldHash)
+					}
+				}
+			}
+		}
+		gw.grpcServiceRoutes[grpcSvc] = newHashes
+	}
 }
 
 // grpcToHTTP 将 gRPC 方法转换为 HTTP 路由
 // e.g. ("v1.auth", "v1.auth.UserService", "PostLogin") -> ("POST", "/v1/auth/user/login")
 func grpcToHTTP(pkg, service, method string) (httpMethod, path string) {
-	// 1. HTTP method from method name prefix
 	httpMethod = "POST"
 	methodName := method
 	for _, prefix := range []string{"Post", "Get", "Put", "Delete"} {
@@ -396,15 +438,12 @@ func grpcToHTTP(pkg, service, method string) (httpMethod, path string) {
 		}
 	}
 
-	// 2. Package to path: "v1.auth" -> "/v1/auth"
 	pkgPath := "/" + strings.ReplaceAll(pkg, ".", "/")
 
-	// 3. Service name: extract short name (last part), remove "Service" suffix
 	serviceParts := strings.Split(service, ".")
-	shortService := serviceParts[len(serviceParts)-1] // "UserService"
+	shortService := serviceParts[len(serviceParts)-1]
 	svcName := strings.ToLower(strings.TrimSuffix(shortService, "Service"))
 
-	// 4. Method name: parse By keyword or CamelCase to kebab-case
 	methodPath := parseMethodName(methodName)
 
 	return httpMethod, fmt.Sprintf("%s/%s/%s", pkgPath, svcName, methodPath)
@@ -413,9 +452,7 @@ func grpcToHTTP(pkg, service, method string) (httpMethod, path string) {
 var re = regexp.MustCompile(`(?i)by/?`)
 
 // parseMethodName 解析方法名，处理 By 关键字
-// e.g. "UserInfoById" -> "user/info/:id"
 func parseMethodName(methodName string) string {
-
 	base := camelToKebab(methodName)
 
 	result := re.ReplaceAllStringFunc(base, func(match string) string {
@@ -432,10 +469,9 @@ func camelToKebab(s string) string {
 		c := s[i]
 		if c == '_' {
 			result = append(result, '-')
-			// 下划线后不管大小写都直接小写，不作为新 CamelCase 段
 			if i+1 < len(s) && 'A' <= s[i+1] && s[i+1] <= 'Z' {
 				result = append(result, s[i+1]+32)
-				i++ // skip next char
+				i++
 			}
 		} else if i > 0 && 'A' <= c && c <= 'Z' {
 			result = append(result, '/')
@@ -455,7 +491,7 @@ func (gw *EtcdGateway) loadAllRoutes() error {
 
 	resp, err := gw.etcdCli.Get(ctx, gw.prefix, clientv3.WithPrefix())
 	if err != nil {
-		core.Erro("[Gateway] connectService failed: %v", err)
+		core.Erro("[Gateway] load routes failed: %v", err)
 		return err
 	}
 
@@ -465,7 +501,7 @@ func (gw *EtcdGateway) loadAllRoutes() error {
 			continue
 		}
 		if route.Enabled {
-			gw.addRoute(&route)
+			gw.addOrUpdateRoute(&route)
 		}
 	}
 	return nil
@@ -500,13 +536,6 @@ func (gw *EtcdGateway) addOrUpdateRoute(route *Route) {
 		gw.unregisterRoute(old)
 	}
 
-	gw.routes[route.ID] = route
-	gw.registerRoute(route)
-}
-
-func (gw *EtcdGateway) addRoute(route *Route) {
-	gw.mu.Lock()
-	defer gw.mu.Unlock()
 	gw.routes[route.ID] = route
 	gw.registerRoute(route)
 }
@@ -556,7 +585,6 @@ func (gw *EtcdGateway) createProxyHandler(route *Route) core.HandlerFunc {
 			})
 		}
 
-		// 构建请求参数
 		reqBody := make(core.Map, 8)
 		for k, v := range ctx.ParamsMaps() {
 			reqBody[k] = v
@@ -575,13 +603,11 @@ func (gw *EtcdGateway) createProxyHandler(route *Route) core.HandlerFunc {
 
 		jsonReq, err := sonic.Marshal(reqBody)
 		if err != nil {
-			core.Erro("[Gateway] connectService failed: %v", err)
 			return ctx.Status(http.StatusBadRequest).JSON(core.Map{
 				"code": 400, "message": "invalid request body",
 			})
 		}
 
-		// 构建 metadata
 		md := metadata.New(nil)
 		for _, h := range []string{"authorization", "x-request-id", "x-user-id"} {
 			if val := ctx.GetHeader(h); val != "" {
@@ -616,13 +642,11 @@ func (gw *EtcdGateway) createProxyHandler(route *Route) core.HandlerFunc {
 }
 
 func (gw *EtcdGateway) doGetProxy(serviceName string) *ReflectionProxy {
-	// 检查熔断器
 	if !gw.circuitBreakerCheck(serviceName) {
 		core.D("[Gateway] doGetProxy: %s circuit open, fast fail", serviceName)
 		return nil
 	}
 
-	// 使用连接池
 	pool := gw.connPool.Get(serviceName)
 	if pool != nil {
 		proxy := pool.Get()
@@ -632,7 +656,7 @@ func (gw *EtcdGateway) doGetProxy(serviceName string) *ReflectionProxy {
 		}
 	}
 
-	// 池为空，尝试创建
+	// 池为空，尝试通过 EtcdDiscovery 发现
 	if gw.app.EtcdDiscovery == nil {
 		return nil
 	}
@@ -641,12 +665,16 @@ func (gw *EtcdGateway) doGetProxy(serviceName string) *ReflectionProxy {
 		return nil
 	}
 
-	addrs := make([]string, len(services))
-	for i, s := range services {
-		addrs[i] = s.Addr
+	// 创建池并添加实例
+	newPool := gw.connPool.GetOrCreate(gw.app, serviceName)
+	for _, s := range services {
+		instanceID := s.ID
+		if instanceID == "" {
+			instanceID = s.Addr // fallback
+		}
+		newPool.AddOrUpdateInstance(instanceID, s.Addr)
 	}
 
-	newPool := gw.connPool.GetOrCreate(gw.app, serviceName, addrs, gw.config.PoolSize)
 	proxy := newPool.Get()
 	if proxy == nil {
 		gw.circuitBreakerRecordFailure(serviceName)
@@ -657,7 +685,6 @@ func (gw *EtcdGateway) doGetProxy(serviceName string) *ReflectionProxy {
 	return proxy
 }
 
-// setupAdminAPI 管理 API（仅限本地访问） Added an Admin API, accessible only from local addresses.
 func (gw *EtcdGateway) setupAdminAPI() {
 	gw.app.POST("/admin/gateway/routes", gw.localOnly(gw.createRoute))
 	gw.app.PUT("/admin/gateway/routes/:id", gw.localOnly(gw.updateRoute))
@@ -666,7 +693,6 @@ func (gw *EtcdGateway) setupAdminAPI() {
 	gw.app.GET("/admin/gateway/routes/:id", gw.localOnly(gw.getRoute))
 }
 
-// localOnly 限制仅本地访问
 func (gw *EtcdGateway) localOnly(fn func(core.Ctx) error) func(core.Ctx) error {
 	return func(ctx core.Ctx) error {
 		ip := ctx.Request().RemoteAddr
@@ -750,13 +776,8 @@ func (gw *EtcdGateway) Close() error {
 	if gw.watchCancel != nil {
 		gw.watchCancel()
 	}
-	// 关闭连接池
 	if gw.connPool != nil {
 		gw.connPool.Close()
-	}
-	// 关闭旧 proxies（兼容）
-	for _, p := range gw.proxies {
-		p.Close()
 	}
 	if gw.etcdCli != nil {
 		return gw.etcdCli.Close()

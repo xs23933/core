@@ -8,49 +8,72 @@ import (
 	"google.golang.org/grpc/connectivity"
 )
 
-// ServicePool 服务连接池（多个连接 round-robin）
+// ServicePool 服务连接池（按 instanceID 管理多个实例连接）
 type ServicePool struct {
-	name    string
-	addrs   []string
-	size    int
-	proxies []*ReflectionProxy
-	idx     uint64 // atomic round-robin index
-	mu      sync.RWMutex
-	app     *core.Core
+	name     string
+	instances map[string]*ReflectionProxy // instanceID -> proxy
+	idx      uint64                       // atomic round-robin index
+	mu       sync.RWMutex
+	app      *core.Core
 }
 
 // NewServicePool 创建服务连接池
-func NewServicePool(app *core.Core, name string, addrs []string, size int) *ServicePool {
-	if size <= 0 {
-		size = 3 // default 3 connections per service
+func NewServicePool(app *core.Core, name string) *ServicePool {
+	return &ServicePool{
+		name:     name,
+		instances: make(map[string]*ReflectionProxy),
+		app:      app,
 	}
-	if len(addrs) == 0 {
-		return nil
-	}
+}
 
-	pool := &ServicePool{
-		name:    name,
-		addrs:   addrs,
-		size:    size,
-		proxies: make([]*ReflectionProxy, 0, size),
-		app:     app,
-	}
-
-	// 预热连接，每个地址创建 size 个连接
-	for i := 0; i < size; i++ {
-		addr := addrs[i%len(addrs)]
-		proxy, err := NewReflectionProxy(app, addr)
-		if err != nil {
-			continue
+// AddOrUpdateInstance 添加或更新一个实例连接
+// 返回 changed=true 表示是新增或重建了 proxy
+func (p *ServicePool) AddOrUpdateInstance(instanceID, addr string) (*ReflectionProxy, bool, error) {
+	// 快速路径：已有同 ID 同地址且连接健康，直接跳过
+	p.mu.RLock()
+	if old, ok := p.instances[instanceID]; ok && old.addr == addr {
+		if old.conn != nil && old.conn.GetState() == connectivity.Ready {
+			p.mu.RUnlock()
+			return old, false, nil
 		}
-		pool.proxies = append(pool.proxies, proxy)
+	}
+	p.mu.RUnlock()
+
+	// 慢路径：先创建新 proxy（不持锁，避免阻塞 Get）
+	proxy, err := NewReflectionProxy(p.app, addr)
+	if err != nil {
+		return nil, false, err
 	}
 
-	if len(pool.proxies) == 0 {
-		return nil
+	// 加锁替换
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// double check：可能另一个 goroutine 已抢先完成
+	if old, ok := p.instances[instanceID]; ok && old.addr == addr {
+		if old.conn != nil && old.conn.GetState() == connectivity.Ready {
+			proxy.Close() // 丢弃新创建的
+			return old, false, nil
+		}
 	}
 
-	return pool
+	if old, ok := p.instances[instanceID]; ok {
+		old.Close()
+	}
+
+	p.instances[instanceID] = proxy
+	return proxy, true, nil
+}
+
+// RemoveInstance 移除一个实例连接
+func (p *ServicePool) RemoveInstance(instanceID string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if proxy, ok := p.instances[instanceID]; ok {
+		proxy.Close()
+		delete(p.instances, instanceID)
+	}
 }
 
 // Get 获取一个可用的 proxy（round-robin + 健康检查）
@@ -58,56 +81,35 @@ func (p *ServicePool) Get() *ReflectionProxy {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
-	n := len(p.proxies)
+	n := len(p.instances)
 	if n == 0 {
 		return nil
+	}
+
+	// 收集所有 proxy 到 slice 用于 round-robin
+	all := make([]*ReflectionProxy, 0, n)
+	for _, proxy := range p.instances {
+		all = append(all, proxy)
 	}
 
 	// round-robin
 	start := atomic.AddUint64(&p.idx, 1) - 1
 	for i := 0; i < n; i++ {
-		idx := int((start + uint64(i)) % uint64(n))
-		proxy := p.proxies[idx]
+		proxy := all[(int(start)+i)%n]
 		if proxy != nil && proxy.conn != nil && proxy.conn.GetState() == connectivity.Ready {
 			return proxy
 		}
 	}
 
-	// 没有健康的，返回第一个
-	return p.proxies[0]
+	// 没有健康连接，返回第一个
+	return all[0]
 }
 
-// MarkFailed 标记某个 proxy 失败，会尝试重建
-func (p *ServicePool) MarkFailed(proxy *ReflectionProxy) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	for i, pxy := range p.proxies {
-		if pxy == proxy {
-			// 关闭旧连接
-			pxy.Close()
-
-			// 用下一个地址重建
-			if len(p.addrs) > 1 {
-				newAddr := p.addrs[(i+1)%len(p.addrs)]
-				if newProxy, err := NewReflectionProxy(p.app, newAddr); err == nil {
-					p.proxies[i] = newProxy
-					return
-				}
-			}
-
-			// 无法重建，移除
-			p.proxies = append(p.proxies[:i], p.proxies[i+1:]...)
-			return
-		}
-	}
-}
-
-// Size 返回连接池大小
+// Size 返回实例数量
 func (p *ServicePool) Size() int {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return len(p.proxies)
+	return len(p.instances)
 }
 
 // Close 关闭所有连接
@@ -115,10 +117,10 @@ func (p *ServicePool) Close() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	for _, proxy := range p.proxies {
+	for _, proxy := range p.instances {
 		proxy.Close()
 	}
-	p.proxies = nil
+	p.instances = nil
 }
 
 // ConnectionPool 连接池管理器
@@ -135,30 +137,24 @@ func NewConnectionPool() *ConnectionPool {
 }
 
 // GetOrCreate 获取或创建服务连接池
-func (cp *ConnectionPool) GetOrCreate(app *core.Core, serviceName string, addrs []string, size int) *ServicePool {
-	// 快速路径：已有池且有可用连接
+func (cp *ConnectionPool) GetOrCreate(app *core.Core, serviceName string) *ServicePool {
 	cp.poolsMu.RLock()
 	if pool, ok := cp.pools[serviceName]; ok {
 		cp.poolsMu.RUnlock()
-		if pool.Size() > 0 {
-			return pool
-		}
-		// 有池但无连接，删除后重建
-		cp.poolsMu.Lock()
-		delete(cp.pools, serviceName)
-		cp.poolsMu.Unlock()
-	} else {
-		cp.poolsMu.RUnlock()
+		return pool
 	}
+	cp.poolsMu.RUnlock()
 
-	// 创建新池
-	pool := NewServicePool(app, serviceName, addrs, size)
-	if pool == nil {
-		return nil
-	}
+	pool := NewServicePool(app, serviceName)
 
 	cp.poolsMu.Lock()
 	defer cp.poolsMu.Unlock()
+
+	// double check
+	if existing, ok := cp.pools[serviceName]; ok {
+		return existing
+	}
+
 	cp.pools[serviceName] = pool
 	return pool
 }
