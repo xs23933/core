@@ -113,13 +113,15 @@ func openDB(conf Options, debug, colorful bool) (db *DB, err error) {
 	connMaxLifetime := conf.GetString("conn_max_lifetime", "300s")
 
 	sqlDB, _ := db.DB()
-	sqlDB.SetMaxOpenConns(maxOpenConns)
-	sqlDB.SetMaxIdleConns(maxIdleConns)
-	maxLifeTime, err := time.ParseDuration(connMaxLifetime)
-	if err != nil {
-		maxLifeTime = time.Second * 300
+	if sqlDB != nil {
+		sqlDB.SetMaxOpenConns(maxOpenConns)
+		sqlDB.SetMaxIdleConns(maxIdleConns)
+		maxLifeTime, err := time.ParseDuration(connMaxLifetime)
+		if err != nil {
+			maxLifeTime = time.Second * 300
+		}
+		sqlDB.SetConnMaxLifetime(maxLifeTime)
 	}
-	sqlDB.SetConnMaxLifetime(maxLifeTime)
 
 	if debug {
 		db = db.Debug()

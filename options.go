@@ -226,7 +226,7 @@ func LoadConfigFile(file string, opts ...Options) Options {
 
 func loadEncryptedConfig(datFile string, defaultConf Options) Options {
 	yamlFile, _ := strings.CutSuffix(datFile, ".dat")
-	yamlFile += ".yaml"
+	yamlFile += ".default.yaml"
 
 	if yamlBuf, err := os.ReadFile(yamlFile); err == nil {
 		D("Update config(%s) from %s", datFile, yamlFile)
