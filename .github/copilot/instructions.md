@@ -1,6 +1,6 @@
 # GitHub Copilot Instructions
 
-## Core Framework v3.1.1 开发规范
+## Core Framework v3 开发规范
 
 ### 自动路由规则
 - Handler 结构体必须嵌入 `core.Handler`

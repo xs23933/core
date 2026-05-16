@@ -1,4 +1,4 @@
-# [AI Context] Core Framework v3.1.1
+# [AI Context] Core Framework v3
 
 ## 1. 框架身份
 - **名称**: Core Framework

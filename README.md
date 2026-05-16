@@ -1,4 +1,4 @@
-# Core Web Framework v3.1.1 - 完整帮助文档
+# Core Web Framework v3 - 完整帮助文档
 
 ## 概述
 

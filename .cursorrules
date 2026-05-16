@@ -2,7 +2,7 @@
 
 # 项目信息
 project:
-  name: "Core Framework v3.1.1"
+  name: "Core Framework v3"
   language: "Go"
   framework: "github.com/xs23933/core/v3"
 
