@@ -233,7 +233,57 @@ file, _ := c.FormFile("file")
 relPath, absPath, _ := c.SaveFile("file", "./uploads")
 ```
 
-### 3.2 数据库操作 (基于 GORM)
+### 3.2 Handler 生命周期
+
+所有自动路由 Handler 必须嵌入 `core.Handler`。框架会在注册和请求处理阶段识别这些可选方法：
+
+| 方法 | 触发时机 | 主要用途 |
+| ---- | -------- | -------- |
+| `Init()` | Handler 注册/应用初始化阶段 | 设置路由前缀、初始化轻量配置 |
+| `Preload(c core.Ctx) error` | 每个匹配到该 Handler 的请求进入业务方法前 | 做该 Handler 级别的认证、上下文注入、审计；必须 `return c.Next()` 才会继续 |
+| `Start(app *core.Core) error` | 应用启动阶段 | 启动依赖、预热缓存、注册后台任务 |
+| `Stop(app *core.Core) error` | 应用关闭阶段 | 释放资源、停止后台任务 |
+
+推荐：
+
+```go
+type UserHandler struct {
+    core.Handler
+}
+
+func (h *UserHandler) Init() {
+    h.Prefix("/api/v1/users")
+}
+
+func (h *UserHandler) Preload(c core.Ctx) error {
+    token := c.GetHeader("Authorization")
+    if token == "" {
+        return c.SendStatus(401, "unauthorized")
+    }
+    c.Set("token", token)
+    return c.Next()
+}
+
+func (h *UserHandler) Start(app *core.Core) error {
+    core.Info("user handler started")
+    return nil
+}
+
+func (h *UserHandler) Stop(app *core.Core) error {
+    core.Info("user handler stopped")
+    return nil
+}
+```
+
+禁止：
+
+* 在 `Init()` 中访问请求数据
+* 在 `Preload()` 中忘记 `return c.Next()`
+* 在 goroutine 中保存或复用 `core.Ctx`
+* 在 `Start()` 中执行无超时的阻塞任务
+* 在 `Stop()` 中 panic 或忽略释放错误
+
+### 3.3 数据库操作 (基于 GORM)
 - **连接**: `db := core.Conn()` (默认) 或 `core.Conn("log")` (多库)
 - **模型**: 必须嵌入 `core.Model` (包含 `ID`, `CreatedAt`, `UpdatedAt`, `DeletedAt`)
     ```go
@@ -249,7 +299,95 @@ relPath, absPath, _ := c.SaveFile("file", "./uploads")
 
 - **钩子**: 支持 GORM 钩子 (`BeforeSave`, `AfterFind` 等)。
 
-### 3.3 中间件
+### 3.4 工具函数与通用类型
+
+#### Map / Array
+
+`core.Map` 和 `core.Array` 是框架内置 JSON 友好类型，支持 GORM `Value/Scan`。
+
+```go
+whr := &core.Map{
+    "p":     1,
+    "l":     20,
+    "desc":  "created_at",
+    "name*": "tom",
+}
+
+name := whr.GetString("name")
+page := whr.GetInt("p", 1)
+ok := whr.Contains("desc")
+
+arr := core.ParseAndDeduplicate("a,b,a")
+joined := arr.StringsJoin(",")
+```
+
+常用方法：
+
+| 类型 | 方法 | 说明 |
+| ---- | ---- | ---- |
+| `Map` | `GetString/GetInt/GetBool` | 安全读取并支持默认值 |
+| `Map` | `GetAs/UnmarshalTo` | 将字段或整个 map 转成结构体 |
+| `Map` | `Contains` | 判断 key 是否存在 |
+| `Array` | `String/StringsJoin` | 转字符串切片或拼接 |
+| `Array` | `FindHandle` | 在数组内按字段查找对象 |
+
+#### 切片工具
+
+```go
+core.Contains([]string{"a", "b"}, "a")
+core.Remove([]int{1, 2, 3}, 2)
+core.Unique([]string{"a", "a", "b"})
+core.Filter(users, func(u User) bool { return u.Active })
+```
+
+#### 文件与路径
+
+```go
+rel, abs, err := core.MakePath("avatar.png", "./uploads")
+ok := core.Exists(abs)
+fs := core.Dir("./static", false) // false 禁止目录列表
+```
+
+#### 网络与请求信息
+
+```go
+ip, err := core.LocalIP()
+clientIP := core.RemoteIP(req.Header, req.RemoteAddr)
+info := core.ExtractClientInfo(ctx) // gRPC metadata + peer 信息
+ua := core.GrpcHeader(ctx, "user-agent")
+domain := core.ExtractPrimaryDomain("api.example.com")
+```
+
+#### 错误与哈希
+
+```go
+err := core.NewError(40001, "invalid token")
+code, msg := err.Errors()
+
+hash := core.SHA256("route-id")
+```
+
+### 3.5 加密与密码工具
+
+`crypto.go` 提供 AES-GCM、bcrypt 和 SHA-256。生成安全相关代码时优先使用这些封装。
+
+```go
+encrypted, err := core.EncryptAES("secret")
+plain, err := core.DecryptAES(encrypted)
+
+hash, err := core.HashPassword("password")
+ok := core.CheckPassword("password", hash)
+
+idx := core.SHA256Hash("user@example.com")
+```
+
+注意：
+
+* `EncryptAES/DecryptAES` 使用全局 `core.AESKey`，生产环境必须在启动时替换为安全的 32 字节密钥。
+* 密码只使用 `HashPassword` / `CheckPassword`，不要自己保存明文或用 SHA-256 存密码。
+* `SHA256Hash` 适合邮箱、手机号等索引哈希，不适合密码哈希。
+
+### 3.6 中间件
 ```go
 // 使用内置中间件
 app.Use(cors.New(app))
@@ -265,13 +403,13 @@ func Auth(next core.HandlerFunc) core.HandlerFunc {
 }
 ```
 
-### 3.4 gRPC 与网关
+### 3.7 gRPC 与网关
 - **服务注册**: `app.EnableEtcdRegistry(&etcd.Options{...})` 自动开启 Reflection。
 - **网关路由**: 网关自动将 gRPC 方法 (`PostLogin`, `GetUserById`) 转换为 HTTP RESTful 路由。
     - *规则*: `PostLogin` -> `POST /v1/auth/user/login`
     - *规则*: `GetUserById` -> `GET /v1/auth/user/:id`
 
-### 3.5 事务规范
+### 3.8 事务规范
 
 事务必须在 service 层处理：
 
@@ -304,7 +442,7 @@ func CreateOrder(req *dto.CreateOrderDTO) error {
 
 ---
 
-### 3.6 错误处理规范
+### 3.9 错误处理规范
 
 推荐：
 
@@ -339,7 +477,7 @@ fmt.Println(err)
 
 ---
 
-### 3.7 日志规范
+### 3.10 日志规范
 
 统一使用：
 
@@ -370,7 +508,7 @@ core.Logger.Error("create user failed", err)
 
 ---
 
-### 3.8 Context 使用规范
+### 3.11 Context 使用规范
 
 `core.Ctx` 仅在当前请求生命周期有效。
 
@@ -400,7 +538,7 @@ go func(id string) {
 
 ---
 
-### 3.9 长连接规范
+### 3.12 长连接规范
 
 Core 支持：
 
@@ -440,7 +578,7 @@ for {
 
 ---
 
-### 3.10 gRPC 规范
+### 3.13 gRPC 规范
 
 Core 默认支持：
 
@@ -469,7 +607,7 @@ gRPC 方法命名：
 
 ---
 
-### 3.11 数据库规范
+### 3.14 数据库规范
 
 模型必须嵌入：
 
@@ -501,7 +639,7 @@ type User struct {
 
 ---
 
-### 3.12 分页规范
+### 3.15 分页规范
 
 后台管理：
 

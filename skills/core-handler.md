@@ -59,7 +59,48 @@ func (h *XxxHandler) Init() {
 }
 ```
 
-### 4. 标准模板
+### 4. Handler 生命周期
+
+Handler 可以按需实现以下生命周期方法：
+
+| 方法 | 触发时机 | 用途 |
+| ---- | -------- | ---- |
+| `Init()` | Handler 注册/应用初始化阶段 | 设置 `Prefix`、初始化轻量配置 |
+| `Preload(c core.Ctx) error` | 每个请求进入业务方法前 | Handler 级鉴权、上下文注入、审计 |
+| `Start(app *core.Core) error` | 应用启动阶段 | 启动后台任务、预热缓存、连接外部依赖 |
+| `Stop(app *core.Core) error` | 应用关闭阶段 | 释放资源、停止后台任务 |
+
+```go
+func (h *UserHandler) Init() {
+    h.Prefix("/api/v1/users")
+}
+
+func (h *UserHandler) Preload(c core.Ctx) error {
+    token := c.GetHeader("Authorization")
+    if token == "" {
+        return c.SendStatus(401, "unauthorized")
+    }
+    c.Set("token", token)
+    return c.Next()
+}
+
+func (h *UserHandler) Start(app *core.Core) error {
+    return nil
+}
+
+func (h *UserHandler) Stop(app *core.Core) error {
+    return nil
+}
+```
+
+生命周期规则：
+
+- `Init()` 不能读取请求数据，只做注册期配置。
+- `Preload()` 不放行时直接返回错误或响应；放行必须 `return c.Next()`。
+- `Start()` 不能长期阻塞；后台任务要可停止。
+- `Stop()` 用于清理资源，不要 panic。
+
+### 5. 标准模板
 
 ```go
 package handler
@@ -80,6 +121,10 @@ func init() {
 
 func (h *UserHandler) Init() {
     h.Prefix("/api/v1/users")
+}
+
+func (h *UserHandler) Preload(c core.Ctx) error {
+    return c.Next()
 }
 
 // GET /api/v1/users
@@ -141,14 +186,16 @@ func (h *UserHandler) Delete_id(c core.Ctx) {
 }
 ```
 
-### 5. 禁止事项
+### 6. 禁止事项
 
 - ❌ 手动调用 `app.GET()` 注册路由
 - ❌ 在 Handler 中直接操作数据库
 - ❌ 使用 `GetId` 期望得到 `/:id`（应使用 `Get_id` 或 `GetByID`）
 - ❌ Handler 中包含复杂业务逻辑
+- ❌ 在 `Preload()` 中忘记 `return c.Next()`
+- ❌ 在 goroutine 中保存或复用 `core.Ctx`
 
-### 6. 参数获取速查
+### 7. 参数获取速查
 
 ```go
 // 路径参数
@@ -170,7 +217,7 @@ token := c.GetHeader("Authorization")
 email := c.FormValue("email")
 ```
 
-### 7. 响应输出速查
+### 8. 响应输出速查
 
 ```go
 // 标准 JSON 响应 (自动处理错误)
