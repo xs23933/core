@@ -15,6 +15,7 @@ Core 是一个用于快速开发企业级 Go 应用程序的 Web 框架，包括
 - **文件上传** - 支持单文件和多文件上传
 - **WebSocket 支持** - 内置 WebSocket 处理
 - **模板引擎** - 支持 HTML 模板渲染
+- **Fetch 客户端** - 独立 `fetch` 包，支持 API 调用、公共/单次 Header、Cookie、请求/响应 Hook
 - **中间件系统** - 灵活的中间件扩展机制
 - **[ai-context](https://github.com/xs23933/core/blob/v3/AI_CONTEXT.md)** - AI 的工作流程指南
 - **[skills](https://github.com/xs23933/core/tree/v3/skills)** - 模式库和示例
@@ -437,25 +438,24 @@ func (Handler) Index(c core.Ctx) {
 
 ## gRPC、etcd 与网关
 
-Core 支持同时运行 HTTP 与 gRPC，并通过 etcd 做服务注册、服务发现和网关动态路由。典型链路如下：
+Core 支持同时运行 HTTP 与 gRPC，并通过 etcd 做服务注册、服务发现和网关动态路由。推荐把链路拆成三类程序理解：
 
-1. 业务服务启动 gRPC，并注册到 etcd。
-2. gRPC 服务开启 reflection。
-3. 网关监听 `/services/` 和 `/gateway/routes/`。
-4. 网关通过 reflection 发现 gRPC 方法，并自动生成 HTTP 路由。
-5. HTTP 请求进入网关后被转换为 gRPC JSON 请求并转发到后端服务。
+1. 业务服务：注册 protobuf 生成的 gRPC service，启动 gRPC，必要时注册到 etcd。
+2. 内部客户端：通过 `app.GrpcClient("service-name")` 按服务名发现并调用 gRPC。
+3. 网关服务：监听 etcd 服务变化，通过 gRPC reflection 自动发现方法并生成 HTTP 路由。
 
 ### 1. gRPC 服务
 
-服务端需要注册生成的 gRPC service，并启用 gRPC。`EnableEtcdRegistry` 会自动开启 gRPC reflection，网关依赖 reflection 自动发现方法。
+服务端必须先注册 gRPC service，再启动应用。只需要 gRPC 时使用 `EnableGRPC`；需要被网关发现时使用 `EnableEtcdRegistry`，它会自动创建/复用 gRPC server、注册服务到 etcd，并开启 gRPC reflection。
 
 
 ```go
 package main
 
 import (
+    "context"
+
     "github.com/xs23933/core/v3"
-    "github.com/xs23933/core/v3/etcd"
     "google.golang.org/grpc"
 
     pb "your_project/proto/user/v1"
@@ -465,74 +465,58 @@ type UserService struct {
     pb.UnimplementedUserServiceServer
 }
 
+func (s *UserService) GetProfile(ctx context.Context, req *pb.GetProfileRequest) (*pb.User, error) {
+    return &pb.User{Id: req.Id, Name: "tom"}, nil
+}
+
 func main() {
-    app := core.New(core.LoadConfigFile("config.yaml"))
+    app := core.New()
 
-    /* 启用 etcd 服务注册 读取 config.yaml 中的 etcd 配置
-etcd:
-  endpoints:
-    - 192.168.31.5:2379
-  username: ""
-  password: ""
-  service_name: "auth-service"
-  service_addr: "192.168.31.2:8080"
-  service_id: "auth-service-1"
-  ttl: 10
-  version: "1.0.0"
+    app.RegisterGRPCService(func(s *grpc.Server) {
+        pb.RegisterUserServiceServer(s, &UserService{})
+    })
 
-    */
-	if err := app.EnableEtcdRegistry(nil); err != nil {
-		fmt.Printf("Failed to enable etcd registry: %v\n", err)
-		os.Exit(1)
-	}
-    // 或者直接写配置信息
-    if err := app.EnableEtcdRegistry(&etcd.Options{
-        Endpoints:   []string{"127.0.0.1:2379"},
-        ServiceName: "user-service",
-        ServiceAddr: "127.0.0.1:9001",
-        ServiceID:   "user-service-1",
-        TTL:         10,
-        Version:     "1.0.0",
-        Metadata: map[string]string{
-            "env": "dev",
-        },
-    }); err != nil {
+    app.EnableGRPC(":9001")
+
+    if err := app.Listen(":8080"); err != nil {
         panic(err)
     }
-
-    // grpc生成的服务
-    // 自己编写的服务实现
-    NewAuthHandler(app, &UserService{})
-
-    app.Run()
 }
-
-type AuthHandler struct {
-	pb.UnimplementedAuthServiceServer
-	userService *service.UserService
-}
-
-func NewAuthHandler(app *core.Core, userService *service.UserService) {
-	pb.RegisterAuthServiceServer(app.GetGRPCServer(), &AuthHandler{
-		userService: userService,
-	})
-}
-
-// 中间层用于通用实现, 可以让 grpc,http(restful) 通用实现,项目小可以直接dao
-type UserService struct {}
-
 ```
 
-如果希望 HTTP/1 和 gRPC 共用端口，可以让 `EnableGRPC` 使用和 `Listen` 相同的地址。框架会根据 `Content-Type: application/grpc` 与 HTTP/2 请求自动分流。
+HTTP 和 gRPC 使用不同端口时，`Listen(":8080")` 负责 HTTP，`EnableGRPC(":9001")` 负责 gRPC。
+
+如果希望 HTTP/1 和 gRPC 共用端口，可以让 `EnableGRPC` 使用和 `Listen` 相同的地址。框架会根据 HTTP/2 与 `Content-Type: application/grpc` 自动分流。
 
 ```go
-app.EnableGRPC(":8081")
-app.Listen(":8081")
+app.RegisterGRPCService(func(s *grpc.Server) {
+    pb.RegisterUserServiceServer(s, &UserService{})
+})
+app.EnableGRPC(":8080")
+app.Listen(":8080")
+```
+
+需要注册到 etcd 并提供给网关时：
+
+```go
+app := core.New(core.LoadConfigFile("config.yaml"))
+
+app.RegisterGRPCService(func(s *grpc.Server) {
+    pb.RegisterUserServiceServer(s, &UserService{})
+})
+
+if err := app.EnableEtcdRegistry(nil); err != nil {
+    panic(err)
+}
+
+if err := app.Listen(":8080"); err != nil {
+    panic(err)
+}
 ```
 
 ### 2. etcd 配置
 
-也可以通过 `config.yaml` 配置 etcd，服务启动时调用 `EnableEtcdRegistry(nil)` 或客户端调用 `GrpcClient` 时会读取这些配置。
+`EnableEtcdRegistry(nil)` 会读取 `etcd` 配置。服务端最少需要配置 endpoints、service name 和暴露给其它进程访问的 service addr。
 
 ```yaml
 etcd:
@@ -540,21 +524,43 @@ etcd:
     - 127.0.0.1:2379
   dial_timeout: 5
   service_name: user-service
-  service_addr: 127.0.0.1:9001
+  service_addr: 127.0.0.1:8080
   service_id: user-service-1
   ttl: 10
   version: 1.0.0
 ```
 
+也可以直接传 `etcd.Options`，适合测试或多环境注入：
+
 ```go
-if err := app.EnableEtcdRegistry(nil); err != nil {
+if err := app.EnableEtcdRegistry(&etcd.Options{
+    Endpoints:   []string{"127.0.0.1:2379"},
+    ServiceName: "user-service",
+    ServiceAddr: "127.0.0.1:8080",
+    ServiceID:   "user-service-1",
+    TTL:         10,
+    Version:     "1.0.0",
+    Metadata: map[string]string{
+        "env": "dev",
+    },
+}); err != nil {
     panic(err)
 }
 ```
 
-客户端可以通过服务名创建 gRPC 连接：
+注意：
+
+- `service_addr` 必须是客户端和网关能访问到的地址，不一定等于本机监听地址。
+- 使用网关自动注册路由时，优先用 `EnableEtcdRegistry`，因为它会自动开启 reflection。
+- `RegisterGRPCService` 要在 `Listen` 或 `Run` 前调用。
+
+### 3. gRPC 客户端
+
+内部服务调用优先使用 `GrpcClient`，它会通过 etcd resolver 按服务名连接后端实例。
 
 ```go
+app := core.New(core.LoadConfigFile("config.yaml"))
+
 conn, err := app.GrpcClient("user-service")
 if err != nil {
     panic(err)
@@ -564,24 +570,35 @@ defer conn.Close()
 client := pb.NewUserServiceClient(conn)
 ```
 
-### 3. 网关启动
+如果依赖 `GrpcClient` 自动初始化 discovery，客户端读取 `etcd.endpoints` 和 `etcd.dialTimeout`；网关配置读取 `etcd.dial_timeout`。
 
-网关服务只需要连接 etcd 并启用 gateway。启动时会读取已有服务实例，之后继续 watch 服务上下线和路由变化。
+如果启动阶段必须拿到连接，可以用 `MustGrpcClient`；它失败会 panic，适合 main 函数初始化，不适合请求处理链路。
+
+```go
+conn := app.MustGrpcClient("user-service")
+client := pb.NewUserServiceClient(conn)
+```
+
+### 4. 网关启动
+
+网关服务只需要连接 etcd 并启用 gateway。启动时会读取已有服务实例，之后继续 watch 服务上下线和路由变化。业务服务需要使用 `EnableEtcdRegistry` 注册并开启 reflection，网关才能自动发现方法。
 
 ```go
 package main
 
 import (
+    "log"
+
     "github.com/xs23933/core/v3"
     "github.com/xs23933/core/v3/gateway"
 )
 
 func main() {
-    app := core.New()
+    app := core.New(core.LoadConfigFile("config.yaml"))
 
     if err := app.EnableEtcdDiscovery(nil); err != nil {
-		log.Fatal("启用 etcd 服务发现失败:", err)
-	}
+        log.Fatal("启用 etcd 服务发现失败:", err)
+    }
 
     _, err := gateway.NewEtcdGateway(app)
     if err != nil {
@@ -602,7 +619,7 @@ func main() {
 | `PUT`    | `/admin/gateway/routes/:id`  | 更新或禁用路由 |
 | `DELETE` | `/admin/gateway/routes/:id`  | 删除路由       |
 
-### 4. 自动注册路由规则
+### 5. 自动注册路由规则
 
 网关通过 gRPC reflection 读取服务方法，并按方法名前缀自动生成 HTTP 路由。
 
@@ -646,7 +663,7 @@ GET  /v1/auth/user/:id        -> /v1.auth.UserService/GetUserById
 
 当服务 reflection 中的方法减少，或 etcd 中的路由被删除/禁用时，网关会注销旧 HTTP 路由。
 
-### 5. 手动配置网关路由
+### 6. 手动配置网关路由
 
 除了自动注册，也可以通过管理接口写入路由配置。
 
@@ -678,7 +695,7 @@ Content-Type: application/json
 }
 ```
 
-### 6. HTTP 到 gRPC 的请求映射
+### 7. HTTP 到 gRPC 的请求映射
 
 网关会把 HTTP 路径参数、query 参数和 JSON body 合并为一个 JSON 对象，然后按 reflection 中的请求 message 反序列化。
 
@@ -704,7 +721,7 @@ X-Request-Id: req-1
 - `x-user-id`
 - `Ctx.Vars()` 中的本地变量 用于前置 middleware 处理后的后传参数 例如 jwt处理的: `Ctx.Set("user_id", "123")`
 
-### 7. Demo 目录
+### 8. Demo 目录
 
 仓库内置了几个最小 demo：
 
@@ -967,6 +984,177 @@ func (u *User) AfterFind(tx *core.DB) error {
     u.Password = "" // 隐藏密码字段
     return nil
 }
+```
+
+## Fetch API 客户端
+
+`fetch` 是独立子包，用于调用外部 HTTP API。设计接近前端 JavaScript `fetch` 的使用习惯，但保留 Go 的显式错误处理和结构体 decode。
+
+导入路径：
+
+```go
+import "github.com/xs23933/core/v3/fetch"
+```
+
+### 1. 最简调用
+
+包级快捷方法使用 `fetch.Default`，适合一次性调用或简单脚本。
+
+```go
+type UserVO struct {
+    ID   string `json:"id"`
+    Name string `json:"name"`
+}
+
+var user UserVO
+res, err := fetch.Get("https://api.example.com/users/1", &user)
+if err != nil {
+    return err
+}
+
+token := res.Header.Get("X-Token")
+_ = token
+```
+
+POST / PUT 带参数时，`params` 会按类型自动处理：
+
+| 参数类型 | 处理方式 |
+| -------- | -------- |
+| `nil` | 不发送 body |
+| `[]byte` | 原始 body |
+| `string` | 字符串 body |
+| 其它类型 | JSON body，并设置 `Content-Type: application/json; charset=utf-8` |
+
+```go
+var out UserVO
+
+_, err := fetch.Post(
+    "https://api.example.com/users",
+    map[string]any{"name": "tom"},
+    &out,
+)
+
+_, err = fetch.Put(
+    "https://api.example.com/users/1",
+    map[string]any{"name": "jerry"},
+    &out,
+)
+
+_, err = fetch.Delete("https://api.example.com/users/1", nil)
+```
+
+### 2. 可复用 Client
+
+业务服务中推荐创建可复用 client，统一配置 baseURL、公共 Header、Cookie 和 Hook。
+
+```go
+var api = fetch.New("https://api.example.com").
+    Header("X-App", "core-service").
+    Header("Accept", "application/json").
+    UseCookie(true)
+
+func GetUser(ctx context.Context, id string) (UserVO, error) {
+    var user UserVO
+
+    res, err := api.DoGet(ctx, "/users/"+id, &user)
+    if err != nil {
+        return user, err
+    }
+
+    refreshedToken := res.Header.Get("X-Token")
+    _ = refreshedToken
+
+    return user, nil
+}
+```
+
+公共 Header 和单次 Header 分开：
+
+```go
+api := fetch.New("https://api.example.com").
+    Header("X-App", "core-service") // 每次请求都有
+
+var out UserVO
+res, err := api.Post("/users").
+    Header("X-Request-ID", "req-123"). // 只对本次请求生效
+    JSON(map[string]any{"name": "tom"}).
+    Result(context.Background(), &out)
+```
+
+### 3. 请求前 Hook：签名、鉴权、时间戳
+
+`Before` 在请求发出前执行，可以读取最终 body 并修改 `*http.Request`。常用于 hash 签名、认证 Header、请求追踪。
+
+```go
+api := fetch.New("https://api.example.com").
+    Before(func(ctx context.Context, req *http.Request, body []byte) error {
+        sign := core.SHA256HashBytes(body)
+        req.Header.Set("X-Sign", sign)
+        req.Header.Set("X-Timestamp", strconv.FormatInt(time.Now().Unix(), 10))
+        return nil
+    })
+
+var out UserVO
+_, err := api.DoPost(context.Background(), "/users", map[string]any{"name": "tom"}, &out)
+```
+
+### 4. 响应后 Hook：解包、解密、统一 decode
+
+`After` 在响应 body 读取完成后执行，返回值会作为最终 body 继续 decode。适合统一响应格式解包。
+
+```go
+type Envelope struct {
+    Code int             `json:"code"`
+    Msg  string          `json:"msg"`
+    Data json.RawMessage `json:"data"`
+}
+
+api := fetch.New("https://api.example.com").
+    After(func(ctx context.Context, resp *http.Response, body []byte) ([]byte, error) {
+        var env Envelope
+        if err := json.Unmarshal(body, &env); err != nil {
+            return nil, err
+        }
+        if env.Code != 0 {
+            return nil, fmt.Errorf("api error %d: %s", env.Code, env.Msg)
+        }
+        return env.Data, nil
+    })
+
+var user UserVO
+_, err := api.DoGet(context.Background(), "/users/1", &user)
+```
+
+### 5. 获取响应 Header、Status、Body
+
+使用 `Result` 或 `DoGet/DoPost/DoPut/DoDelete` 会返回 `*fetch.FetchResult`。
+
+```go
+res, err := api.Get("/session").Result(context.Background(), &out)
+if err != nil {
+    if ferr, ok := err.(*fetch.FetchError); ok {
+        retryToken := ferr.Header.Get("X-Token")
+        body := string(ferr.Body)
+        _ = retryToken
+        _ = body
+    }
+    return err
+}
+
+token := res.Header.Get("X-Token")
+status := res.StatusCode
+body := res.Body
+```
+
+### 6. Cookie 开关
+
+默认不保存 Cookie，避免隐式状态。需要模拟浏览器会话时显式启用：
+
+```go
+api := fetch.New("https://api.example.com").UseCookie(true)
+
+// 禁用并清空 cookie jar
+api.UseCookie(false)
 ```
 
 ## 错误处理

@@ -387,7 +387,90 @@ idx := core.SHA256Hash("user@example.com")
 * 密码只使用 `HashPassword` / `CheckPassword`，不要自己保存明文或用 SHA-256 存密码。
 * `SHA256Hash` 适合邮箱、手机号等索引哈希，不适合密码哈希。
 
-### 3.6 中间件
+### 3.6 Fetch API 客户端
+
+外部 HTTP API 调用优先使用独立子包 `github.com/xs23933/core/v3/fetch`。
+
+导入：
+
+```go
+import "github.com/xs23933/core/v3/fetch"
+```
+
+推荐生成可复用 client，而不是在业务函数中反复创建 `http.Client`：
+
+```go
+var api = fetch.New("https://api.example.com").
+    Header("X-App", "core-service").
+    UseCookie(true)
+```
+
+快捷调用：
+
+```go
+var out UserVO
+
+res, err := fetch.Get("https://api.example.com/users/1", &out)
+token := res.Header.Get("X-Token")
+
+_, err = fetch.Post("https://api.example.com/users", map[string]any{
+    "name": "tom",
+}, &out)
+
+_, err = fetch.Put("https://api.example.com/users/1", map[string]any{
+    "name": "jerry",
+}, &out)
+
+_, err = fetch.Delete("https://api.example.com/users/1", nil)
+```
+
+可复用 client 调用：
+
+```go
+var out UserVO
+
+res, err := api.DoPost(ctx, "/users", map[string]any{"name": "tom"}, &out)
+if err != nil {
+    return err
+}
+
+refreshedToken := res.Header.Get("X-Token")
+_ = refreshedToken
+```
+
+Header 规则：
+
+* `api.Header("X-App", "...")` 是公共 Header，每次请求都会带上。
+* `api.Post("/x").Header("X-Request-ID", "...")` 是单次 Header，只对当前请求生效。
+* 单次 Header 会覆盖同名公共 Header。
+
+Hook 规则：
+
+```go
+api := fetch.New("https://api.example.com").
+    Before(func(ctx context.Context, req *http.Request, body []byte) error {
+        req.Header.Set("X-Sign", core.SHA256HashBytes(body))
+        return nil
+    }).
+    After(func(ctx context.Context, resp *http.Response, body []byte) ([]byte, error) {
+        // 统一解包、解密或 decode
+        return body, nil
+    })
+```
+
+响应结果：
+
+* `Do(ctx, &out)` 只关心 decode。
+* `Result(ctx, &out)` 返回 `*fetch.FetchResult`，可读取 `StatusCode/Header/Body`。
+* 非 2xx 返回 `*fetch.FetchError`，其中也包含 `Header/Body`，例如错误响应中的 `X-Token`。
+
+禁止：
+
+* 不要在业务代码中散落 `http.NewRequest`、`http.Client.Do`。
+* 不要把签名逻辑复制到每个 API 调用；用 `Before`。
+* 不要手写重复响应解包；用 `After`。
+
+### 3.7 中间件
 ```go
 // 使用内置中间件
 app.Use(cors.New(app))
@@ -403,13 +486,48 @@ func Auth(next core.HandlerFunc) core.HandlerFunc {
 }
 ```
 
-### 3.7 gRPC 与网关
-- **服务注册**: `app.EnableEtcdRegistry(&etcd.Options{...})` 自动开启 Reflection。
-- **网关路由**: 网关自动将 gRPC 方法 (`PostLogin`, `GetUserById`) 转换为 HTTP RESTful 路由。
-    - *规则*: `PostLogin` -> `POST /v1/auth/user/login`
-    - *规则*: `GetUserById` -> `GET /v1/auth/user/:id`
+### 3.8 gRPC 与网关
 
-### 3.8 事务规范
+服务端生成代码时遵循这个顺序：
+
+```go
+app := core.New(core.LoadConfigFile("config.yaml"))
+
+app.RegisterGRPCService(func(s *grpc.Server) {
+    pb.RegisterUserServiceServer(s, &UserService{})
+})
+
+if err := app.EnableEtcdRegistry(nil); err != nil {
+    return err
+}
+
+return app.Listen(":8080")
+```
+
+规则：
+
+* 只需要本机 gRPC 时用 `app.EnableGRPC(":9001")`。
+* 需要网关自动发现时用 `app.EnableEtcdRegistry(nil)`；它会注册 etcd，并自动开启 gRPC reflection。
+* `RegisterGRPCService` 必须在 `Listen` / `Run` 前调用。
+* 内部客户端用 `app.GrpcClient("user-service")` 或启动期的 `app.MustGrpcClient("user-service")`。
+* 网关启动用 `app.EnableEtcdDiscovery(nil)` + `gateway.NewEtcdGateway(app)`。
+
+网关路由命名：
+
+| gRPC 方法名 | HTTP 路由 |
+| ----------- | --------- |
+| `PostLogin` | `POST /v1/auth/user/login` |
+| `GetUserById` | `GET /v1/auth/user/:id` |
+| `PutProfile` | `PUT /v1/auth/user/profile` |
+| `DeleteSession` | `DELETE /v1/auth/user/session` |
+
+禁止：
+
+* 业务代码手写重复的服务发现逻辑。
+* 网关场景只调用 `EnableGRPC` 却忘记 reflection。
+* 在请求处理函数里反复创建 gRPC client。
+
+### 3.9 事务规范
 
 事务必须在 service 层处理：
 
@@ -442,7 +560,7 @@ func CreateOrder(req *dto.CreateOrderDTO) error {
 
 ---
 
-### 3.9 错误处理规范
+### 3.10 错误处理规范
 
 推荐：
 
@@ -477,7 +595,7 @@ fmt.Println(err)
 
 ---
 
-### 3.10 日志规范
+### 3.11 日志规范
 
 统一使用：
 
@@ -508,7 +626,7 @@ core.Logger.Error("create user failed", err)
 
 ---
 
-### 3.11 Context 使用规范
+### 3.12 Context 使用规范
 
 `core.Ctx` 仅在当前请求生命周期有效。
 
@@ -538,7 +656,7 @@ go func(id string) {
 
 ---
 
-### 3.12 长连接规范
+### 3.13 长连接规范
 
 Core 支持：
 
@@ -578,36 +696,45 @@ for {
 
 ---
 
-### 3.13 gRPC 规范
+### 3.14 gRPC 规范
 
-Core 默认支持：
+Core 的 gRPC 能力由以下入口组成：
 
-* etcd 服务注册
-* gRPC Reflection
-* HTTP -> gRPC 网关
-* RESTful 自动转换
+| 入口 | 用途 |
+| ---- | ---- |
+| `RegisterGRPCService(func(*grpc.Server))` | 注册 protobuf 生成的 service |
+| `EnableGRPC(addr)` | 启动 gRPC server，可与 HTTP 共用端口 |
+| `EnableEtcdRegistry(opts)` | 注册 etcd、启用 discovery、开启 reflection |
+| `GrpcClient(serviceName)` | 基于 etcd resolver 创建客户端连接 |
+| `gateway.NewEtcdGateway(app)` | 自动发现服务并生成 HTTP -> gRPC 路由 |
 
-推荐：
+服务端模板：
 
 ```go
-app.EnableEtcdRegistry(...)
+app.RegisterGRPCService(func(s *grpc.Server) {
+    pb.RegisterOrderServiceServer(s, &OrderService{})
+})
+
+if err := app.EnableEtcdRegistry(nil); err != nil {
+    return err
+}
 ```
 
-禁止：
+客户端模板：
 
-* 手动维护服务发现
-* 手动拼接 grpc gateway 路由
+```go
+conn, err := app.GrpcClient("order-service")
+if err != nil {
+    return err
+}
+client := pb.NewOrderServiceClient(conn)
+```
 
-gRPC 方法命名：
-
-| 方法名         | HTTP 路由                  |
-| ----------- | ------------------------ |
-| PostLogin   | POST /v1/auth/user/login |
-| GetUserById | GET /v1/auth/user/:id    |
+方法命名必须使用 `Post/Get/Put/Delete` 前缀。缩写写成 `Id`，不要写成 `ID`，否则会被拆成 `/i/d`。
 
 ---
 
-### 3.14 数据库规范
+### 3.15 数据库规范
 
 模型必须嵌入：
 
@@ -639,7 +766,7 @@ type User struct {
 
 ---
 
-### 3.15 分页规范
+### 3.16 分页规范
 
 后台管理：
 
