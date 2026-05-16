@@ -141,15 +141,6 @@ func (n *RouteNode) match(path string, ctx Ctx) (HandlerFuncs, bool) {
 	// 根节点中间件
 	chain = append(chain, current.middlewares...)
 
-	if n.catchChild != nil {
-		// 匹配 /* 通配符
-		ctx.SetParams(n.catchChild.path[1:], strings.Join(segments, "/"))
-		current = n.catchChild
-		chain = append(chain, current.middlewares...)
-		chain = append(chain, current.handlers...)
-		return chain, true
-	}
-
 	for i, seg := range segments {
 		matched := false
 		// 再匹配静态节点

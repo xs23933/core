@@ -11,33 +11,42 @@ import (
 // ServicePool 服务连接池（按 instanceID 管理多个实例连接）
 type ServicePool struct {
 	name      string
-	instances map[string]*ReflectionProxy // instanceID -> proxy
-	idx       uint64                      // atomic round-robin index
-	mu        sync.RWMutex
+	instances atomic.Value // map[string]*ReflectionProxy, copy-on-write
+	idx       uint64       // atomic round-robin index
+	mu        sync.Mutex
 	app       *core.Core
 }
 
 // NewServicePool 创建服务连接池
 func NewServicePool(app *core.Core, name string) *ServicePool {
-	return &ServicePool{
-		name:      name,
-		instances: make(map[string]*ReflectionProxy),
-		app:       app,
+	p := &ServicePool{
+		name: name,
+		app:  app,
 	}
+	p.storeInstances(make(map[string]*ReflectionProxy))
+	return p
+}
+
+func (p *ServicePool) loadInstances() map[string]*ReflectionProxy {
+	if instances, ok := p.instances.Load().(map[string]*ReflectionProxy); ok && instances != nil {
+		return instances
+	}
+	return nil
+}
+
+func (p *ServicePool) storeInstances(instances map[string]*ReflectionProxy) {
+	p.instances.Store(instances)
 }
 
 // AddOrUpdateInstance 添加或更新一个实例连接
 // 返回 changed=true 表示是新增或重建了 proxy
 func (p *ServicePool) AddOrUpdateInstance(instanceID, addr string) (*ReflectionProxy, bool, error) {
 	// 快速路径：已有同 ID 同地址且连接健康，直接跳过
-	p.mu.RLock()
-	if old, ok := p.instances[instanceID]; ok && old.addr == addr {
+	if old, ok := p.loadInstances()[instanceID]; ok && old.addr == addr {
 		if old.conn != nil && old.conn.GetState() == connectivity.Ready {
-			p.mu.RUnlock()
 			return old, false, nil
 		}
 	}
-	p.mu.RUnlock()
 
 	// 慢路径：先创建新 proxy（不持锁，避免阻塞 Get）
 	proxy, err := NewReflectionProxy(p.app, addr)
@@ -49,23 +58,26 @@ func (p *ServicePool) AddOrUpdateInstance(instanceID, addr string) (*ReflectionP
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if p.instances == nil {
-		p.instances = make(map[string]*ReflectionProxy)
-	}
+	instances := p.loadInstances()
 
 	// double check：可能另一个 goroutine 已抢先完成
-	if old, ok := p.instances[instanceID]; ok && old.addr == addr {
+	if old, ok := instances[instanceID]; ok && old.addr == addr {
 		if old.conn != nil && old.conn.GetState() == connectivity.Ready {
 			proxy.Close() // 丢弃新创建的
 			return old, false, nil
 		}
 	}
 
-	if old, ok := p.instances[instanceID]; ok {
+	next := make(map[string]*ReflectionProxy, len(instances)+1)
+	for id, existing := range instances {
+		next[id] = existing
+	}
+	old := next[instanceID]
+	next[instanceID] = proxy
+	p.storeInstances(next)
+	if old != nil {
 		old.Close()
 	}
-
-	p.instances[instanceID] = proxy
 	return proxy, true, nil
 }
 
@@ -74,25 +86,33 @@ func (p *ServicePool) RemoveInstance(instanceID string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if proxy, ok := p.instances[instanceID]; ok {
-		proxy.Close()
-		delete(p.instances, instanceID)
+	instances := p.loadInstances()
+	proxy, ok := instances[instanceID]
+	if !ok {
+		return
 	}
+
+	next := make(map[string]*ReflectionProxy, len(instances)-1)
+	for id, existing := range instances {
+		if id != instanceID {
+			next[id] = existing
+		}
+	}
+	p.storeInstances(next)
+	proxy.Close()
 }
 
 // Get 获取一个可用的 proxy（round-robin + 健康检查）
 func (p *ServicePool) Get() *ReflectionProxy {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-
-	n := len(p.instances)
+	instances := p.loadInstances()
+	n := len(instances)
 	if n == 0 {
 		return nil
 	}
 
 	// 收集所有 proxy 到 slice 用于 round-robin
 	all := make([]*ReflectionProxy, 0, n)
-	for _, proxy := range p.instances {
+	for _, proxy := range instances {
 		all = append(all, proxy)
 	}
 
@@ -111,9 +131,7 @@ func (p *ServicePool) Get() *ReflectionProxy {
 
 // Size 返回实例数量
 func (p *ServicePool) Size() int {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	return len(p.instances)
+	return len(p.loadInstances())
 }
 
 // Close 关闭所有连接
@@ -121,33 +139,42 @@ func (p *ServicePool) Close() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	for _, proxy := range p.instances {
+	instances := p.loadInstances()
+	p.storeInstances(make(map[string]*ReflectionProxy))
+	for _, proxy := range instances {
 		proxy.Close()
 	}
-	p.instances = make(map[string]*ReflectionProxy)
 }
 
 // ConnectionPool 连接池管理器
 type ConnectionPool struct {
-	pools   map[string]*ServicePool
-	poolsMu sync.RWMutex
+	pools   atomic.Value // map[string]*ServicePool, copy-on-write
+	poolsMu sync.Mutex
 }
 
 // NewConnectionPool 创建连接池管理器
 func NewConnectionPool() *ConnectionPool {
-	return &ConnectionPool{
-		pools: make(map[string]*ServicePool),
+	cp := &ConnectionPool{}
+	cp.storePools(make(map[string]*ServicePool))
+	return cp
+}
+
+func (cp *ConnectionPool) loadPools() map[string]*ServicePool {
+	if pools, ok := cp.pools.Load().(map[string]*ServicePool); ok && pools != nil {
+		return pools
 	}
+	return nil
+}
+
+func (cp *ConnectionPool) storePools(pools map[string]*ServicePool) {
+	cp.pools.Store(pools)
 }
 
 // GetOrCreate 获取或创建服务连接池
 func (cp *ConnectionPool) GetOrCreate(app *core.Core, serviceName string) *ServicePool {
-	cp.poolsMu.RLock()
-	if pool, ok := cp.pools[serviceName]; ok {
-		cp.poolsMu.RUnlock()
+	if pool, ok := cp.loadPools()[serviceName]; ok {
 		return pool
 	}
-	cp.poolsMu.RUnlock()
 
 	pool := NewServicePool(app, serviceName)
 
@@ -155,27 +182,38 @@ func (cp *ConnectionPool) GetOrCreate(app *core.Core, serviceName string) *Servi
 	defer cp.poolsMu.Unlock()
 
 	// double check
-	if existing, ok := cp.pools[serviceName]; ok {
+	pools := cp.loadPools()
+	if existing, ok := pools[serviceName]; ok {
 		return existing
 	}
 
-	cp.pools[serviceName] = pool
+	next := make(map[string]*ServicePool, len(pools)+1)
+	for name, existing := range pools {
+		next[name] = existing
+	}
+	next[serviceName] = pool
+	cp.storePools(next)
 	return pool
 }
 
 // Get 获取服务连接池
 func (cp *ConnectionPool) Get(serviceName string) *ServicePool {
-	cp.poolsMu.RLock()
-	defer cp.poolsMu.RUnlock()
-	return cp.pools[serviceName]
+	return cp.loadPools()[serviceName]
 }
 
 // Remove 移除服务连接池
 func (cp *ConnectionPool) Remove(serviceName string) {
 	cp.poolsMu.Lock()
-	pool, ok := cp.pools[serviceName]
-	if ok {
-		delete(cp.pools, serviceName)
+	pools := cp.loadPools()
+	pool := pools[serviceName]
+	if pool != nil {
+		next := make(map[string]*ServicePool, len(pools)-1)
+		for name, existing := range pools {
+			if name != serviceName {
+				next[name] = existing
+			}
+		}
+		cp.storePools(next)
 	}
 	cp.poolsMu.Unlock()
 
@@ -187,11 +225,8 @@ func (cp *ConnectionPool) Remove(serviceName string) {
 // Close 关闭所有连接池
 func (cp *ConnectionPool) Close() {
 	cp.poolsMu.Lock()
-	pools := make(map[string]*ServicePool, len(cp.pools))
-	for name, pool := range cp.pools {
-		pools[name] = pool
-	}
-	cp.pools = make(map[string]*ServicePool)
+	pools := cp.loadPools()
+	cp.storePools(make(map[string]*ServicePool))
 	cp.poolsMu.Unlock()
 
 	for _, pool := range pools {

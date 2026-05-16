@@ -3,11 +3,12 @@ package websocket
 import (
 	"math/rand/v2"
 	"sync"
+	"sync/atomic"
 )
 
 type Shard struct {
-	conns map[*Conn]struct{}
-	mu    sync.RWMutex
+	conns atomic.Value // map[*Conn]struct{}, copy-on-write
+	mu    sync.Mutex
 }
 
 type Manager struct {
@@ -19,11 +20,26 @@ var DefaultManager = NewManager()
 func NewManager() *Manager {
 	m := &Manager{}
 	for i := 0; i < 32; i++ {
-		m.shards[i] = &Shard{
-			conns: make(map[*Conn]struct{}),
-		}
+		m.shards[i] = newShard()
 	}
 	return m
+}
+
+func newShard() *Shard {
+	s := &Shard{}
+	s.store(make(map[*Conn]struct{}))
+	return s
+}
+
+func (s *Shard) load() map[*Conn]struct{} {
+	if conns, ok := s.conns.Load().(map[*Conn]struct{}); ok && conns != nil {
+		return conns
+	}
+	return nil
+}
+
+func (s *Shard) store(conns map[*Conn]struct{}) {
+	s.conns.Store(conns)
 }
 
 func (m *Manager) Add(c *Conn) {
@@ -31,7 +47,13 @@ func (m *Manager) Add(c *Conn) {
 	s := m.shards[idx]
 
 	s.mu.Lock()
-	s.conns[c] = struct{}{}
+	conns := s.load()
+	next := make(map[*Conn]struct{}, len(conns)+1)
+	for conn := range conns {
+		next[conn] = struct{}{}
+	}
+	next[c] = struct{}{}
+	s.store(next)
 	s.mu.Unlock()
 
 	c.shard = s
@@ -44,7 +66,16 @@ func (m *Manager) Remove(c *Conn) {
 	}
 
 	s.mu.Lock()
-	delete(s.conns, c)
+	conns := s.load()
+	if _, ok := conns[c]; ok {
+		next := make(map[*Conn]struct{}, len(conns)-1)
+		for conn := range conns {
+			if conn != c {
+				next[conn] = struct{}{}
+			}
+		}
+		s.store(next)
+	}
 	s.mu.Unlock()
 }
 
@@ -55,9 +86,7 @@ func (m *Manager) Broadcast(msg []byte) {
 func (m *Manager) BroadcastWithType(messageType MessageType, msg []byte) {
 	for i := 0; i < 32; i++ {
 		go func(s *Shard) {
-			s.mu.RLock()
-			defer s.mu.RUnlock()
-			for c := range s.conns {
+			for c := range s.load() {
 				c.SendWithType(messageType, msg)
 			}
 		}(m.shards[i])

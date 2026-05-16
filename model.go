@@ -88,6 +88,7 @@ func openDB(conf Options, debug, colorful bool) (db *DB, err error) {
 		dial = clickhouse.Open(dsn)
 	default:
 		Erro("Unknown database type: %s", tp)
+		return nil, fmt.Errorf("unknown database type: %s", tp)
 	}
 	if !debug {
 		db, err = gorm.Open(dial)
@@ -182,7 +183,6 @@ func (u UUID) String() string {
 func (u UUID) Bytes() []byte {
 	return u.UUID[:]
 }
-
 
 // Scan implements sql.Scanner so UUIDs can be read from databases transparently.
 // Currently, database types that map to string and []byte are supported. Please
@@ -521,7 +521,6 @@ func (m Money) MarshalBinary() (data []byte, err error) {
 func (m *Money) UnmarshalBinary(data []byte) error {
 	return m.UnmarshalJSON(data)
 }
-
 
 // Deprecated: IntMoney 已废弃，请使用 coins.Money
 type IntMoney int64
@@ -1110,6 +1109,9 @@ func FindNextBy[T any](whr *Map, out *[]T, db ...*DB) (result NextPage[T], err e
 	act := tx.Limit(lmt + 1).Find(out)
 	rows := act.RowsAffected
 	err = act.Error
+	if rows > int64(lmt) && len(*out) > lmt {
+		*out = (*out)[:lmt]
+	}
 	result = NextPage[T]{
 		P: pos, L: lmt,
 		Next: rows > int64(lmt),

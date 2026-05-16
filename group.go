@@ -122,29 +122,21 @@ func (g *Group) ALL(path string, handler any, middleware ...any) Router {
 
 // Add allows you to specify multiple HTTP methods to register a route.
 func (g *Group) Add(methods []string, path string, handler any, middleware ...any) Router {
-	handlers := middleware
-	if handler != nil {
-		handlers = append(handlers, handler)
-	}
 	uri := getGroupPath(g.Prefix, path)
 	D("route: %s %s", strings.Join(methods, ","), uri)
-	return g.Core.AddHandle(methods, uri, g, handler, g.Core.ProcessedHandler(handlers)...)
+	return g.Core.AddHandle(methods, uri, g, handler, g.Core.ProcessedHandler(middleware)...)
 }
 
 func (g *Group) Group(prefix string, handlers ...HandlerFuncs) Router {
-	prefix = getGroupPath(g.Prefix, prefix)
+	childPrefix := getGroupPath(g.Prefix, prefix)
 	if len(handlers) > 0 {
-		mws := make([]any, len(handlers))
-		for i, h := range handlers {
-			mws[i] = h
-		}
-		g.Add([]string{MethodUse}, prefix, g, mws...)
+		g.Core.AddHandle([]string{MethodUse}, childPrefix, g, nil, g.Core.ProcessedHandler(handlers)...)
 	}
 
 	return &Group{
 		Core:   g.Core,
 		parent: g,
 		name:   g.name,
-		Prefix: getGroupPath(g.Prefix, prefix),
+		Prefix: childPrefix,
 	}
 }

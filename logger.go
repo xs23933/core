@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -352,38 +353,62 @@ func (h *HookWriter) Write(p []byte) (n int, err error) {
 }
 
 type LogMonitor struct {
-	mu      sync.RWMutex
-	clients map[chan string]struct{}
+	mu      sync.Mutex
+	clients atomic.Value // map[chan string]struct{}, copy-on-write
 }
 
 func NewLogMonitor() *LogMonitor {
-	return &LogMonitor{
-		clients: make(map[chan string]struct{}),
+	m := &LogMonitor{}
+	m.storeClients(make(map[chan string]struct{}))
+	return m
+}
+
+func (m *LogMonitor) loadClients() map[chan string]struct{} {
+	if clients, ok := m.clients.Load().(map[chan string]struct{}); ok && clients != nil {
+		return clients
 	}
+	return nil
+}
+
+func (m *LogMonitor) storeClients(clients map[chan string]struct{}) {
+	m.clients.Store(clients)
 }
 
 func (m *LogMonitor) Register(c chan string) {
 	m.mu.Lock()
-	m.clients[c] = struct{}{}
+	clients := m.loadClients()
+	next := make(map[chan string]struct{}, len(clients)+1)
+	for ch := range clients {
+		next[ch] = struct{}{}
+	}
+	next[c] = struct{}{}
+	m.storeClients(next)
 	m.mu.Unlock()
 }
 
 func (m *LogMonitor) UnRegister(c chan string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.clients[c]; ok {
-		delete(m.clients, c)
-		close(c)
+	clients := m.loadClients()
+	if _, ok := clients[c]; !ok {
+		return
 	}
+	next := make(map[chan string]struct{}, len(clients)-1)
+	for ch := range clients {
+		if ch != c {
+			next[ch] = struct{}{}
+		}
+	}
+	m.storeClients(next)
+	close(c)
 }
 
 func (m *LogMonitor) Broadcast(msg string) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	if len(m.clients) == 0 {
+	clients := m.loadClients()
+	if len(clients) == 0 {
 		return
 	}
-	for c := range m.clients {
+	for c := range clients {
 		select {
 		case c <- msg:
 			continue
@@ -424,8 +449,8 @@ func (h *EventData) ToString() string {
 }
 
 type EventHub struct {
-	mu       sync.RWMutex
-	clients  map[chan EventData]struct{}
+	mu       sync.Mutex
+	clients  atomic.Value // map[chan EventData]struct{}, copy-on-write
 	queue    chan EventData
 	interval time.Duration
 }
@@ -436,13 +461,24 @@ func NewEventHub(interval ...time.Duration) *EventHub {
 		itv = interval[0]
 	}
 	h := &EventHub{
-		clients:  make(map[chan EventData]struct{}),
 		queue:    make(chan EventData, 1000), // 缓存,避免阻塞
 		interval: itv,
 	}
+	h.storeClients(make(map[chan EventData]struct{}))
 
 	go h.start()
 	return h
+}
+
+func (h *EventHub) loadClients() map[chan EventData]struct{} {
+	if clients, ok := h.clients.Load().(map[chan EventData]struct{}); ok && clients != nil {
+		return clients
+	}
+	return nil
+}
+
+func (h *EventHub) storeClients(clients map[chan EventData]struct{}) {
+	h.clients.Store(clients)
 }
 
 func (h *EventHub) start() {
@@ -480,23 +516,35 @@ func (h *EventHub) start() {
 
 func (h *EventHub) Register(c chan EventData) {
 	h.mu.Lock()
-	h.clients[c] = struct{}{}
+	clients := h.loadClients()
+	next := make(map[chan EventData]struct{}, len(clients)+1)
+	for ch := range clients {
+		next[ch] = struct{}{}
+	}
+	next[c] = struct{}{}
+	h.storeClients(next)
 	h.mu.Unlock()
 }
 
 func (h *EventHub) UnRegister(c chan EventData) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if _, ok := h.clients[c]; ok {
-		delete(h.clients, c)
-		close(c)
+	clients := h.loadClients()
+	if _, ok := clients[c]; !ok {
+		return
 	}
+	next := make(map[chan EventData]struct{}, len(clients)-1)
+	for ch := range clients {
+		if ch != c {
+			next[ch] = struct{}{}
+		}
+	}
+	h.storeClients(next)
+	close(c)
 }
 
 func (h *EventHub) broadcast(data EventData) {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	for c := range h.clients {
+	for c := range h.loadClients() {
 		select {
 		case c <- data:
 			continue

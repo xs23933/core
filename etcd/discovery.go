@@ -15,10 +15,10 @@ type Discovery struct {
 	client *clientv3.Client
 	opts   *Options
 
-	mu sync.RWMutex
+	mu sync.Mutex
 
 	// serviceName -> instanceKey -> service
-	services map[string]map[string]*ServiceInfo
+	services atomic.Value // map[string]map[string]*ServiceInfo, copy-on-write
 
 	// serviceName -> cancel
 	watchers map[string]context.CancelFunc
@@ -52,13 +52,37 @@ func NewDiscovery(opts *Options) (*Discovery, error) {
 		return nil, fmt.Errorf("etcd connection test failed: %w", err)
 	}
 
-	return &Discovery{
+	d := &Discovery{
 		client:      client,
 		opts:        opts,
-		services:    make(map[string]map[string]*ServiceInfo),
 		watchers:    make(map[string]context.CancelFunc),
 		subscribers: make(map[string]map[uint64]func()),
-	}, nil
+	}
+	d.storeServices(make(map[string]map[string]*ServiceInfo))
+	return d, nil
+}
+
+func (d *Discovery) loadServices() map[string]map[string]*ServiceInfo {
+	if services, ok := d.services.Load().(map[string]map[string]*ServiceInfo); ok && services != nil {
+		return services
+	}
+	return nil
+}
+
+func (d *Discovery) storeServices(services map[string]map[string]*ServiceInfo) {
+	d.services.Store(services)
+}
+
+func copyServices(services map[string]map[string]*ServiceInfo) map[string]map[string]*ServiceInfo {
+	next := make(map[string]map[string]*ServiceInfo, len(services))
+	for serviceName, instances := range services {
+		copied := make(map[string]*ServiceInfo, len(instances))
+		for key, svc := range instances {
+			copied[key] = svc
+		}
+		next[serviceName] = copied
+	}
+	return next
 }
 
 func (d *Discovery) Watch(serviceName string) error {
@@ -71,9 +95,11 @@ func (d *Discovery) Watch(serviceName string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	d.watchers[serviceName] = cancel
 
-	if d.services[serviceName] == nil {
-		d.services[serviceName] = make(map[string]*ServiceInfo)
+	services := copyServices(d.loadServices())
+	if services[serviceName] == nil {
+		services[serviceName] = make(map[string]*ServiceInfo)
 	}
+	d.storeServices(services)
 	d.mu.Unlock()
 
 	prefix := fmt.Sprintf("/services/%s/", serviceName)
@@ -91,13 +117,18 @@ func (d *Discovery) Watch(serviceName string) error {
 	}
 
 	d.mu.Lock()
+	services = copyServices(d.loadServices())
+	if services[serviceName] == nil {
+		services[serviceName] = make(map[string]*ServiceInfo)
+	}
 	for _, kv := range resp.Kvs {
 		var svc ServiceInfo
 		if err := json.Unmarshal(kv.Value, &svc); err != nil {
 			continue
 		}
-		d.services[serviceName][string(kv.Key)] = &svc
+		services[serviceName][string(kv.Key)] = &svc
 	}
+	d.storeServices(services)
 	d.mu.Unlock()
 
 	d.notify(serviceName)
@@ -123,6 +154,7 @@ func (d *Discovery) watchLoop(ctx context.Context, serviceName string, prefix st
 		changed := false
 
 		d.mu.Lock()
+		services := copyServices(d.loadServices())
 		for _, ev := range resp.Events {
 			key := string(ev.Kv.Key)
 
@@ -132,18 +164,21 @@ func (d *Discovery) watchLoop(ctx context.Context, serviceName string, prefix st
 				if err := json.Unmarshal(ev.Kv.Value, &svc); err != nil {
 					continue
 				}
-				if d.services[serviceName] == nil {
-					d.services[serviceName] = make(map[string]*ServiceInfo)
+				if services[serviceName] == nil {
+					services[serviceName] = make(map[string]*ServiceInfo)
 				}
-				d.services[serviceName][key] = &svc
+				services[serviceName][key] = &svc
 				changed = true
 
 			case clientv3.EventTypeDelete:
-				if d.services[serviceName] != nil {
-					delete(d.services[serviceName], key)
+				if services[serviceName] != nil {
+					delete(services[serviceName], key)
 				}
 				changed = true
 			}
+		}
+		if changed {
+			d.storeServices(services)
 		}
 		d.mu.Unlock()
 
@@ -154,10 +189,7 @@ func (d *Discovery) watchLoop(ctx context.Context, serviceName string, prefix st
 }
 
 func (d *Discovery) GetServices(serviceName string) []*ServiceInfo {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-
-	m := d.services[serviceName]
+	m := d.loadServices()[serviceName]
 	services := make([]*ServiceInfo, 0, len(m))
 	for _, svc := range m {
 		services = append(services, svc)
@@ -186,12 +218,12 @@ func (d *Discovery) Subscribe(serviceName string, fn func()) func() {
 }
 
 func (d *Discovery) notify(serviceName string) {
-	d.mu.RLock()
+	d.mu.Lock()
 	subs := make([]func(), 0, len(d.subscribers[serviceName]))
 	for _, fn := range d.subscribers[serviceName] {
 		subs = append(subs, fn)
 	}
-	d.mu.RUnlock()
+	d.mu.Unlock()
 
 	for _, fn := range subs {
 		fn()

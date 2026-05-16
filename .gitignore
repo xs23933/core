@@ -8,6 +8,5 @@ dist
 tmp
 *.toml
 dat
-*_test.go
 *.http
 *debug*

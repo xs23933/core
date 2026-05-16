@@ -3,6 +3,7 @@ package websocket
 import (
 	"io"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -35,10 +36,11 @@ type BatchConfig struct {
 }
 
 type Conn struct {
-	conn  *websocket.Conn
-	send  chan *message
-	shard *Shard
-	meta  any
+	conn   *websocket.Conn
+	send   chan *message
+	shard  *Shard
+	meta   any
+	closed atomic.Bool
 
 	// 批量发送相关
 	batchMu     sync.Mutex
@@ -74,6 +76,9 @@ func (c *Conn) EnableBatch(config BatchConfig) {
 }
 
 func (c *Conn) SendBatchWithType(messageType MessageType, data []byte) {
+	if c.closed.Load() {
+		return
+	}
 	if !c.batchConfig.Enabled {
 		c.SendWithType(messageType, data)
 		return
@@ -170,6 +175,10 @@ func (c *Conn) flushBatchSeparate() {
 }
 
 func (c *Conn) sendDirectWithType(messageType MessageType, data *[]byte) {
+	if c.closed.Load() {
+		bufferPool.Put(data)
+		return
+	}
 	msg := &message{
 		typ:  MessageType(messageType),
 		data: data,
@@ -187,6 +196,9 @@ func (c *Conn) Send(data []byte) {
 }
 
 func (c *Conn) SendWithType(messageType MessageType, data []byte) {
+	if c.closed.Load() {
+		return
+	}
 	buf := bufferPool.Get().(*[]byte)
 	*buf = append((*buf)[:0], data...)
 
@@ -341,6 +353,10 @@ func GetMeta[T any](c *Conn) (T, bool) {
 }
 
 func (c *Conn) Close() {
+	if !c.closed.CompareAndSwap(false, true) {
+		return
+	}
+
 	// 清理批量缓冲区
 	c.batchMu.Lock()
 	if c.batchTimer != nil {
@@ -355,5 +371,7 @@ func (c *Conn) Close() {
 	c.batchMu.Unlock()
 
 	DefaultManager.Remove(c)
-	c.conn.Close()
+	if c.conn != nil {
+		c.conn.Close()
+	}
 }

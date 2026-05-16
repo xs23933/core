@@ -19,7 +19,7 @@ type Config struct {
 var defaultConfig = Config{
 	AllowOrigins:     "*",
 	AllowMethods:     "GET,POST,PUT,DELETE,OPTIONS",
-	AllowCredentials: true,
+	AllowCredentials: false,
 }
 
 // New 返回一个标准 CORS 中间件
@@ -145,7 +145,7 @@ func matchOrigin(origin string, allowOrigins []originRule, allowCredentials bool
 	for _, o := range allowOrigins {
 		if o.raw == "*" {
 			if allowCredentials {
-				return origin
+				return ""
 			}
 			return "*"
 		}

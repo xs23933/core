@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -66,8 +67,8 @@ type EtcdGateway struct {
 	prefix  string
 	config  *Config
 
-	mu     sync.RWMutex
-	routes map[string]*Route
+	mu     sync.Mutex
+	routes atomic.Value // map[string]*Route, copy-on-write
 	// grpcServiceRoutes 按 gRPC 服务名索引路由，用于清理已删除方法的旧路由
 	grpcServiceRoutes map[string]map[string]bool
 
@@ -233,12 +234,12 @@ func NewEtcdGateway(app *core.Core, conf ...*Config) (*EtcdGateway, error) {
 		etcdCli:           cli,
 		prefix:            config.RoutePrefix,
 		config:            config,
-		routes:            make(map[string]*Route),
 		grpcServiceRoutes: make(map[string]map[string]bool),
 		watchCtx:          ctx,
 		watchCancel:       cancel,
 		connPool:          NewConnectionPool(),
 	}
+	gw.storeRoutes(make(map[string]*Route))
 
 	if err := gw.loadAllRoutes(); err != nil {
 		core.D("[Gateway] load all routes failed: %v", err)
@@ -257,6 +258,25 @@ func NewEtcdGateway(app *core.Core, conf ...*Config) (*EtcdGateway, error) {
 
 	core.D("[Gateway] ✅ Etcd Gateway started")
 	return gw, nil
+}
+
+func (gw *EtcdGateway) loadRoutes() map[string]*Route {
+	if routes, ok := gw.routes.Load().(map[string]*Route); ok && routes != nil {
+		return routes
+	}
+	return nil
+}
+
+func (gw *EtcdGateway) storeRoutes(routes map[string]*Route) {
+	gw.routes.Store(routes)
+}
+
+func copyRoutes(routes map[string]*Route, extra int) map[string]*Route {
+	next := make(map[string]*Route, len(routes)+extra)
+	for id, route := range routes {
+		next[id] = route
+	}
+	return next
 }
 
 // parseServiceKey 解析 etcd key，提取 serviceName 和 instanceID
@@ -438,6 +458,9 @@ func (gw *EtcdGateway) autoRegisterRoutes(serviceName string, proxy *ReflectionP
 	gw.mu.Lock()
 	defer gw.mu.Unlock()
 
+	routes := gw.loadRoutes()
+	nextRoutes := copyRoutes(routes, len(methods))
+
 	// 收集本次注册的所有 routeHash，按 gRPC 服务名分组
 	newHashesByService := make(map[string]map[string]bool)
 
@@ -457,11 +480,11 @@ func (gw *EtcdGateway) autoRegisterRoutes(serviceName string, proxy *ReflectionP
 		newHashesByService[grpcServiceName][routeIDHash] = true
 
 		// 先注销旧路由再注册（避免重复）
-		if old, exists := gw.routes[routeIDHash]; exists {
+		if old, exists := nextRoutes[routeIDHash]; exists {
 			gw.unregisterRoute(old)
 		}
 
-		gw.routes[routeIDHash] = &Route{
+		nextRoutes[routeIDHash] = &Route{
 			ID:          routeIDHash,
 			Method:      httpMethod,
 			Path:        httpPath,
@@ -473,7 +496,7 @@ func (gw *EtcdGateway) autoRegisterRoutes(serviceName string, proxy *ReflectionP
 			UpdatedAt:   time.Now(),
 		}
 
-		gw.registerRoute(gw.routes[routeIDHash])
+		gw.registerRoute(nextRoutes[routeIDHash])
 	}
 
 	// 清理已删除方法的旧路由：该 gRPC 服务以前有但现在没有的路由
@@ -481,15 +504,16 @@ func (gw *EtcdGateway) autoRegisterRoutes(serviceName string, proxy *ReflectionP
 		if oldHashes, exists := gw.grpcServiceRoutes[grpcSvc]; exists {
 			for oldHash := range oldHashes {
 				if !newHashes[oldHash] {
-					if route, ok := gw.routes[oldHash]; ok {
+					if route, ok := nextRoutes[oldHash]; ok {
 						gw.unregisterRoute(route)
-						delete(gw.routes, oldHash)
+						delete(nextRoutes, oldHash)
 					}
 				}
 			}
 		}
 		gw.grpcServiceRoutes[grpcSvc] = newHashes
 	}
+	gw.storeRoutes(nextRoutes)
 }
 
 // grpcToHTTP 将 gRPC 方法转换为 HTTP 路由
@@ -601,24 +625,30 @@ func (gw *EtcdGateway) addOrUpdateRoute(route *Route) {
 	gw.mu.Lock()
 	defer gw.mu.Unlock()
 
-	if old, exists := gw.routes[route.ID]; exists {
+	routes := gw.loadRoutes()
+	nextRoutes := copyRoutes(routes, 1)
+	if old, exists := nextRoutes[route.ID]; exists {
 		gw.unregisterRoute(old)
 	}
 
-	gw.routes[route.ID] = route
+	nextRoutes[route.ID] = route
 	gw.registerRoute(route)
+	gw.storeRoutes(nextRoutes)
 }
 
 func (gw *EtcdGateway) removeRouteByID(routeID string) {
 	gw.mu.Lock()
 	defer gw.mu.Unlock()
 
-	route, exists := gw.routes[routeID]
+	routes := gw.loadRoutes()
+	route, exists := routes[routeID]
 	if !exists {
 		return
 	}
+	nextRoutes := copyRoutes(routes, 0)
 	gw.unregisterRoute(route)
-	delete(gw.routes, routeID)
+	delete(nextRoutes, routeID)
+	gw.storeRoutes(nextRoutes)
 }
 
 func (gw *EtcdGateway) registerRoute(route *Route) {
@@ -834,21 +864,18 @@ func (gw *EtcdGateway) deleteRoute(ctx core.Ctx) error {
 }
 
 func (gw *EtcdGateway) listRoutes(ctx core.Ctx) error {
-	gw.mu.RLock()
-	routes := make([]*Route, 0, len(gw.routes))
-	for _, r := range gw.routes {
+	routeMap := gw.loadRoutes()
+	routes := make([]*Route, 0, len(routeMap))
+	for _, r := range routeMap {
 		routes = append(routes, r)
 	}
-	gw.mu.RUnlock()
 
 	return ctx.JSON(core.Map{"code": 0, "data": routes, "total": len(routes)})
 }
 
 func (gw *EtcdGateway) getRoute(ctx core.Ctx) error {
 	routeID := ctx.Params("id")
-	gw.mu.RLock()
-	route, exists := gw.routes[routeID]
-	gw.mu.RUnlock()
+	route, exists := gw.loadRoutes()[routeID]
 
 	if !exists {
 		return ctx.Status(404).JSON(core.Map{"code": 404, "message": "route not found"})
