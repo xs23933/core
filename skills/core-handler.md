@@ -40,11 +40,11 @@ func init() {
 | 需求           | 方法名              | 生成路由             |
 | -------------- | ------------------- | -------------------- |
 | 列表查询       | `Get`               | `GET /`              |
-| 详情查询       | `Get_id`            | `GET /:id`           |
+| 详情查询       | `GetByID`            | `GET /:id`           |
 | 创建           | `Post`              | `POST /`             |
 | 更新           | `Put_id`            | `PUT /:id`           |
 | 删除           | `Delete_id`         | `DELETE /:id`        |
-| 子资源         | `Get_id_Profile`    | `GET /:id/profile`   |
+| 子资源         | `GetByIDProfile`    | `GET /:id/profile`   |
 | 自定义参数     | `GetParam`          | `GET /:param`        |
 | 可选参数       | `GetParams`         | `GET /:param?`       |
 | 静态路径       | `GetProfile`        | `GET /profile`       |
@@ -97,7 +97,7 @@ func (h *UserHandler) Get(c core.Ctx) {
 }
 
 // GET /api/v1/users/:id
-func (h *UserHandler) Get_id(c core.Ctx) {
+func (h *UserHandler) GetByID(c core.Ctx) {
     id := c.Params("id")
     user, err := service.GetUserByID(id)
     c.ToJSON(user, err)
@@ -145,7 +145,7 @@ func (h *UserHandler) Delete_id(c core.Ctx) {
 
 - ❌ 手动调用 `app.GET()` 注册路由
 - ❌ 在 Handler 中直接操作数据库
-- ❌ 使用 `GetId` 期望得到 `/:id`（应使用 `Get_id`）
+- ❌ 使用 `GetId` 期望得到 `/:id`（应使用 `Get_id` 或 `GetByID`）
 - ❌ Handler 中包含复杂业务逻辑
 
 ### 6. 参数获取速查

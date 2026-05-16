@@ -5,8 +5,11 @@
 ### 自动路由规则
 - Handler 结构体必须嵌入 `core.Handler`
 - 方法名以 HTTP 方法开头（Get/Post/Put/Delete）
-- `Get_id` 生成 `/:id` 路由
+- `GetByID` 生成 `/:id` 路由
 - `GetParam` 生成 `/:param` 路由
+- `GetParams` 生成 `/:param?` 路由
+- `GetDetail__dot__html` 生成 `/detail.html` 路由
+- `GetDetail__create` 生成 `/detail-create` 路由
 
 ### 代码模板参考
 - Handler: `skills/core-handler.md`

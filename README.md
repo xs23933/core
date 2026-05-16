@@ -178,7 +178,7 @@ func (UserHandler) Post(c core.Ctx) {
 }
 
 // GET /users/:id
-func (UserHandler) Get_id(c core.Ctx) {
+func (UserHandler) GetByID(c core.Ctx) {
     id, err := c.ParamsUid("id")
     if err != nil {
         c.ToJSON(nil, err)
@@ -214,7 +214,7 @@ _Params 是可选关键词 即:params?_
 - `Get` → `GET /`
 - `GetParam` → `GET /:param`
 - `GetParams` → `GET /:params?`
-- `Get_id` → `GET /:id`
+- `GetByID` → `GET /:id`
 - `GetDetailParam` → `GET /detail/:param`
 - `PostUser` → `POST /user`
 - `PutUserParam` → `PUT /user/:param`
@@ -1497,13 +1497,13 @@ func (h *Handler) GetId(c core.Ctx) error {}
 
 ```go
 // 方法名 → 路由
-func (h *Handler) Get_id(c core.Ctx) error {}
+func (h *Handler) GetByID(c core.Ctx) error {}
 // GET /:id
 
-func (h *Handler) Get_userId(c core.Ctx) error {}
-// GET /:userId
+func (h *Handler) GetByUserid(c core.Ctx) error {}
+// GET /:userid
 
-func (h *Handler) Get_id_Profile(c core.Ctx) error {}
+func (h *Handler) GetByIDProfile(c core.Ctx) error {}
 // GET /:id/profile
 ```
 
@@ -1556,13 +1556,13 @@ func (h *Handler) GetParam_Callback(c core.Ctx) error {
 
 ```go
 // 路由: GET /:id
-func (h *Handler) Get_id(c core.Ctx) error {
+func (h *Handler) GetByID(c core.Ctx) error {
     id := c.Params("id")  // 参数名为 "id"
     // ...
 }
 
-// 路由: GET /:userId/profile
-func (h *Handler) Get_userId_Profile(c core.Ctx) error {
+// 路由: GET /:userid/profile
+func (h *Handler) GetByUseridProfile(c core.Ctx) error {
     userId := c.Params("userId")  // 参数名为 "userId"
     // ...
 }
@@ -1653,12 +1653,12 @@ func (h *UserHandler) Init() {
 func (h *UserHandler) Get(c core.Ctx) error {}
 
 // GET /api/v1/users/:id
-func (h *UserHandler) Get_id(c core.Ctx) error {
+func (h *UserHandler) GetByID(c core.Ctx) error {
     id := c.Params("id")
 }
 
 // GET /api/v1/users/:id/profile
-func (h *UserHandler) Get_id_Profile(c core.Ctx) error {
+func (h *UserHandler) GetByID_Profile(c core.Ctx) error {
     id := c.Params("id")
 }
 
@@ -1696,14 +1696,14 @@ func (h *UserHandler) Delete_id(c core.Ctx) error {}
 | ------------------- | ----------------------------------------- | ----------------------- |
 | `GetProfile`        | `Profile` → `/profile`                    | `GET /profile`          |
 | `GetCurrentUser`    | `Current` + `User` → `/current/user`      | `GET /current/user`     |
-| `Get_id`            | `_id` → `/:id`                            | `GET /:id`              |
+| `GetByID`           | `ByID` → `/:id`                           | `GET /:id`              |
 | `Get_userId`        | `_userId` → `/:userId`                    | `GET /:userId`          |
-| `Get_id_Profile`    | `_id` + `Profile` → `/:id/profile`        | `GET /:id/profile`      |
+| `GetByID_Profile`   | `_id` + `Profile` → `/:id/profile`        | `GET /:id/profile`      |
 | `GetParam`          | `Param` → `/:param`                       | `GET /:param`           |
 | `GetParam_Callback` | `Param` + `Callback` → `/:param/callback` | `GET /:param/callback`  |
 | `GetParams`         | `Params` → `/:param?`                     | `GET /:param?`          |
 | `GetParams_Detail`  | `Params` + `Detail` → `/:param?/detail`   | `GET /:param?/detail`   |
-| `GetId`             | `Id` → `/id`                              | `GET /id`（不是参数！） |
+| `GetId`             | `Id` → `/id`                              | `GET /id`（不是参数！）   |
 | `PostLogin`         | `Login` → `/login`                        | `POST /login`           |
 
 ---
@@ -1718,7 +1718,7 @@ func (h *Handler) GetId(c core.Ctx) error {}
 // GET /id  （Id 是路径片段，不是参数）
 
 // ✅ 正确：使用下划线定义参数
-func (h *Handler) Get_id(c core.Ctx) error {}
+func (h *Handler) GetByID(c core.Ctx) error {}
 // GET /:id
 ```
 
@@ -1742,7 +1742,7 @@ func (h *Handler) GetParam(c core.Ctx) error {}
 // GET /:param，用 c.Params("param") 获取
 
 // 自定义参数名用下划线
-func (h *Handler) Get_id(c core.Ctx) error {}
+func (h *Handler) GetByID(c core.Ctx) error {}
 // GET /:id，用 c.Params("id") 获取
 ```
 
@@ -1789,18 +1789,18 @@ func (h *Handler) Get_id(c core.Ctx) error {}
 │  GetProfile           →  GET /profile                       │
 │  GetCurrent           →  GET /current                       │
 │  GetCurrentProfile    →  GET /current/profile               │
-│  Get_id               →  GET /:id       (自定义参数)        │
-│  Get_userId           →  GET /:userId   (自定义参数)        │
-│  Get_id_Profile       →  GET /:id/profile                   │
-│  GetParam             →  GET /:param     (必选关键字)       │
+│  GetByID              →  GET /:id       (自定义参数)          │
+│  GetUserid            →  GET /:userid   (自定义参数)         │
+│  GetByID_Profile      →  GET /:id/profile                   │
+│  GetParam             →  GET /:param     (必选关键字)        │
 │  GetParam_Callback    →  GET /:param/callback               │
-│  GetParams            →  GET /:param?    (可选关键字)       │
+│  GetParams            →  GET /:param?    (可选关键字)        │
 │  GetParams_Detail     →  GET /:param?/detail                │
-│  GetId                →  GET /id       (不是参数！)         │
+│  GetId                →  GET /id       (不是参数！)          │
 │  Post                 →  POST /                             │
 │  PostLogin            →  POST /login                        │
-│  Put_id               →  PUT /:id                           │
-│  Delete_id            →  DELETE /:id                        │
+│  PutID                →  PUT /:id                           │
+│  DeleteID             →  DELETE /:id                        │
 └─────────────────────────────────────────────────────────────┘
 
 参数获取:

@@ -45,7 +45,7 @@ func (Handler) GetDetail(c core.Ctx) {
 	c.ToJSON(models.UserById(id))
 }
 
-func (Handler) Get_id(c core.Ctx) {
+func (Handler) GetByID(c core.Ctx) {
 	uid, err := c.ParamsUuid("id")
 	if err != nil {
 		c.ToJSON(nil, err)

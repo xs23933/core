@@ -40,7 +40,7 @@ AI 在生成 Handler 时必须严格遵守以下命名约定，禁止手动配�
     | :--- | :--- | :--- |
     | `func (h *H) Get` | `GET /` | - |
     | `func (h *H) GetProfile` | `GET /profile` | - |
-    | `func (h *H) Get_id` | `GET /:id` | `c.Params("id")` |
+    | `func (h *H) GetById` | `GET /:id` | `c.Params("id")` |
     | `func (h *H) Get_userId` | `GET /:userId` | `c.Params("userId")` |
     | `func (h *H) GetParam` | `GET /:param` (**必选**) | `c.Params("param")` |
     | `func (h *H) GetParams` | `GET /:param?` (**可选**) | `c.Params("param")` |
@@ -553,7 +553,7 @@ func (h *UserHandler) Get(c core.Ctx) {
 }
 
 // GET /api/v1/users/:id
-func (h *UserHandler) Get_id(c core.Ctx) {
+func (h *UserHandler) GetByID(c core.Ctx) {
     id := c.Params("id")
     user, err := service.GetUserByID(id)
     c.ToJSON(user, err)
@@ -635,7 +635,7 @@ router.GET("/user/:id", handler.GetUser)
 正确：
 
 ```go
-func (h *UserHandler) Get_id(c core.Ctx)
+func (h *UserHandler) GetByID(c core.Ctx)
 ```
 
 ---
@@ -649,7 +649,7 @@ func GetUser(c *gin.Context)
 正确：
 
 ```go
-func (h *UserHandler) Get_id(c core.Ctx)
+func (h *UserHandler) GetByID(c core.Ctx)
 ```
 
 ---
@@ -738,7 +738,7 @@ handler
 
 ## 5. 故障排查
 - **Q**: 路由返回 404，但我写了 `GetId` 方法。
-    - **A**: `GetId` 生成的是 `/id`。如果你想要 `/users/123`，必须写成 `Get_id` (下划线)。
+    - **A**: `GetId` 生成的是 `/id`。如果你想要 `/users/123`，必须写成 `GetByID`。
 - **Q**: 数据库连接报错。
     - **A**: 检查 `config.yaml` 中的 `database.dsn` 格式。MySQL 必须包含 `parseTime=true`。
 - **Q**: 如何获取 URL 中的可选参数？
