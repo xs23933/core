@@ -19,6 +19,12 @@ Core 是一个用于快速开发企业级 Go 应用程序的 Web 框架，包括
 - **[ai-context](https://github.com/xs23933/core/A_CONTEXT.md)** - AI 的工作流程指南
 - **[skills](https://github.com/xs23933/core/skills)** - 模式库和示例
 
+<!-- AI_CONFIG_START -->
+参考文档：
+- ./AI_CONTEXT.md - Core 框架完整上下文
+- ./skills/ - 场景化开发模板
+<!-- AI_CONFIG_END -->
+
 ## 快速开始
 
 ### 安装

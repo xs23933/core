@@ -1,0 +1,29 @@
+# .cursorrules - Cursor 编辑器配置
+
+# 项目信息
+project:
+  name: "Core Framework v3.1.1"
+  language: "Go"
+  framework: "github.com/xs23933/core/v3"
+
+# 自动加载的文档
+docs:
+  - AI_CONTEXT.md
+  - skills/core-handler.md
+  - skills/core-model.md
+  - skills/core-service.md
+  - skills/core-middleware.md
+  - skills/core-page.md
+
+# 代码生成规则
+rules:
+  - "必须使用自动路由注册，禁止手动 app.Get()"
+  - "Handler 方法名遵循命名规范（Get/Post/Put/Delete + 路径）"
+  - "使用 c.ToJSON() 返回响应"
+  - "错误必须显式处理，禁止 panic"
+
+# 文件模板
+templates:
+  handler: "skills/core-handler.md"
+  model: "skills/core-model.md"
+  service: "skills/core-service.md"
