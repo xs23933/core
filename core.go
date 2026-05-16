@@ -239,6 +239,18 @@ func New(options ...Options) *Core {
 			Erro("disconnect %s: %w", conf.GetString("dsn"), err)
 		}
 	}
+	if conf := Conf.GetMap("redis"); conf != nil {
+		if _, err := NewRedis(conf, app.Debug); err != nil {
+			Erro("redis connect failed: %v", err)
+		}
+		app.OnShutdown(func() { CloseRedis() })
+	}
+	if conf := Conf.GetMap("nsq"); conf != nil {
+		if err := InitNSQ(conf, app.Debug); err != nil {
+			Erro("nsq init failed: %v", err)
+		}
+		app.OnShutdown(func() { CloseNSQ() })
+	}
 	if !IsChild() {
 		Log(CoreHeader, VERSION)
 	}

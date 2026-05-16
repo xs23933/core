@@ -16,8 +16,8 @@ Core 是一个用于快速开发企业级 Go 应用程序的 Web 框架，包括
 - **WebSocket 支持** - 内置 WebSocket 处理
 - **模板引擎** - 支持 HTML 模板渲染
 - **中间件系统** - 灵活的中间件扩展机制
-- **[ai-context](https://github.com/xs23933/core/A_CONTEXT.md)** - AI 的工作流程指南
-- **[skills](https://github.com/xs23933/core/skills)** - 模式库和示例
+- **[ai-context](https://github.com/xs23933/core/blob/v3/AI_CONTEXT.md)** - AI 的工作流程指南
+- **[skills](https://github.com/xs23933/core/tree/v3/skills)** - 模式库和示例
 
 <!-- AI_CONFIG_START -->
 参考文档：

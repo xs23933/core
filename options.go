@@ -3,6 +3,7 @@ package core
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -217,11 +218,88 @@ func LoadConfigFile(file string, opts ...Options) Options {
 		conf = opts[0]
 	}
 
+	// 检查 --generate 标志
+	if checkGenerate(file) {
+		os.Exit(0)
+	}
+
 	if strings.HasSuffix(file, ".dat") {
 		return loadEncryptedConfig(file, conf)
 	}
 
 	return loadYamlConfig(file, conf)
+}
+
+// checkGenerate 检查命令行是否带 --generate 标志
+// 如果带 --generate 且配置文件是 .dat 结尾，则生成加密 .dat 后返回 true
+// 如果带 --generate 且配置文件是 .yaml/.yml 结尾，则生成同名 .dat 后返回 true
+func checkGenerate(configFile string) bool {
+	hasGenerate := false
+	for _, arg := range os.Args[1:] {
+		if arg == "--generate" || arg == "-generate" {
+			hasGenerate = true
+			break
+		}
+	}
+	if !hasGenerate {
+		return false
+	}
+
+	if strings.HasSuffix(configFile, ".dat") {
+		// 从 .dat 推导出 .default.yaml
+		yamlFile, _ := strings.CutSuffix(configFile, ".dat")
+		yamlFile += ".default.yaml"
+
+		yamlBuf, err := os.ReadFile(yamlFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[generate] read %s failed: %v\n", yamlFile, err)
+			os.Exit(1)
+		}
+
+		encryptedBuf, err := EncryptAESBytes(yamlBuf)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[generate] encrypt failed: %v\n", err)
+			os.Exit(1)
+		}
+
+		if err := os.WriteFile(configFile, encryptedBuf, 0644); err != nil {
+			fmt.Fprintf(os.Stderr, "[generate] write %s failed: %v\n", configFile, err)
+			os.Exit(1)
+		}
+
+		fmt.Fprintf(os.Stdout, "[generate] %s -> %s OK\n", yamlFile, configFile)
+		return true
+	}
+
+	if strings.HasSuffix(configFile, ".yaml") || strings.HasSuffix(configFile, ".yml") {
+		// 从 .yaml 生成同名 .dat
+		datFile, _ := strings.CutSuffix(configFile, filepath.Ext(configFile))
+		datFile += ".dat"
+
+		yamlBuf, err := os.ReadFile(configFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[generate] read %s failed: %v\n", configFile, err)
+			os.Exit(1)
+		}
+
+		encryptedBuf, err := EncryptAESBytes(yamlBuf)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[generate] encrypt failed: %v\n", err)
+			os.Exit(1)
+		}
+
+		if err := os.WriteFile(datFile, encryptedBuf, 0644); err != nil {
+			fmt.Fprintf(os.Stderr, "[generate] write %s failed: %v\n", datFile, err)
+			os.Exit(1)
+		}
+
+		fmt.Fprintf(os.Stdout, "[generate] %s -> %s OK\n", configFile, datFile)
+		return true
+	}
+
+	fmt.Fprintf(os.Stderr, "[generate] config file must be .dat or .yaml/.yml, got: %s\n", configFile)
+	os.Exit(1)
+	return false
 }
 
 func loadEncryptedConfig(datFile string, defaultConf Options) Options {

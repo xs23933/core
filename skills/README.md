@@ -1,3 +1,4 @@
+```sh
 skills/
 ├── core-handler.md          # 创建 RESTful Handler
 ├── core-model.md            # 定义数据模型
@@ -8,6 +9,11 @@ skills/
 ├── core-websocket.md        # WebSocket 处理
 ├── core-page.md             # 分页查询实现
 ├── core-utils.md            # 工具函数、Map/Array、加密与密码
+├── core-redis.md            # Redis 封装（String/JSON/Hash/Set/ZSet/List/BitMap/Pipeline/Lua/PubSub/Stream）
+├── core-nsq.md              # NSQ 消息队列封装（Producer/Consumer/Builder/JSON/超时处理）
+├── core-logger.md           # 日志系统（D/Info/Warn/Erro/Recovery/LogMonitor/EventHub SSE）
 ├── core-fileupload.md       # 文件上传处理
 ├── core-test.md             # 测试编写
 └── core-refactor.md         # 代码重构指南
+
+```
