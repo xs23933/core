@@ -41,37 +41,70 @@ import (
 	"fmt"
 	"time"
 
+	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
 // KVPrefix 配置中心默认前缀
 const KVPrefix = "/config/"
 
-// Put 存储键值对，value 会被 JSON 序列化
-func (d *Discovery) Put(key string, value any, opts ...clientv3.OpOption) error {
-	data, err := json.Marshal(value)
-	if err != nil {
-		return fmt.Errorf("marshal value: %w", err)
-	}
+const kvTimeout = 5 * time.Second
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+func kvKey(key string) string {
+	return KVPrefix + key
+}
+
+func kvContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), kvTimeout)
+}
+
+func keyNotFound(fullKey string) error {
+	return fmt.Errorf("key not found: %s", fullKey)
+}
+
+func (d *Discovery) getKV(key string, opts ...clientv3.OpOption) (string, *clientv3.GetResponse, error) {
+	ctx, cancel := kvContext()
 	defer cancel()
 
-	fullKey := KVPrefix + key
-	_, err = d.client.Put(ctx, fullKey, string(data), opts...)
+	fullKey := kvKey(key)
+	resp, err := d.client.Get(ctx, fullKey, opts...)
+	return fullKey, resp, err
+}
+
+func (d *Discovery) putRaw(key string, value string, opts ...clientv3.OpOption) error {
+	ctx, cancel := kvContext()
+	defer cancel()
+
+	_, err := d.client.Put(ctx, kvKey(key), value, opts...)
 	return err
+}
+
+func marshalJSON(value any) (string, error) {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return "", fmt.Errorf("marshal value: %w", err)
+	}
+	return string(data), nil
+}
+
+// Put 存储键值对，value 会被 JSON 序列化
+func (d *Discovery) Put(key string, value any, opts ...clientv3.OpOption) error {
+	data, err := marshalJSON(value)
+	if err != nil {
+		return err
+	}
+
+	return d.putRaw(key, data, opts...)
 }
 
 // Add appends string values to a JSON []string stored at key.
 // It preserves existing order, skips duplicates, and uses an etcd transaction
 // so concurrent Add calls do not overwrite each other's additions.
 func (d *Discovery) Add(key string, value []string, opts ...clientv3.OpOption) error {
-	fullKey := KVPrefix + key
+	fullKey := kvKey(key)
 
 	for {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		resp, err := d.client.Get(ctx, fullKey)
-		cancel()
+		_, resp, err := d.getKV(key)
 		if err != nil {
 			return err
 		}
@@ -88,13 +121,13 @@ func (d *Discovery) Add(key string, value []string, opts ...clientv3.OpOption) e
 		}
 
 		next := appendStringSet(current, value)
-		data, err := json.Marshal(next)
+		data, err := marshalJSON(next)
 		if err != nil {
-			return fmt.Errorf("marshal value: %w", err)
+			return err
 		}
 
-		ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
-		txnResp, err := d.client.Txn(ctx).If(cmp).Then(clientv3.OpPut(fullKey, string(data), opts...)).Commit()
+		ctx, cancel := kvContext()
+		txnResp, err := d.client.Txn(ctx).If(cmp).Then(clientv3.OpPut(fullKey, data, opts...)).Commit()
 		cancel()
 		if err != nil {
 			return err
@@ -107,12 +140,7 @@ func (d *Discovery) Add(key string, value []string, opts ...clientv3.OpOption) e
 
 // PutString 存储字符串值，跳过 JSON 序列化
 func (d *Discovery) PutString(key string, value string, opts ...clientv3.OpOption) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	fullKey := KVPrefix + key
-	_, err := d.client.Put(ctx, fullKey, value, opts...)
-	return err
+	return d.putRaw(key, value, opts...)
 }
 
 func appendStringSet(current, additions []string) []string {
@@ -137,17 +165,13 @@ func appendStringSet(current, additions []string) []string {
 
 // Get 获取值并 JSON 反序列化
 func (d *Discovery) Get(key string, out any) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	fullKey := KVPrefix + key
-	resp, err := d.client.Get(ctx, fullKey)
+	fullKey, resp, err := d.getKV(key)
 	if err != nil {
 		return err
 	}
 
 	if len(resp.Kvs) == 0 {
-		return fmt.Errorf("key not found: %s", fullKey)
+		return keyNotFound(fullKey)
 	}
 
 	return json.Unmarshal(resp.Kvs[0].Value, out)
@@ -155,17 +179,13 @@ func (d *Discovery) Get(key string, out any) error {
 
 // GetString 获取字符串值
 func (d *Discovery) GetString(key string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	fullKey := KVPrefix + key
-	resp, err := d.client.Get(ctx, fullKey)
+	fullKey, resp, err := d.getKV(key)
 	if err != nil {
 		return "", err
 	}
 
 	if len(resp.Kvs) == 0 {
-		return "", fmt.Errorf("key not found: %s", fullKey)
+		return "", keyNotFound(fullKey)
 	}
 
 	return string(resp.Kvs[0].Value), nil
@@ -173,11 +193,7 @@ func (d *Discovery) GetString(key string) (string, error) {
 
 // GetPrefix 按前缀获取所有键值对，返回原始 map[string]string
 func (d *Discovery) GetPrefix(prefix string) (map[string]string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	fullPrefix := KVPrefix + prefix
-	resp, err := d.client.Get(ctx, fullPrefix, clientv3.WithPrefix())
+	fullPrefix, resp, err := d.getKV(prefix, clientv3.WithPrefix())
 	if err != nil {
 		return nil, err
 	}
@@ -194,36 +210,41 @@ func (d *Discovery) GetPrefix(prefix string) (map[string]string, error) {
 
 // Delete 删除键
 func (d *Discovery) Delete(key string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := kvContext()
 	defer cancel()
 
-	fullKey := KVPrefix + key
-	_, err := d.client.Delete(ctx, fullKey)
+	_, err := d.client.Delete(ctx, kvKey(key))
 	return err
 }
 
 // WatchKV 监听 key 变化，返回取消函数
 // onChange 接收 key 和新值，删除时 value 为空
 func (d *Discovery) WatchKV(key string, onChange func(key, value string)) (cancel func(), err error) {
-	fullKey := KVPrefix + key
+	fullKey := kvKey(key)
+	return d.watchConfig(fullKey, KVPrefix, nil, onChange)
+}
 
+// WatchPrefix 监听前缀下所有 key 变化
+func (d *Discovery) WatchPrefix(prefix string, onChange func(key, value string)) (cancel func(), err error) {
+	fullPrefix := kvKey(prefix)
+	return d.watchConfig(fullPrefix, fullPrefix, []clientv3.OpOption{clientv3.WithPrefix()}, onChange)
+}
+
+func (d *Discovery) watchConfig(fullKey string, trimPrefix string, opts []clientv3.OpOption, onChange func(key, value string)) (cancel func(), err error) {
 	ctx, cancelCtx := context.WithCancel(context.Background())
 
 	// 先获取当前值
-	getCtx, getCancel := context.WithTimeout(ctx, 5*time.Second)
-	resp, err := d.client.Get(getCtx, fullKey)
+	getCtx, getCancel := context.WithTimeout(ctx, kvTimeout)
+	resp, err := d.client.Get(getCtx, fullKey, opts...)
 	getCancel()
 	if err != nil {
 		cancelCtx()
 		return nil, err
 	}
-	if len(resp.Kvs) > 0 {
-		relKey := string(resp.Kvs[0].Key)[len(KVPrefix):]
-		onChange(relKey, string(resp.Kvs[0].Value))
-	}
+	emitKVs(resp.Kvs, trimPrefix, onChange)
 
 	// 开始 watch
-	watchCh := d.client.Watch(ctx, fullKey)
+	watchCh := d.client.Watch(ctx, fullKey, opts...)
 
 	go func() {
 		for resp := range watchCh {
@@ -231,7 +252,7 @@ func (d *Discovery) WatchKV(key string, onChange func(key, value string)) (cance
 				continue
 			}
 			for _, ev := range resp.Events {
-				relKey := string(ev.Kv.Key)[len(KVPrefix):]
+				relKey := trimKey(string(ev.Kv.Key), trimPrefix)
 				switch ev.Type {
 				case clientv3.EventTypePut:
 					onChange(relKey, string(ev.Kv.Value))
@@ -245,44 +266,12 @@ func (d *Discovery) WatchKV(key string, onChange func(key, value string)) (cance
 	return cancelCtx, nil
 }
 
-// WatchPrefix 监听前缀下所有 key 变化
-func (d *Discovery) WatchPrefix(prefix string, onChange func(key, value string)) (cancel func(), err error) {
-	fullPrefix := KVPrefix + prefix
-
-	ctx, cancelCtx := context.WithCancel(context.Background())
-
-	// 先获取当前值
-	getCtx, getCancel := context.WithTimeout(ctx, 5*time.Second)
-	resp, err := d.client.Get(getCtx, fullPrefix, clientv3.WithPrefix())
-	getCancel()
-	if err != nil {
-		cancelCtx()
-		return nil, err
+func emitKVs(kvs []*mvccpb.KeyValue, trimPrefix string, onChange func(key, value string)) {
+	for _, kv := range kvs {
+		onChange(trimKey(string(kv.Key), trimPrefix), string(kv.Value))
 	}
-	for _, kv := range resp.Kvs {
-		relKey := string(kv.Key)[len(fullPrefix):]
-		onChange(relKey, string(kv.Value))
-	}
+}
 
-	// 开始 watch
-	watchCh := d.client.Watch(ctx, fullPrefix, clientv3.WithPrefix())
-
-	go func() {
-		for resp := range watchCh {
-			if err := resp.Err(); err != nil {
-				continue
-			}
-			for _, ev := range resp.Events {
-				relKey := string(ev.Kv.Key)[len(fullPrefix):]
-				switch ev.Type {
-				case clientv3.EventTypePut:
-					onChange(relKey, string(ev.Kv.Value))
-				case clientv3.EventTypeDelete:
-					onChange(relKey, "")
-				}
-			}
-		}
-	}()
-
-	return cancelCtx, nil
+func trimKey(key, prefix string) string {
+	return key[len(prefix):]
 }

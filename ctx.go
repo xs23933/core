@@ -718,17 +718,29 @@ func (c *BaseCtx) Vars() Map {
 	return vars
 }
 
-// GetString returns the value associated with the key as a string.
-func (c *BaseCtx) GetString(key string, def ...string) (value string) {
-	if val, ok := c.Get(key); ok && val != nil {
-		if value, ok = val.(string); ok {
-			return
-		}
+func localValue[T any](c *BaseCtx, key string) (T, bool) {
+	var zero T
+	val, ok := c.Get(key)
+	if !ok || val == nil {
+		return zero, false
 	}
+	value, ok := val.(T)
+	return value, ok
+}
+
+func defaultValue[T any](fallback T, def []T) T {
 	if len(def) > 0 {
 		return def[0]
 	}
-	return ""
+	return fallback
+}
+
+// GetString returns the value associated with the key as a string.
+func (c *BaseCtx) GetString(key string, def ...string) (value string) {
+	if value, ok := localValue[string](c, key); ok {
+		return value
+	}
+	return defaultValue("", def)
 }
 
 // GetBool returns the value associated with the key as a boolean.
@@ -748,54 +760,34 @@ func (c *BaseCtx) GetBool(key string) (value bool) {
 
 // GetInt returns the value associated with the key as an integer.
 func (c *BaseCtx) GetInt(key string, def ...int) (i int) {
-	if val, ok := c.Get(key); ok && val != nil {
-		if i, ok = val.(int); ok {
-			return
-		}
+	if i, ok := localValue[int](c, key); ok {
+		return i
 	}
-	if len(def) > 0 {
-		return def[0]
-	}
-	return -1
+	return defaultValue(-1, def)
 }
 
 // GetInt64 returns the value associated with the key as an integer.
 func (c *BaseCtx) GetInt64(key string, def ...int64) (i int64) {
-	if val, ok := c.Get(key); ok && val != nil {
-		if i, ok = val.(int64); ok {
-			return
-		}
+	if i, ok := localValue[int64](c, key); ok {
+		return i
 	}
-	if len(def) > 0 {
-		return def[0]
-	}
-	return -1
+	return defaultValue(int64(-1), def)
 }
 
 // GetUint returns the value associated with the key as an integer.
 func (c *BaseCtx) GetUint(key string, def ...uint) (i uint) {
-	if val, ok := c.Get(key); ok && val != nil {
-		if i, ok = val.(uint); ok {
-			return
-		}
+	if i, ok := localValue[uint](c, key); ok {
+		return i
 	}
-	if len(def) > 0 {
-		return def[0]
-	}
-	return 0
+	return defaultValue(uint(0), def)
 }
 
 // GetUint64 returns the value associated with the key as an integer.
 func (c *BaseCtx) GetUint64(key string, def ...uint64) (i uint64) {
-	if val, ok := c.Get(key); ok && val != nil {
-		if i, ok = val.(uint64); ok {
-			return
-		}
+	if i, ok := localValue[uint64](c, key); ok {
+		return i
 	}
-	if len(def) > 0 {
-		return def[0]
-	}
-	return 0
+	return defaultValue(uint64(0), def)
 }
 
 func (c *BaseCtx) GetUUID(key string, def ...UUID) (v UUID) {
@@ -876,60 +868,40 @@ func (c *BaseCtx) GetDuration(key string) (d time.Duration) {
 
 // GetStrings String Slice returns the value associated with the key as a slice of strings.
 func (c *BaseCtx) GetStrings(key string, def ...[]string) (value []string) {
-	if val, ok := c.Get(key); ok && val != nil {
-		if value, ok = val.([]string); ok {
-			return
-		}
+	if value, ok := localValue[[]string](c, key); ok {
+		return value
 	}
-	if len(def) > 0 {
-		return def[0]
-	}
-	return
+	return defaultValue(value, def)
 }
 
 // GetMap returns the value associated with the key as a map of interfaces.
 //
 //	> return map[string]any
 func (c *BaseCtx) GetMap(key string, def ...map[string]any) (value map[string]any) {
-	if val, ok := c.Get(key); ok && val != nil {
-		if value, ok = val.(map[string]any); ok {
-			return
-		}
+	if value, ok := localValue[map[string]any](c, key); ok {
+		return value
 	}
-	if len(def) > 0 {
-		return def[0]
-	}
-	return
+	return defaultValue(value, def)
 }
 
 // GetMapString returns the value associated with the key as a map of strings.
 //
 //	> return map[string]string
 func (c *BaseCtx) GetMapString(key string, def ...map[string]string) (value map[string]string) {
-	if val, ok := c.Get(key); ok && val != nil {
-		if value, ok = val.(map[string]string); ok {
-			return
-		}
+	if value, ok := localValue[map[string]string](c, key); ok {
+		return value
 	}
-	if len(def) > 0 {
-		return def[0]
-	}
-	return
+	return defaultValue(value, def)
 }
 
 // GetStringMapStringSlice returns the value associated with the key as a map to a slice of strings.
 //
 //	> return map[string][]string
 func (c *BaseCtx) GetMapStringSlice(key string, def ...map[string][]string) (value map[string][]string) {
-	if val, ok := c.Get(key); ok && val != nil {
-		if value, ok = val.(map[string][]string); ok {
-			return
-		}
+	if value, ok := localValue[map[string][]string](c, key); ok {
+		return value
 	}
-	if len(def) > 0 {
-		return def[0]
-	}
-	return
+	return defaultValue(value, def)
 }
 
 // GetAs retrieve struct like c.Get("user").(User)
