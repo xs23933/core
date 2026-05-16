@@ -6,6 +6,7 @@ import (
 	"database/sql/driver"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -954,4 +955,205 @@ func GrpcHeader(ctx context.Context, key string) string {
 
 func SHA256(s string) string {
 	return SHA256Hash(s)
+}
+
+// -------------------- 通用类型转换（从 model.go 迁移） --------------------
+
+// ToStrings 把任意实现了 fmt.Stringer 的类型切片转换成 []string
+//
+//	e.g: core.ToStrings(uuids)
+func ToStrings[T fmt.Stringer](items []T) []string {
+	ret := make([]string, len(items))
+	for i, v := range items {
+		ret[i] = v.String()
+	}
+	return ret
+}
+
+// ToAny 把任意类型切片转换成 []any
+//
+//	e.g: core.ToAny(uuids)
+func ToAny[T any](items []T) []any {
+	ret := make([]any, len(items))
+	for i, v := range items {
+		ret[i] = v
+	}
+	return ret
+}
+
+// ToStringsFromAny 把 []any 转换成 []string
+func ToStringsFromAny(items []any) []string {
+	ret := make([]string, len(items))
+	for i, v := range items {
+		ret[i] = fmt.Sprint(v)
+	}
+	return ret
+}
+
+// ToUUIDsFromAny 把 []any 转换成 []UUID
+func ToUUIDsFromAny(items []any) []UUID {
+	ret := make([]UUID, 0, len(items))
+	for _, v := range items {
+		switch val := v.(type) {
+		case string:
+			ret = append(ret, MustUUID(val))
+		case []byte:
+			ret = append(ret, MustUUID(string(val)))
+		default:
+			ret = append(ret, MustUUID(fmt.Sprint(val)))
+		}
+	}
+	return ret
+}
+
+// SafeToUUIDs 安全地将任意类型转换为 []UUID
+func SafeToUUIDs(items any) []UUID {
+	switch vv := items.(type) {
+	case []any:
+		return ToUUIDsFromAny(vv)
+	case string:
+		arr := make([]string, 0)
+		if err := sonic.UnmarshalString(vv, &arr); err == nil {
+			return ToUUIDsFromAny(ToAny(arr))
+		}
+		return ToUUIDsFromAny(ToAny(strings.Split(vv, ",")))
+	case []string:
+		return ToUUIDsFromAny(ToAny(vv))
+	case []UUID:
+		return vv
+	default:
+		return nil
+	}
+}
+
+type HasUUID interface {
+	GetUUID() UUID
+}
+
+func ExtractUUIDs[T HasUUID](items []T) []UUID {
+	ids := make([]UUID, 0, len(items))
+	for _, item := range items {
+		ids = append(ids, item.GetUUID())
+	}
+	return ids
+}
+
+// -------------------- Enum 泛型工具（从 model.go 迁移） --------------------
+
+type Enum interface {
+	~uint8
+}
+
+// EnumString 枚举值转字符串
+//
+//	func (s TypeX) String() string {
+//		return EnumString(s, TypeXMap)
+//	}
+func EnumString[T Enum](val T, mapping []string) string {
+	return mapping[val]
+}
+
+// EnumFromString 字符串转枚举值
+//
+//	func TypeXFromString(str string) TypeX {
+//		return EnumFromString[TypeX](str, TypeXMap)
+//	}
+func EnumFromString[T Enum](str string, mapping []string) T {
+	for i, s := range mapping {
+		if s == str {
+			return T(i)
+		}
+	}
+	if num, err := strconv.ParseUint(str, 10, 8); err == nil {
+		return T(num)
+	}
+	return T(0)
+}
+
+// EnumMarshalJSON 枚举 JSON 序列化
+func EnumMarshalJSON[T Enum](val T, mapping []string) ([]byte, error) {
+	return sonic.Marshal(mapping[val])
+}
+
+// EnumUnmarshalJSON 枚举 JSON 反序列化
+func EnumUnmarshalJSON[T Enum](data []byte, mapping []string) (T, error) {
+	var strData string
+	if err := sonic.Unmarshal(data, &strData); err == nil {
+		return EnumFromString[T](strData, mapping), nil
+	}
+
+	var num float64
+	if err := sonic.Unmarshal(data, &num); err != nil {
+		return T(0), err
+	}
+	if !math.IsInf(num, 0) && num == math.Trunc(num) {
+		val := T(uint8(num))
+		if val >= 0 && val < T(len(mapping)) {
+			return val, nil
+		}
+	}
+	tType := reflect.TypeOf((*T)(nil)).Elem().Name()
+	return T(0), fmt.Errorf("invalid %v value: %v ", tType, data)
+}
+
+func EnumMarshalText[T Enum](v T, mapping []string) ([]byte, error) {
+	return []byte(mapping[v]), nil
+}
+
+func EnumUnmarshalText[T Enum](data []byte, mapping []string) (T, error) {
+	s := string(data)
+
+	for i, v := range mapping {
+		if v == s {
+			return T(i), nil
+		}
+	}
+
+	// fallback binary
+	if len(data) == 1 {
+		return T(data[0]), nil
+	}
+
+	var zero T
+	return zero, fmt.Errorf("invalid enum: %s", s)
+}
+
+// -------------------- 解析工具（从 model.go 迁移） --------------------
+
+// ParseMoney 从 any 解析为 Money
+func ParseMoney(val any) Money {
+	switch v := val.(type) {
+	case string:
+		v = strings.ReplaceAll(v, ",", "")
+		f, _ := strconv.ParseFloat(v, 64)
+		return Money(f)
+	case float64:
+		return Money(v)
+	case int:
+		return Money(v)
+	case int64:
+		return Money(v)
+	default:
+		f, _ := strconv.ParseFloat(fmt.Sprintf("%v", v), 64)
+		return Money(f)
+	}
+}
+
+// ParseIntMoney 从 any 解析为 IntMoney
+func ParseIntMoney(val any) IntMoney {
+	switch v := val.(type) {
+	case string:
+		v = strings.ReplaceAll(v, ",", "")
+		f, _ := strconv.ParseFloat(v, 64)
+		return NewIntMoneyFromFloat(f)
+	case float64:
+		return NewIntMoneyFromFloat(v)
+	case int:
+		return IntMoney(v * 100)
+	case int64:
+		return IntMoney(v * 100)
+	default:
+		f, _ := strconv.ParseFloat(fmt.Sprintf("%v", v), 64)
+		return NewIntMoneyFromFloat(f)
+	}
 }

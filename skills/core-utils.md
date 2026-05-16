@@ -194,6 +194,45 @@ routeID := core.SHA256("route-key")
 - 路由 ID、缓存 key、去重 key。
 - 不适合密码存储。
 
+## 8. 通用类型转换（从 model.go 迁移）
+
+```go
+// 切片转换
+strs := core.ToStrings(uuids)         // []T:fmt.Stringer → []string
+anySlice := core.ToAny(ids)           // []T → []any
+strs := core.ToStringsFromAny(anys)   // []any → []string
+
+// UUID 集合
+uuids := core.ToUUIDsFromAny(anys)    // []any → []UUID
+uuids := core.SafeToUUIDs(val)        // any → []UUID（安全）
+uuids := core.ExtractUUIDs(items)     // []T{GetUUID()} → []UUID
+```
+
+## 9. Enum 枚举泛型（从 model.go 迁移）
+
+```go
+type DeviceType uint8
+
+var DeviceTypeMap = []string{"Unknown", "Mobile", "Desktop", "Tablet"}
+
+func (d DeviceType) String() string       { return core.EnumString(d, DeviceTypeMap) }
+func DeviceTypeFromString(s string) DeviceType { return core.EnumFromString[DeviceType](s, DeviceTypeMap) }
+func (d DeviceType) MarshalJSON() ([]byte, error)  { return core.EnumMarshalJSON(d, DeviceTypeMap) }
+func (d *DeviceType) UnmarshalJSON(data []byte) error {
+    val, err := core.EnumUnmarshalJSON[DeviceType](data, DeviceTypeMap)
+    if err != nil { return err }
+    *d = val
+    return nil
+}
+```
+
+## 10. 解析工具（从 model.go 迁移）
+
+```go
+m := core.ParseMoney(anyValue)     // any → Money
+im := core.ParseIntMoney(anyValue) // any → IntMoney
+```
+
 ## 禁止事项
 
 - 不要手写重复的 slice 去重/过滤逻辑。
@@ -201,3 +240,4 @@ routeID := core.SHA256("route-key")
 - 不要把 `core.Ctx` 传入 goroutine 后再调用工具函数读请求。
 - 不要在生产环境使用默认 AES 密钥。
 - 不要用 SHA-256 替代 bcrypt。
+- 不要把纯工具函数放到 model.go，应迁移到 utils.go。

@@ -50,7 +50,7 @@ core.Warn("rate limit approaching: %d/%d", current, max)
 红色标记 `[E]`。
 
 ```go
-core.Ero("db query failed: %v", err)
+core.Erro("db query failed: %v", err)
 // [E] db query failed: connection refused
 ```
 
@@ -124,7 +124,7 @@ w.Printf("formatted message %s", arg)
 ```go
 app.Use(core.RecoveryWithWriter(os.Stdout, func(c core.Ctx, err any) {
     // 自定义 panic 处理
-    core.Ero("panic: %v", err)
+    core.Erro("panic: %v", err)
     c.Abort(500)
 }))
 ```

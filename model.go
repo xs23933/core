@@ -9,13 +9,11 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"reflect"
 	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
 	"github.com/xs23933/core/v3/sid"
 	"github.com/xs23933/core/v3/xid"
@@ -185,85 +183,6 @@ func (u UUID) Bytes() []byte {
 	return u.UUID[:]
 }
 
-// ToStrings 把任意实现了 fmt.Stringer 的类型切片转换成 []string
-//
-//	e.g: core.ToStrings(uuids)
-func ToStrings[T fmt.Stringer](items []T) []string {
-	ret := make([]string, len(items))
-	for i, v := range items {
-		ret[i] = v.String()
-	}
-	return ret
-}
-
-// ToAny 把任意类型切片转换成 []any
-//
-//	e.g: core.ToAny(uuids)
-func ToAny[T any](items []T) []any {
-	ret := make([]any, len(items))
-	for i, v := range items {
-		ret[i] = v
-	}
-	return ret
-}
-
-// ToStringsFromAny 把 []any 转换成 []string
-func ToStringsFromAny(items []any) []string {
-	ret := make([]string, len(items))
-	for i, v := range items {
-		ret[i] = fmt.Sprint(v) // 等价于 v.(string) 但更安全
-	}
-	return ret
-}
-
-// ToUUIDsFromAny 把 []any 转换成 []UUID
-func ToUUIDsFromAny(items []any) []UUID {
-	ret := make([]UUID, 0, len(items))
-	for _, v := range items {
-		switch val := v.(type) {
-		case string:
-			ret = append(ret, MustUUID(val)) // 你的 UUID 解析函数
-		case []byte:
-			ret = append(ret, MustUUID(string(val)))
-		default:
-			// 如果传进来不是 string/[]byte，就 fmt.Sprint 转换
-			ret = append(ret, MustUUID(fmt.Sprint(val)))
-		}
-	}
-	return ret
-}
-
-// SafeToUUIDs
-func SafeToUUIDs(items any) []UUID {
-	switch vv := items.(type) {
-	case []any:
-		return ToUUIDsFromAny(vv)
-	case string:
-		arr := make([]string, 0)
-		if err := sonic.UnmarshalString(vv, &arr); err == nil {
-			return ToUUIDsFromAny(ToAny(arr))
-		}
-		return ToUUIDsFromAny(ToAny(strings.Split(vv, ",")))
-	case []string:
-		return ToUUIDsFromAny(ToAny(vv))
-	case []UUID:
-		return vv
-	default:
-		return nil
-	}
-}
-
-type HasUUID interface {
-	GetUUID() UUID
-}
-
-func ExtractUUIDs[T HasUUID](items []T) []UUID {
-	ids := make([]UUID, 0, len(items))
-	for _, item := range items {
-		ids = append(ids, item.GetUUID())
-	}
-	return ids
-}
 
 // Scan implements sql.Scanner so UUIDs can be read from databases transparently.
 // Currently, database types that map to string and []byte are supported. Please
@@ -603,23 +522,6 @@ func (m *Money) UnmarshalBinary(data []byte) error {
 	return m.UnmarshalJSON(data)
 }
 
-func ParseMoney(val any) Money {
-	switch v := val.(type) {
-	case string:
-		v = strings.ReplaceAll(v, ",", "")
-		f, _ := strconv.ParseFloat(v, 64)
-		return Money(f)
-	case float64:
-		return Money(v)
-	case int:
-		return Money(v)
-	case int64:
-		return Money(v)
-	default:
-		f, _ := strconv.ParseFloat(fmt.Sprintf("%v", v), 64)
-		return Money(f)
-	}
-}
 
 // Deprecated: IntMoney 已废弃，请使用 coins.Money
 type IntMoney int64
@@ -712,25 +614,6 @@ func (m *IntMoney) UnmarshalJSON(data []byte) error {
 // MarshalJSON 序列化
 func (m IntMoney) MarshalJSON() ([]byte, error) {
 	return []byte(fmt.Sprintf("%.2f", m.Float64())), nil
-}
-
-// ParseIntMoney 通用解析
-func ParseIntMoney(val any) IntMoney {
-	switch v := val.(type) {
-	case string:
-		v = strings.ReplaceAll(v, ",", "")
-		f, _ := strconv.ParseFloat(v, 64)
-		return NewIntMoneyFromFloat(f)
-	case float64:
-		return NewIntMoneyFromFloat(v)
-	case int:
-		return IntMoney(v * 100)
-	case int64:
-		return IntMoney(v * 100)
-	default:
-		f, _ := strconv.ParseFloat(fmt.Sprintf("%v", v), 64)
-		return NewIntMoneyFromFloat(f)
-	}
 }
 
 // ---------------- SQL/数据库接口 ----------------
@@ -1412,98 +1295,6 @@ type DB = gorm.DB
 
 func Expr(expr string, args ...any) clause.Expr {
 	return gorm.Expr(expr, args...)
-}
-
-type Enum interface {
-	~uint8
-}
-
-// EnumString
-//
-//	func (s TypeX) String() string {
-//		return EnumString(s, TypeXMap)
-//	}
-func EnumString[T Enum](val T, mapping []string) string {
-	return mapping[val]
-}
-
-// EnumFromString
-//
-//	func TypeXFromString(str string) TypeX {
-//		return EnumFromString[TypeX](str, TypeXMap)
-//	}
-func EnumFromString[T Enum](str string, mapping []string) T {
-	for i, s := range mapping {
-		if s == str {
-			return T(i)
-		}
-	}
-	// 如果 str 是数字，尝试转换
-	if num, err := strconv.ParseUint(str, 10, 8); err == nil {
-		return T(num)
-	}
-	return T(0)
-}
-
-// EnumMarshalJSON
-//
-//	func (s TypeX)MarshalJSON() ([]byte, error) {
-//		return EnumMarshalJSON(s, TypeX)
-//	}
-func EnumMarshalJSON[T Enum](val T, mapping []string) ([]byte, error) {
-	return sonic.Marshal(mapping[val])
-}
-
-// EnumUnmarshalJSON
-//
-//	func (s *TypeX) UnmarshalJSON(data []byte) error {
-//		val, err := EnumUnmarshalJSON[TypeX](data, TypeXMap)
-//		if err != nil {
-//			return err
-//		}
-//		*s = val
-//		return nil
-//	}
-func EnumUnmarshalJSON[T Enum](data []byte, mapping []string) (T, error) {
-	var strData string
-	if err := sonic.Unmarshal(data, &strData); err == nil {
-		return EnumFromString[T](strData, mapping), nil
-	}
-
-	var num float64
-	if err := sonic.Unmarshal(data, &num); err != nil {
-		return T(0), err
-	}
-	if !math.IsInf(num, 0) && num == math.Trunc(num) {
-		val := T(uint8(num))
-		if val >= 0 && val < T(len(mapping)) {
-			return val, nil
-		}
-	}
-	tType := reflect.TypeOf((*T)(nil)).Elem().Name()
-	return T(0), fmt.Errorf("invalid %v value: %v ", tType, data)
-}
-
-func EnumMarshalText[T Enum](v T, mapping []string) ([]byte, error) {
-	return []byte(mapping[v]), nil
-}
-
-func EnumUnmarshalText[T Enum](data []byte, mapping []string) (T, error) {
-	s := string(data)
-
-	for i, v := range mapping {
-		if v == s {
-			return T(i), nil
-		}
-	}
-
-	// fallback binary
-	if len(data) == 1 {
-		return T(data[0]), nil
-	}
-
-	var zero T
-	return zero, fmt.Errorf("invalid enum: %s", s)
 }
 
 // WithTransaction
