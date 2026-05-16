@@ -11,6 +11,7 @@ skills/
 ├── core-page.md             # 分页查询实现
 ├── core-utils.md            # 工具函数、Map/Array、加密与密码
 ├── core-redis.md            # Redis 封装（String/JSON/Hash/Set/ZSet/List/BitMap/Pipeline/Lua/PubSub/Stream）
+├── core-cache.md            # Redis Cache 包装器（DB fallback、自动回填、singleflight、空值缓存）
 ├── core-nsq.md              # NSQ 消息队列封装（Producer/Consumer/Builder/JSON/超时处理）
 ├── core-logger.md           # 日志系统（D/Info/Warn/Erro/Recovery/LogMonitor/EventHub SSE）
 ├── core-fetch.md            # Fetch API 客户端（外部 API 调用、Header、Cookie、Hook、响应 Header）

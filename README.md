@@ -16,6 +16,7 @@ Core 是一个用于快速开发企业级 Go 应用程序的 Web 框架，包括
 - **WebSocket 支持** - 内置 WebSocket 处理
 - **模板引擎** - 支持 HTML 模板渲染
 - **Fetch 客户端** - 独立 `fetch` 包，支持 API 调用、公共/单次 Header、Cookie、请求/响应 Hook
+- **Redis Cache** - 独立 `cache` 包，支持 DB fallback、自动回填、singleflight 防击穿、空值缓存
 - **中间件系统** - 灵活的中间件扩展机制
 - **[ai-context](https://github.com/xs23933/core/blob/v3/AI_CONTEXT.md)** - AI 的工作流程指南
 - **[skills](https://github.com/xs23933/core/tree/v3/skills)** - 模式库和示例
@@ -986,6 +987,91 @@ func (u *User) AfterFind(tx *core.DB) error {
 }
 ```
 
+## Redis Cache 通用包装器
+
+`cache` 是独立子包，用于封装“先读缓存，未命中再查 DB，并自动回填缓存”的常见模式。
+
+导入路径：
+
+```go
+import "github.com/xs23933/core/v3/cache"
+```
+
+推荐为每类数据创建可复用 cache 实例，把 Redis 连接、前缀、TTL 和空值缓存策略集中配置一次。
+
+```go
+type UserVO struct {
+    ID   string `json:"id"`
+    Name string `json:"name"`
+}
+
+var userCache = cache.New(
+    core.RConn("cache"),
+    cache.Prefix("user:"),
+    cache.TTL(10*time.Minute),
+    cache.EmptyTTL(time.Minute),
+    cache.Jitter(30*time.Second),
+    cache.CacheNil(true),
+)
+
+func GetUser(ctx context.Context, id string) (UserVO, error) {
+    var user UserVO
+    err := userCache.Take(ctx, id, &user, func(ctx context.Context) (any, error) {
+        return dao.GetUserByID(ctx, id)
+    })
+    return user, err
+}
+```
+
+同一个 cache 实例可以缓存不同类型，类型由 `out` 指针决定。
+
+```go
+var order OrderVO
+err := userCache.Take(ctx, "order:"+orderID, &order, func(ctx context.Context) (any, error) {
+    return dao.GetOrderByID(ctx, orderID)
+})
+```
+
+想保留返回值风格时，用包级泛型 helper。它不要求 `New` 绑定类型。
+
+```go
+user, err := cache.Load[UserVO](userCache, ctx, "user:"+id, func(ctx context.Context) (UserVO, error) {
+    return dao.GetUserByID(ctx, id)
+})
+
+user, err = cache.Get(ctx, "user:"+id, func(ctx context.Context) (UserVO, error) {
+    return dao.GetUserByID(ctx, id)
+})
+```
+
+空值缓存用于防止不存在的数据持续打到 DB。默认识别 `cache.ErrNotFound`，也可以接入项目自己的 not found 错误。
+
+```go
+var userCache = cache.New(
+    core.RConn("cache"),
+    cache.Prefix("user:"),
+    cache.CacheNil(true),
+    cache.NotFound(func(err error) bool {
+        return errors.Is(err, gorm.ErrRecordNotFound)
+    }),
+)
+```
+
+更新或删除数据后删除缓存：
+
+```go
+if err := userCache.Delete(ctx, id); err != nil {
+    return err
+}
+```
+
+规则：
+
+- `Take` / `Load` 内部使用 `singleflight` 合并同进程并发 miss，避免缓存击穿。
+- Redis 读失败会降级执行 loader；写缓存失败不会影响返回结果。
+- TTL 可用 `Jitter` 增加随机抖动，避免大量 key 同时过期。
+- 不要在每次请求中重复 `cache.New`；应创建可复用实例。
+
 ## Fetch API 客户端
 
 `fetch` 是独立子包，用于调用外部 HTTP API。设计接近前端 JavaScript `fetch` 的使用习惯，但保留 Go 的显式错误处理和结构体 decode。
@@ -1509,18 +1595,32 @@ core.D("请求参数: %v", params)
 
 ```go
 import (
+    "time"
+
     "github.com/xs23933/core/v3/middleware/metrics"
-    "github.com/prometheus/client_golang/prometheus/promhttp"
+    "github.com/xs23933/core/v3/middleware/ratelimit"
 )
 
 // 启用指标收集
-app.Use(metrics.New())
+m, mw := metrics.New()
+app.Use(mw)
+metrics.Mount(app, "/metrics", m)
 
-// 暴露 Prometheus 指标
-app.Get("/metrics", func(c core.Ctx) error {
-    promhttp.Handler().ServeHTTP(c.Response(), c.Request())
-    return nil
-})
+// 启用限流（默认内存）
+app.Use(ratelimit.New(ratelimit.Config{
+    Max:    300,
+    Window: time.Minute,
+}))
+
+// 更平滑的用户级限流
+app.Use(ratelimit.New(ratelimit.Config{
+    Max:       120,
+    Window:    time.Minute,
+    Algorithm: ratelimit.SlidingWindow,
+    KeyFunc: func(c core.Ctx) string {
+        return c.GetString("user_id", c.RemoteIP().String())
+    },
+}))
 ```
 
 ## 扩展开发
@@ -1530,39 +1630,19 @@ app.Get("/metrics", func(c core.Ctx) error {
 ```go
 package middleware
 
-import "github.com/xs23933/core/v3"
+import (
+    "time"
 
-func NewRateLimiter(maxRequests int, window time.Duration) core.HandlerFunc {
-    store := make(map[string][]time.Time)
-    mu := sync.Mutex{}
+    "github.com/xs23933/core/v3"
+)
 
+func AccessLog() core.HandlerFunc {
     return func(c core.Ctx) error {
-        ip := c.RemoteIP().String()
-
-        mu.Lock()
-        defer mu.Unlock()
-
-        // 清理过期记录
-        now := time.Now()
-        validWindow := now.Add(-window)
-        validRequests := make([]time.Time, 0)
-        for _, t := range store[ip] {
-            if t.After(validWindow) {
-                validRequests = append(validRequests, t)
-            }
-        }
-
-        // 检查限制
-        if len(validRequests) >= maxRequests {
-            c.SetHeader("Retry-After", window.String())
-            return c.SendStatus(429, "请求过于频繁")
-        }
-
-        // 记录本次请求
-        validRequests = append(validRequests, now)
-        store[ip] = validRequests
-
-        return c.Next()
+        start := time.Now()
+        err := c.Next()
+        core.Info("%s %s status=%d cost=%s",
+            c.Method(), c.Path(), c.GetStatus(), time.Since(start))
+        return err
     }
 }
 ```

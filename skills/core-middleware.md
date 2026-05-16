@@ -1,0 +1,94 @@
+---
+name: core-middleware
+description: Core Framework 中间件开发与组合，包含 requestid、cors、metrics、ratelimit 以及自定义中间件规范
+tags: [go, core-framework, middleware, cors, metrics, ratelimit, requestid]
+---
+
+# Core Middleware 技能
+
+## 触发条件
+
+- "写中间件"
+- "全局鉴权"
+- "加 request id"
+- "加 metrics"
+- "限流"
+- "统一日志/耗时"
+
+## 1. 中间件签名
+
+Core 中间件统一签名：
+
+```go
+func(c core.Ctx) error
+```
+
+必须在需要放行时 `return c.Next()`。
+
+## 2. 常用组合
+
+```go
+import (
+    "time"
+
+    "github.com/xs23933/core/v3"
+    "github.com/xs23933/core/v3/middleware/cors"
+    "github.com/xs23933/core/v3/middleware/metrics"
+    "github.com/xs23933/core/v3/middleware/ratelimit"
+    "github.com/xs23933/core/v3/middleware/requestid"
+)
+
+app := core.New()
+
+app.Use(requestid.New())
+app.Use(cors.New(app))
+
+m, mw := metrics.New()
+app.Use(mw)
+metrics.Mount(app, "/metrics", m)
+
+app.Use(ratelimit.New(ratelimit.Config{
+    Max:    300,
+    Window: time.Minute,
+}))
+```
+
+## 3. 自定义中间件模板
+
+```go
+func AccessLog() core.HandlerFunc {
+    return func(c core.Ctx) error {
+        start := time.Now()
+        err := c.Next()
+        core.Info("%s %s status=%d cost=%s",
+            c.Method(), c.Path(), c.GetStatus(), time.Since(start))
+        return err
+    }
+}
+```
+
+## 4. 限流建议
+
+- 默认按 `method + path + ip` 作为限流 key。
+- 用户级限流请用 `KeyFunc`，例如取 `user_id`。
+- 多实例部署优先 Redis 后端，避免每台机器独立计数。
+- 默认算法是固定窗口；需要更平滑的限制时使用 `ratelimit.SlidingWindow`。
+
+```go
+app.Use(ratelimit.New(ratelimit.Config{
+    Max:       120,
+    Window:    time.Minute,
+    Algorithm: ratelimit.SlidingWindow,
+    KeyFunc: func(c core.Ctx) string {
+        return c.GetString("user_id", "anonymous")
+    },
+    Redis: core.RConn(),
+}))
+```
+
+## 5. 生成代码时避免
+
+- 不要在中间件里吞掉 `c.Next()` 返回错误。
+- 不要在限流失败时返回 200。
+- 不要把 metrics、鉴权、限流都写进一个巨大中间件。
+- 不要在中间件里进行阻塞式慢 IO。

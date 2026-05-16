@@ -470,18 +470,74 @@ api := fetch.New("https://api.example.com").
 * 不要把签名逻辑复制到每个 API 调用；用 `Before`。
 * 不要手写重复响应解包；用 `After`。
 
+### 3.6.1 Redis Cache
+
+DAO 查询缓存优先使用独立子包 `github.com/xs23933/core/v3/cache`。
+
+推荐为每类数据创建可复用实例：
+
+```go
+var userCache = cache.New(
+    core.RConn("cache"),
+    cache.Prefix("user:"),
+    cache.TTL(10*time.Minute),
+    cache.EmptyTTL(time.Minute),
+    cache.Jitter(30*time.Second),
+    cache.CacheNil(true),
+)
+
+func GetUser(ctx context.Context, id string) (UserVO, error) {
+    var user UserVO
+    err := userCache.Take(ctx, id, &user, func(ctx context.Context) (any, error) {
+        return dao.GetUserByID(ctx, id)
+    })
+    return user, err
+}
+```
+
+规则：
+
+* 简单场景可以用 `cache.Get[T](ctx, key, loader)`。
+* 复杂场景用 `cache.New(...)` 复用 Redis 连接、前缀、TTL 和 singleflight。
+* 同一个 `*cache.Cache` 可以通过 `Take(ctx, key, &out, loader)` 缓存不同类型。
+* 想要返回值风格时，用 `cache.Load[T](typedCache, ctx, key, loader)`。
+* not found 需要缓存时启用 `cache.CacheNil(true)`，默认识别 `cache.ErrNotFound`。
+* 项目自己的 not found 错误用 `cache.NotFound(func(error) bool { ... })` 接入。
+* 更新或删除 DB 后必须调用 `typedCache.Delete(ctx, key)` 删除缓存。
+* 不要在每个请求中重复 `cache.New`。
+
 ### 3.7 中间件
 ```go
 // 使用内置中间件
+app.Use(requestid.New())
 app.Use(cors.New(app))
-app.Use(logger.New())
+
+m, mw := metrics.New()
+app.Use(mw)
+metrics.Mount(app, "/metrics", m)
+
+app.Use(ratelimit.New(ratelimit.Config{
+    Max:    300,
+    Window: time.Minute,
+}))
+
+app.Use(ratelimit.New(ratelimit.Config{
+    Max:       120,
+    Window:    time.Minute,
+    Algorithm: ratelimit.SlidingWindow,
+    KeyFunc: func(c core.Ctx) string {
+        return c.GetString("user_id", c.RemoteIP().String())
+    },
+}))
 
 // 自定义中间件
-func Auth(next core.HandlerFunc) core.HandlerFunc {
+func AccessLog() core.HandlerFunc {
     return func(c core.Ctx) error {
-        token := c.GetHeader("Authorization")
-        // ... 验证逻辑
-        return next(c)
+        start := time.Now()
+        err := c.Next()
+        core.Info("%s %s status=%d cost=%s",
+            c.Method(), c.Path(), c.GetStatus(), time.Since(start))
+        return err
     }
 }
 ```
