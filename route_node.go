@@ -135,6 +135,9 @@ func (n *RouteNode) match(path string, ctx Ctx) (HandlerFuncs, bool) {
 	current := n
 
 	var chain HandlerFuncs
+	if baseCtx, ok := ctx.(*BaseCtx); ok {
+		chain = baseCtx.handlers[:0]
+	}
 	// 根节点中间件
 	chain = append(chain, current.middlewares...)
 

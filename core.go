@@ -597,13 +597,9 @@ func (app *Core) staticHandler(relativePath string, fs http.FileSystem) HandlerF
 	})
 }
 func (app *Core) Add(methods []string, path string, handler any, middleware ...any) Router {
-	handlers := middleware
-	if handler != nil {
-		handlers = append(handlers, handler)
-	}
 	D("route: %s %s", strings.Join(methods, ","), path)
 
-	return app.AddHandle(methods, path, nil, handler, app.ProcessedHandler(handlers)...)
+	return app.AddHandle(methods, path, nil, handler, app.ProcessedHandler(middleware)...)
 }
 
 func (app *Core) Group(prefix string, handlers ...HandlerFuncs) Router {

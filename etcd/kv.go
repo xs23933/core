@@ -6,9 +6,9 @@ KV 存储相关方法
 app.EnableEtcdDiscovery(nil)
 discovery := app.EtcdDiscovery
 
-// 存白名单（初始化或管理接口调用）
+// 追加白名单（多个服务可写同一个 key，不会覆盖已有路径）
 
-	discovery.Put("gateway/public_routes", []string{
+	discovery.Add("gateway/public_routes", []string{
 	 "/v1/auth/user/login",
 	 "/v1/auth/user/register",
 	 "/v1/oauth",
@@ -62,6 +62,49 @@ func (d *Discovery) Put(key string, value any, opts ...clientv3.OpOption) error 
 	return err
 }
 
+// Add appends string values to a JSON []string stored at key.
+// It preserves existing order, skips duplicates, and uses an etcd transaction
+// so concurrent Add calls do not overwrite each other's additions.
+func (d *Discovery) Add(key string, value []string, opts ...clientv3.OpOption) error {
+	fullKey := KVPrefix + key
+
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		resp, err := d.client.Get(ctx, fullKey)
+		cancel()
+		if err != nil {
+			return err
+		}
+
+		var current []string
+		var cmp clientv3.Cmp
+		if len(resp.Kvs) == 0 {
+			cmp = clientv3.Compare(clientv3.CreateRevision(fullKey), "=", 0)
+		} else {
+			if err := json.Unmarshal(resp.Kvs[0].Value, &current); err != nil {
+				return fmt.Errorf("unmarshal existing value: %w", err)
+			}
+			cmp = clientv3.Compare(clientv3.ModRevision(fullKey), "=", resp.Kvs[0].ModRevision)
+		}
+
+		next := appendStringSet(current, value)
+		data, err := json.Marshal(next)
+		if err != nil {
+			return fmt.Errorf("marshal value: %w", err)
+		}
+
+		ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
+		txnResp, err := d.client.Txn(ctx).If(cmp).Then(clientv3.OpPut(fullKey, string(data), opts...)).Commit()
+		cancel()
+		if err != nil {
+			return err
+		}
+		if txnResp.Succeeded {
+			return nil
+		}
+	}
+}
+
 // PutString 存储字符串值，跳过 JSON 序列化
 func (d *Discovery) PutString(key string, value string, opts ...clientv3.OpOption) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -70,6 +113,26 @@ func (d *Discovery) PutString(key string, value string, opts ...clientv3.OpOptio
 	fullKey := KVPrefix + key
 	_, err := d.client.Put(ctx, fullKey, value, opts...)
 	return err
+}
+
+func appendStringSet(current, additions []string) []string {
+	if len(additions) == 0 {
+		return current
+	}
+
+	seen := make(map[string]struct{}, len(current)+len(additions))
+	for _, item := range current {
+		seen[item] = struct{}{}
+	}
+
+	for _, item := range additions {
+		if _, ok := seen[item]; ok {
+			continue
+		}
+		current = append(current, item)
+		seen[item] = struct{}{}
+	}
+	return current
 }
 
 // Get 获取值并 JSON 反序列化

@@ -170,6 +170,9 @@ func (c *BaseCtx) Host() string {
 }
 
 func (c *BaseCtx) SetParams(key, val string) {
+	if c.params == nil {
+		c.params = make(map[string]string)
+	}
 	c.params[key] = val
 }
 
@@ -683,6 +686,9 @@ func (c *BaseCtx) RemoteIP() net.IP {
 // set locals var
 func (c *BaseCtx) Set(key string, val any) {
 	c.mu.Lock()
+	if c.vars == nil {
+		c.vars = make(Map)
+	}
 	c.vars[key] = val
 	c.mu.Unlock()
 }
@@ -1094,6 +1100,9 @@ func (c *BaseCtx) FormValues(key string, def ...[]string) []string {
 	return c.Querys(key, def...)
 }
 func (c *BaseCtx) Querys(key string, def ...[]string) []string {
+	if c.querys == nil {
+		c.querys = c.R.URL.Query()
+	}
 	if val, ok := c.querys[key]; ok {
 		return val
 	}
@@ -1388,11 +1397,11 @@ func (c *BaseCtx) init(app *Core, w http.ResponseWriter, r *http.Request) {
 	c.method = c.R.Method
 	c.pathOriginal = r.URL.RawPath
 	c.methodInt = MethodType(methodPos(c.method))
-	c.querys = c.R.URL.Query()
 	c.detectionPath = c.path
 	c.respJsonKeys = &app.defaultRestful
-	c.vars = make(Map)
-	c.params = make(map[string]string)
+	c.querys = nil
+	c.vars = nil
+	c.params = nil
 	if !app.Conf.GetBool("case-sensitive", true) {
 		c.detectionPath = strings.ToLower(c.detectionPath)
 	}
@@ -1406,9 +1415,10 @@ func (c *BaseCtx) init(app *Core, w http.ResponseWriter, r *http.Request) {
 }
 func (c *BaseCtx) release() {
 
-	c.handlers = nil
+	c.handlers = c.handlers[:0]
 	c.ctx = nil
-	c.vars = Map{}
+	c.querys = nil
+	c.vars = nil
 	c.params = nil
 }
 
