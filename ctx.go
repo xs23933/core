@@ -65,7 +65,8 @@ type Ctx interface {
 	ToJSONCode(data any, msg ...any) error                                 // send have code to json
 	StartAt(t ...time.Time) time.Time                                      // set ctx start time if t set, else get start at
 	ParamsMaps() map[string]string
-	Params(key string, defaultValue ...string) string                           // get Param data e.g c.Param("param")
+	Params(key string, defaultValue ...string) string                           // get Params data e.g c.Params("param")
+	Param(key string, defaultValue ...string) string                            // get Param data e.g c.Param("param")
 	ParamsUid(key string, defaultValue ...uid.UID) (uid.UID, error)             // get Param UID type, return uid.Nil if failed
 	GetParamSid(key string, defaultValue ...sid.ID) (sid.ID, error)             // get Param ID type, return sid.Nil if failed
 	ParamsSid(key string, defaultValue ...sid.ID) (sid.ID, error)               // get Param ID type, return sid.Nil if failed
@@ -1426,6 +1427,9 @@ func (c *BaseCtx) Params(key string, defaultValue ...string) string {
 		return val
 	}
 	return defaultString("", defaultValue)
+}
+func (c *BaseCtx) Param(key string, defaultValue ...string) string {
+	return c.Params(key, defaultValue...)
 }
 
 // ParamsUid get uid.UID param, return uid.Nil if failed
