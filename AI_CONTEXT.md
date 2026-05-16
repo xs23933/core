@@ -735,8 +735,35 @@ handler
 * 小函数
 * 显式错误处理
 
+## 5 ⚡ 快速对比：Core vs Gin（防止 AI 混淆）
 
-## 5. 故障排查
+| 操作 | Core 方法 | ❌ 不要用 |
+|-----|----------|----------|
+| 路径参数 | `c.Params("id")` | `c.Param("id")` |
+| JSON 绑定 | `c.ReadBody(&user)` | `c.ShouldBindJSON()` |
+| 表单绑定 | `c.ReadBody(&form)` | `c.Bind(&form)` |
+| 响应 JSON | `c.ToJSON(data, err)` | `c.JSON()` |
+| 路径 UID | `c.ParamsUid("id")` | `c.Param("id")` |
+
+## 6 🎯 最常用方法速记
+
+```go
+// 1. 获取参数
+id := c.Params("id")                    // 路径参数
+name := c.Query("name")                 // Query 参数
+c.ReadBody(&req)                        // 请求体
+
+// 2. 返回响应
+c.ToJSON(data, err)                     // 标准 JSON 响应
+c.SendString("ok")                      // 字符串响应
+c.SendStatus(404, "Not Found")          // 状态码响应
+
+// 3. 上下文存储
+c.Set("user_id", uid)                   // 存储
+uid := c.GetSid("user_id")              // 获取
+```
+
+## 7. 故障排查
 - **Q**: 路由返回 404，但我写了 `GetId` 方法。
     - **A**: `GetId` 生成的是 `/id`。如果你想要 `/users/123`，必须写成 `GetByID`。
 - **Q**: 数据库连接报错。
