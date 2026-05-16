@@ -16,6 +16,8 @@ Core 是一个用于快速开发企业级 Go 应用程序的 Web 框架，包括
 - **WebSocket 支持** - 内置 WebSocket 处理
 - **模板引擎** - 支持 HTML 模板渲染
 - **中间件系统** - 灵活的中间件扩展机制
+- **[ai-context](https://github.com/xs23933/core/A_CONTEXT.md)** - AI 的工作流程指南
+- **[skills](https://github.com/xs23933/core/skills)** - 模式库和示例
 
 ## 快速开始
 
@@ -54,15 +56,19 @@ func main() {
 
 ```
 project/
-├── main.go          # 应用入口
-├── config.yaml      # 配置文件
-├── handler/         # 处理器目录
-│   └── handler.go   # 业务逻辑
-├── models/          # 数据模型
-│   └── models.go    # 数据库模型定义
-├── middleware/      # 中间件
-├── views/           # 模板文件
-└── static/          # 静态文件
+├── cmd/               # 命令行目录
+│   └── main.go        # 主入口文件
+├── config.yaml        # 配置文件
+├── views/             # 模板文件
+├── static/            # 静态文件
+├── internal/          # 内部目录
+    ├── handler/       # 处理器目录
+    │   └── handler.go # 业务逻辑
+    ├── models/        # 数据模型
+    │   └── models.go  # 数据库模型定义
+    ├── middleware/    # 中间件
+    ├── service/       # (业务逻辑：事务操作，调用 dao/model)
+    └── dao/           # (数据访问：复杂查询封装)
 ```
 
 ## 配置
@@ -241,26 +247,28 @@ type User struct {
 
 // 创建用户
 func (u *User) Create() error {
-    return core.DB().Create(u).Error
+    return db.Create(u).Error
 }
 
 // 根据ID查询用户
 func GetUserByID(id uid.UID) (user User, err error) {
-    err = core.DB().First(&user, "id = ?", id).Error
+    err = db.First(&user, "id = ?", id).Error
     return
 }
 
 // 分页查询用户
 func GetUsers(page, size int) (users []User, total int64, err error) {
-    err = core.DB().Model(&User{}).Count(&total).Error
+    err = db.Model(&User{}).Count(&total).Error
     if err != nil {
         return
     }
     offset := (page - 1) * size
-    err = core.DB().Offset(offset).Limit(size).Find(&users).Error
+    err = db.Offset(offset).Limit(size).Find(&users).Error
     return
 }
 
+
+var db *core.DB
 // 初始化数据库
 func InitDB() {
     db := core.Conn()
@@ -290,7 +298,7 @@ func AuthMiddleware(next core.HandlerFunc) core.HandlerFunc {
 app.Use(AuthMiddleware)
 
 // 路由级中间件
-app.Get("/admin", AdminHandler, AuthMiddleware)
+app.GET("/admin", AdminHandler, AuthMiddleware)
 ```
 
 #### 内置中间件
@@ -304,7 +312,7 @@ import (
 )
 
 app.Use(requestid.New())  // 请求ID
-app.Use(cors.New())       // CORS 支持
+app.Use(cors.New(app))    // CORS 支持
 app.Use(logger.New())     // 请求日志
 app.Use(recover.New())    // 异常恢复
 ```
@@ -421,6 +429,316 @@ func (Handler) Index(c core.Ctx) {
 }
 ```
 
+## gRPC、etcd 与网关
+
+Core 支持同时运行 HTTP 与 gRPC，并通过 etcd 做服务注册、服务发现和网关动态路由。典型链路如下：
+
+1. 业务服务启动 gRPC，并注册到 etcd。
+2. gRPC 服务开启 reflection。
+3. 网关监听 `/services/` 和 `/gateway/routes/`。
+4. 网关通过 reflection 发现 gRPC 方法，并自动生成 HTTP 路由。
+5. HTTP 请求进入网关后被转换为 gRPC JSON 请求并转发到后端服务。
+
+### 1. gRPC 服务
+
+服务端需要注册生成的 gRPC service，并启用 gRPC。`EnableEtcdRegistry` 会自动开启 gRPC reflection，网关依赖 reflection 自动发现方法。
+
+
+```go
+package main
+
+import (
+    "github.com/xs23933/core/v3"
+    "github.com/xs23933/core/v3/etcd"
+    "google.golang.org/grpc"
+
+    pb "your_project/proto/user/v1"
+)
+
+type UserService struct {
+    pb.UnimplementedUserServiceServer
+}
+
+func main() {
+    app := core.New(core.LoadConfigFile("config.yaml"))
+
+    /* 启用 etcd 服务注册 读取 config.yaml 中的 etcd 配置
+etcd:
+  endpoints:
+    - 192.168.31.5:2379
+  username: ""
+  password: ""
+  service_name: "auth-service"
+  service_addr: "192.168.31.2:8080"
+  service_id: "auth-service-1"
+  ttl: 10
+  version: "1.0.0"
+
+    */
+	if err := app.EnableEtcdRegistry(nil); err != nil {
+		fmt.Printf("Failed to enable etcd registry: %v\n", err)
+		os.Exit(1)
+	}
+    // 或者直接写配置信息
+    if err := app.EnableEtcdRegistry(&etcd.Options{
+        Endpoints:   []string{"127.0.0.1:2379"},
+        ServiceName: "user-service",
+        ServiceAddr: "127.0.0.1:9001",
+        ServiceID:   "user-service-1",
+        TTL:         10,
+        Version:     "1.0.0",
+        Metadata: map[string]string{
+            "env": "dev",
+        },
+    }); err != nil {
+        panic(err)
+    }
+
+    // grpc生成的服务
+    // 自己编写的服务实现
+    NewAuthHandler(app, &UserService{})
+
+    app.Run()
+}
+
+type AuthHandler struct {
+	pb.UnimplementedAuthServiceServer
+	userService *service.UserService
+}
+
+func NewAuthHandler(app *core.Core, userService *service.UserService) {
+	pb.RegisterAuthServiceServer(app.GetGRPCServer(), &AuthHandler{
+		userService: userService,
+	})
+}
+
+// 中间层用于通用实现, 可以让 grpc,http(restful) 通用实现,项目小可以直接dao
+type UserService struct {}
+
+```
+
+如果希望 HTTP/1 和 gRPC 共用端口，可以让 `EnableGRPC` 使用和 `Listen` 相同的地址。框架会根据 `Content-Type: application/grpc` 与 HTTP/2 请求自动分流。
+
+```go
+app.EnableGRPC(":8081")
+app.Listen(":8081")
+```
+
+### 2. etcd 配置
+
+也可以通过 `config.yaml` 配置 etcd，服务启动时调用 `EnableEtcdRegistry(nil)` 或客户端调用 `GrpcClient` 时会读取这些配置。
+
+```yaml
+etcd:
+  endpoints:
+    - 127.0.0.1:2379
+  dial_timeout: 5
+  service_name: user-service
+  service_addr: 127.0.0.1:9001
+  service_id: user-service-1
+  ttl: 10
+  version: 1.0.0
+```
+
+```go
+if err := app.EnableEtcdRegistry(nil); err != nil {
+    panic(err)
+}
+```
+
+客户端可以通过服务名创建 gRPC 连接：
+
+```go
+conn, err := app.GrpcClient("user-service")
+if err != nil {
+    panic(err)
+}
+defer conn.Close()
+
+client := pb.NewUserServiceClient(conn)
+```
+
+### 3. 网关启动
+
+网关服务只需要连接 etcd 并启用 gateway。启动时会读取已有服务实例，之后继续 watch 服务上下线和路由变化。
+
+```go
+package main
+
+import (
+    "github.com/xs23933/core/v3"
+    "github.com/xs23933/core/v3/gateway"
+)
+
+func main() {
+    app := core.New()
+
+    if err := app.EnableEtcdDiscovery(nil); err != nil {
+		log.Fatal("启用 etcd 服务发现失败:", err)
+	}
+
+    _, err := gateway.NewEtcdGateway(app)
+    if err != nil {
+        panic(err)
+    }
+
+    app.Listen(":8080")
+}
+```
+
+网关内置本地管理接口，仅允许 loopback 地址访问：
+
+| 方法     | 路径                         | 说明           |
+| -------- | ---------------------------- | -------------- |
+| `GET`    | `/admin/gateway/routes`      | 路由列表       |
+| `GET`    | `/admin/gateway/routes/:id`  | 路由详情       |
+| `POST`   | `/admin/gateway/routes`      | 创建路由       |
+| `PUT`    | `/admin/gateway/routes/:id`  | 更新或禁用路由 |
+| `DELETE` | `/admin/gateway/routes/:id`  | 删除路由       |
+
+### 4. 自动注册路由规则
+
+网关通过 gRPC reflection 读取服务方法，并按方法名前缀自动生成 HTTP 路由。
+
+| gRPC 方法名        | HTTP 方法 | HTTP 路径示例              |
+| ------------------ | --------- | -------------------------- |
+| `PostLogin`        | `POST`    | `/v1/auth/user/login`      |
+| `GetProfile`       | `GET`     | `/v1/auth/user/profile`    |
+| `PutProfile`       | `PUT`     | `/v1/auth/user/profile`    |
+| `DeleteSession`    | `DELETE`  | `/v1/auth/user/session`    |
+| `GetUserById`      | `GET`     | `/v1/auth/user/:id`        |
+| `GetOrderByUserId` | `GET`     | `/v1/order/order/:user/id` |
+
+转换逻辑：
+
+- proto package `v1.auth` 转为路径前缀 `/v1/auth`
+- service `v1.auth.UserService` 转为 `/user`
+- 方法前缀 `Post/Get/Put/Delete` 转为 HTTP method
+- 方法名剩余部分按 CamelCase 拆成路径
+- `By` 转为路径参数标记 `:`
+- 缩写建议使用 `Id` 而不是 `ID`，避免被拆成 `/i/d`
+
+例如：
+
+```proto
+syntax = "proto3";
+
+package v1.auth;
+
+service UserService {
+  rpc PostLogin(LoginRequest) returns (LoginResponse);
+  rpc GetUserById(GetUserRequest) returns (User);
+}
+```
+
+自动生成：
+
+```text
+POST /v1/auth/user/login      -> /v1.auth.UserService/PostLogin
+GET  /v1/auth/user/:id        -> /v1.auth.UserService/GetUserById
+```
+
+当服务 reflection 中的方法减少，或 etcd 中的路由被删除/禁用时，网关会注销旧 HTTP 路由。
+
+### 5. 手动配置网关路由
+
+除了自动注册，也可以通过管理接口写入路由配置。
+
+```http
+POST http://127.0.0.1:8080/admin/gateway/routes
+Content-Type: application/json
+
+{
+  "method": "POST",
+  "path": "/api/login",
+  "service_name": "user-service",
+  "grpc_method": "/v1.auth.UserService/PostLogin",
+  "description": "manual login route"
+}
+```
+
+禁用路由：
+
+```http
+PUT http://127.0.0.1:8080/admin/gateway/routes/{route_id}
+Content-Type: application/json
+
+{
+  "method": "POST",
+  "path": "/api/login",
+  "service_name": "user-service",
+  "grpc_method": "/v1.auth.UserService/PostLogin",
+  "enabled": false
+}
+```
+
+### 6. HTTP 到 gRPC 的请求映射
+
+网关会把 HTTP 路径参数、query 参数和 JSON body 合并为一个 JSON 对象，然后按 reflection 中的请求 message 反序列化。
+
+```http
+GET /v1/auth/user/123?expand=true
+Authorization: Bearer token
+X-Request-Id: req-1
+```
+
+会转成类似：
+
+```json
+{
+  "id": "123",
+  "expand": "true"
+}
+```
+
+默认透传的 metadata：
+
+- `authorization`
+- `x-request-id`
+- `x-user-id`
+- `Ctx.Vars()` 中的本地变量 用于前置 middleware 处理后的后传参数 例如 jwt处理的: `Ctx.Set("user_id", "123")`
+
+### 7. Demo 目录
+
+仓库内置了几个最小 demo：
+
+| 目录                  | 说明                     | 运行命令                         |
+| --------------------- | ------------------------ | -------------------------------- |
+| `example/restful`     | REST、模板、中间件、自动路由 | `go run ./example/restful`       |
+| `example/work`        | 配置文件、数据库模型、分页查询 | `go run ./example/work`          |
+| `example/websocket`   | WebSocket echo 示例       | `go run ./example/websocket`     |
+
+REST demo 中同时展示了手写路由和自动路由：
+
+```go
+app.GET("/", func(c core.Ctx) {
+    c.SendString("what happend")
+})
+
+type handler struct {
+    core.Handler
+}
+
+func (handler) GetHello(c core.Ctx) {
+    c.SendString("ok")
+}
+
+func (handler) GetUser_id(c core.Ctx) {
+    c.SendString("id is %s", c.Params("id"))
+}
+
+func init() {
+    core.RegHandle(&handler{})
+}
+```
+
+生成的自动路由：
+
+```text
+GET /hello
+GET /user/:id
+```
+
 ## 高级功能
 
 ### 1. 数据库事务
@@ -485,7 +803,139 @@ subQuery := core.Conn().Model(&Order{}).Select("user_id").Where("amount > ?", 10
 core.Conn().Where("id IN (?)", subQuery).Find(&users)
 ```
 
-### 4. 事件钩子
+### 4. 分页查询：FindPageBy 与 FindNextBy
+
+`FindPageBy` 和 `FindNextBy` 都会读取 `core.Map` 中的分页和筛选参数，并可以接收一个已经拼好的 `*core.DB` 作为基础查询。
+
+常用参数：
+
+| 参数       | 说明                              |
+| ---------- | --------------------------------- |
+| `p`        | 页码，默认 `1`                    |
+| `l`        | 每页数量，默认 `20`               |
+| `asc`      | 升序字段，如 `created_at`         |
+| `desc`     | 降序字段，如 `created_at`         |
+| `name`     | 内置 name 模糊查询                |
+| `field IN` | IN 查询，如 `status IN: []int{}`  |
+| `field >`  | 比较查询，支持 `> < >= <=`        |
+| `field*`   | 包含匹配，等价于 `%value%`        |
+| `^field`   | 前缀匹配，等价于 `value%`         |
+| `field$`   | 后缀匹配，等价于 `%value`         |
+
+两者区别：
+
+- `FindPageBy`：返回 `Page[T]`，包含 `total` 总数；适合后台管理、需要显示总页数的列表。代价是会执行 count。
+- `FindNextBy`：返回 `NextPage[T]`，包含 `next/prev`；通过查询 `limit + 1` 判断是否还有下一页，不统计总数。适合滚动加载、移动端列表、数据量较大的查询。
+
+#### FindPageBy：带总数分页
+
+```go
+type UsersViewDAO struct {
+    db *core.DB
+}
+
+func (dao *UsersViewDAO) ListPage(ctx context.Context, whr *core.Map) (core.Page[user.UsersView], error) {
+    if _, ok := (*whr)["asc"].(string); !ok {
+        if _, ok := (*whr)["desc"].(string); !ok {
+            (*whr)["desc"] = "created_at"
+        }
+    }
+
+    tx := dao.db.WithContext(ctx).
+        Model(&user.UsersView{}).
+        Select("users_profiles.*, users.status").
+        Joins("JOIN users ON users.id = users_profiles.user_id").
+        Joins("JOIN users_identities ON users_profiles.user_id = users_identities.user_id")
+
+    res := make([]user.UsersView, 0)
+    return core.FindPageBy(whr, &res, tx)
+}
+```
+
+返回结构：
+
+```json
+{
+  "p": 1,
+  "l": 20,
+  "total": 128,
+  "data": []
+}
+```
+
+#### FindNextBy：后推分页
+
+`FindNextBy` 会多查一条数据判断 `next`。如果 `ret.Next == true`，通常需要把多查出来的最后一条裁掉再返回。
+
+```go
+func (dao *UsersViewDAO) ListNext(ctx context.Context, whr *core.Map) (core.NextPage[user.UsersView], error) {
+    if _, ok := (*whr)["asc"].(string); !ok {
+        if _, ok := (*whr)["desc"].(string); !ok {
+            (*whr)["desc"] = "created_at"
+        }
+    }
+
+    tx := dao.db.WithContext(ctx).
+        Model(&user.UsersView{}).
+        Select("users_profiles.*, users.status").
+        Joins("JOIN users ON users.id = users_profiles.user_id").
+        Joins("JOIN users_identities ON users_profiles.user_id = users_identities.user_id")
+
+    res := make([]user.UsersView, 0)
+    ret, err := core.FindNextBy(whr, &res, tx)
+    if ret.Next {
+        ret.Data = res[:len(res)-1]
+    }
+    return ret, err
+}
+```
+
+返回结构：
+
+```json
+{
+  "p": 1,
+  "l": 20,
+  "next": true,
+  "prev": false,
+  "data": []
+}
+```
+
+#### 同一个 DAO 根据参数切换分页模式
+
+```go
+func (dao *UsersViewDAO) List(ctx context.Context, whr *core.Map, page bool) (any, error) {
+    _, asc := (*whr)["asc"].(string)
+    _, desc := (*whr)["desc"].(string)
+    if !asc && !desc {
+        (*whr)["desc"] = "created_at"
+    }
+    if tp := whr.GetString("type"); tp != "" {
+        (*whr)["type"] = constants.ParseLoginType(tp)
+    }
+
+    tx := dao.db.WithContext(ctx).
+        Model(&user.UsersView{}).
+        Select("users_profiles.*, users.status").
+        Joins("JOIN users ON users.id = users_profiles.user_id").
+        Joins("JOIN users_identities ON users_profiles.user_id = users_identities.user_id")
+
+    res := make([]user.UsersView, 0)
+
+    if page {
+        return core.FindPageBy(whr, &res, tx)
+    }
+
+    ret, err := core.FindNextBy(whr, &res, tx)
+    if ret.Next {
+        ret.Data = res[:len(res)-1]
+    }
+    return ret, err
+}
+```
+
+### 5. 事件钩子
 
 ```go
 type User struct {
@@ -646,7 +1096,6 @@ WorkingDirectory=/opt/myapp
 ExecStart=/opt/myapp/app
 Restart=always
 RestartSec=10
-Environment=GIN_MODE=release
 
 [Install]
 WantedBy=multi-user.target
@@ -708,10 +1157,11 @@ CMD ["./app"]
 ```go
 import "github.com/xs23933/core/v3/middleware/cors"
 
-app.Use(cors.New(cors.Options{
-    AllowedOrigins: []string{"http://localhost:3000"},
-    AllowedMethods: []string{"GET", "POST", "PUT", "DELETE"},
-    AllowedHeaders: []string{"Content-Type", "Authorization"},
+app.Use(cors.New(app, cors.Config{
+    AllowOrigins:     "http://localhost:3000",
+    AllowMethods:     "GET,POST,PUT,DELETE,OPTIONS",
+    AllowHeaders:     "Content-Type,Authorization",
+    AllowCredentials: true,
 }))
 ```
 
@@ -1004,6 +1454,7 @@ HTTP 方法前缀 + 路径片段（驼峰命名）：
 | `Put`      | PUT       |
 | `Delete`   | DELETE    |
 | `Patch`    | PATCH     |
+| `All`      | ALL       |
 
 ---
 
@@ -1220,9 +1671,9 @@ func (h *UserHandler) Delete_id(c core.Ctx) error {}
 
 ---
 
-## 六、命名转换规则（toNamer）
+## 六、命名转换规则（ToNamer）
 
-框架内部使用 `toNamer` 函数进行命名转换：
+框架内部使用 `ToNamer` 函数进行命名转换：
 
 **转换逻辑**：
 
