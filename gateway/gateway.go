@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"net"
 	"net/http"
 	"regexp"
 	"strings"
@@ -34,6 +35,7 @@ type Route struct {
 
 // CircuitBreaker 熔断器
 type CircuitBreaker struct {
+	mu           sync.Mutex
 	lastFailTime time.Time
 	state        int // 0: closed, 1: open, 2: half-open
 	failCount    int
@@ -92,6 +94,8 @@ func (gw *EtcdGateway) circuitBreakerCheck(serviceName string) bool {
 		return true
 	}
 	cb := val.(*CircuitBreaker)
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
 
 	if cb.state == circuitClosed {
 		return true
@@ -115,6 +119,8 @@ func (gw *EtcdGateway) circuitBreakerRecordSuccess(serviceName string) {
 		return
 	}
 	cb := val.(*CircuitBreaker)
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
 	if cb.state == circuitHalfOpen || cb.state == circuitOpen {
 		core.D("[Gateway] circuit breaker for %s closed (recovered)", serviceName)
 	}
@@ -125,6 +131,8 @@ func (gw *EtcdGateway) circuitBreakerRecordSuccess(serviceName string) {
 func (gw *EtcdGateway) circuitBreakerRecordFailure(serviceName string) {
 	val, _ := gw.circuitStates.LoadOrStore(serviceName, &CircuitBreaker{})
 	cb := val.(*CircuitBreaker)
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
 
 	cb.failCount++
 	cb.lastFailTime = time.Now()
@@ -578,6 +586,8 @@ func (gw *EtcdGateway) watchRoutes() {
 				}
 				if route.Enabled {
 					gw.addOrUpdateRoute(&route)
+				} else {
+					gw.removeRouteByID(route.ID)
 				}
 			case clientv3.EventTypeDelete:
 				routeID := strings.TrimPrefix(string(ev.Kv.Key), gw.prefix)
@@ -630,7 +640,7 @@ func (gw *EtcdGateway) registerRoute(route *Route) {
 }
 
 func (gw *EtcdGateway) unregisterRoute(route *Route) {
-	// TODO: 框架层面需要支持路由注销
+	gw.app.RemoveHandle([]string{strings.ToUpper(route.Method)}, strings.TrimSuffix(route.Path, "/"))
 }
 
 func (gw *EtcdGateway) createProxyHandler(route *Route) core.HandlerFunc {
@@ -745,12 +755,24 @@ func (gw *EtcdGateway) setupAdminAPI() {
 
 func (gw *EtcdGateway) localOnly(fn func(core.Ctx) error) func(core.Ctx) error {
 	return func(ctx core.Ctx) error {
-		ip := ctx.Request().RemoteAddr
-		if !strings.HasPrefix(ip, "127.") && !strings.HasPrefix(ip, "::1") && ip != "localhost" && ip != "[::1]" {
+		if !isLoopbackRemoteAddr(ctx.Request().RemoteAddr) {
 			return ctx.Status(403).JSON(core.Map{"code": 403, "message": "forbidden"})
 		}
 		return fn(ctx)
 	}
+}
+
+func isLoopbackRemoteAddr(remoteAddr string) bool {
+	host := strings.TrimSpace(remoteAddr)
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	host = strings.Trim(host, "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func (gw *EtcdGateway) createRoute(ctx core.Ctx) error {
@@ -765,8 +787,13 @@ func (gw *EtcdGateway) createRoute(ctx core.Ctx) error {
 	route.UpdatedAt = time.Now()
 	route.Enabled = true
 
-	data, _ := json.Marshal(route)
-	if _, err := gw.etcdCli.Put(context.Background(), gw.prefix+route.ID, string(data)); err != nil {
+	data, err := json.Marshal(route)
+	if err != nil {
+		return ctx.Status(400).JSON(core.Map{"code": 400, "message": err.Error()})
+	}
+	putCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := gw.etcdCli.Put(putCtx, gw.prefix+route.ID, string(data)); err != nil {
 		return ctx.Status(500).JSON(core.Map{"code": 500, "message": err.Error()})
 	}
 
@@ -783,8 +810,13 @@ func (gw *EtcdGateway) updateRoute(ctx core.Ctx) error {
 	route.ID = routeID
 	route.UpdatedAt = time.Now()
 
-	data, _ := json.Marshal(route)
-	if _, err := gw.etcdCli.Put(context.Background(), gw.prefix+routeID, string(data)); err != nil {
+	data, err := json.Marshal(route)
+	if err != nil {
+		return ctx.Status(400).JSON(core.Map{"code": 400, "message": err.Error()})
+	}
+	putCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := gw.etcdCli.Put(putCtx, gw.prefix+routeID, string(data)); err != nil {
 		return ctx.Status(500).JSON(core.Map{"code": 500, "message": err.Error()})
 	}
 
@@ -793,7 +825,9 @@ func (gw *EtcdGateway) updateRoute(ctx core.Ctx) error {
 
 func (gw *EtcdGateway) deleteRoute(ctx core.Ctx) error {
 	routeID := ctx.Params("id")
-	if _, err := gw.etcdCli.Delete(context.Background(), gw.prefix+routeID); err != nil {
+	deleteCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := gw.etcdCli.Delete(deleteCtx, gw.prefix+routeID); err != nil {
 		return ctx.Status(500).JSON(core.Map{"code": 500, "message": err.Error()})
 	}
 	return ctx.ToJSONCode("success")

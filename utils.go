@@ -894,10 +894,12 @@ func RemoteIP(h iGet, ip string) net.IP {
 	}
 
 	// 最后 RemoteAddr
-	if host, _, err := net.SplitHostPort(strings.TrimSpace(ip)); err == nil {
-		if realIP := net.ParseIP(host); realIP != nil {
-			return realIP
-		}
+	ip = strings.TrimSpace(ip)
+	if host, _, err := net.SplitHostPort(ip); err == nil {
+		ip = host
+	}
+	if realIP := net.ParseIP(ip); realIP != nil {
+		return realIP
 	}
 
 	return nil
@@ -921,15 +923,22 @@ type ClientInfo struct {
 }
 
 func ExtractClientInfo(ctx context.Context) *ClientInfo {
-	peerInfo, _ := peer.FromContext(ctx)
-
 	result := &ClientInfo{}
+
+	var remoteAddr string
+	if peerInfo, ok := peer.FromContext(ctx); ok && peerInfo.Addr != nil {
+		remoteAddr = peerInfo.Addr.String()
+	}
+
 	if p, ok := metadata.FromIncomingContext(ctx); ok {
-		ip := RemoteIP(&mda{md: p}, peerInfo.Addr.String())
-		result.IP = ip.String()
+		if ip := RemoteIP(&mda{md: p}, remoteAddr); ip != nil {
+			result.IP = ip.String()
+		}
 		if ua := p.Get("user-agent"); len(ua) > 0 {
 			result.UA = ua[0]
 		}
+	} else if ip := RemoteIP(http.Header{}, remoteAddr); ip != nil {
+		result.IP = ip.String()
 	}
 	return result
 }

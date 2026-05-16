@@ -128,6 +128,7 @@ func (app *Core) AddHandle(methods []string, uri string, group *Group, handler a
 	}
 	return app
 }
+
 */
 
 func (app *Core) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -195,7 +196,7 @@ func (app *Core) AddHandle(methods []string, uri string, group *Group, handler a
 			panic(err)
 		}
 
-		if method == MethodUse || method == MethodAll {
+		if method == MethodUse {
 			if uri == "/" || uri == "" { // 全局中间件
 				for _, root := range app.trees {
 					if root != nil {
@@ -231,4 +232,25 @@ func (app *Core) AddHandle(methods []string, uri string, group *Group, handler a
 		}
 	}
 	return app
+}
+
+func (app *Core) RemoveHandle(methods []string, uri string) {
+	uri = app.preparePath(uri)
+
+	for _, method := range methods {
+		method = strings.ToUpper(method)
+		if method == MethodAll {
+			for _, root := range app.trees {
+				if root != nil {
+					root.removeRoute(uri)
+				}
+			}
+			continue
+		}
+
+		methodIdx := methodPos(method)
+		if methodIdx >= 0 && methodIdx < len(app.trees) && app.trees[methodIdx] != nil {
+			app.trees[methodIdx].removeRoute(uri)
+		}
+	}
 }

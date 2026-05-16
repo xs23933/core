@@ -71,6 +71,65 @@ func (n *RouteNode) addRoute(path string, handlers []HandlerFunc) {
 	}
 }
 
+func (n *RouteNode) removeRoute(path string) bool {
+	segments := strings.Split(strings.Trim(path, "/"), "/")
+	return n.removeRouteSegments(segments, 0)
+}
+
+func (n *RouteNode) removeRouteSegments(segments []string, idx int) bool {
+	if idx == len(segments) {
+		if len(n.handlers) == 0 {
+			return false
+		}
+		n.handlers = nil
+		return true
+	}
+
+	seg := segments[idx]
+	var child **RouteNode
+
+	switch {
+	case strings.HasPrefix(seg, "*"):
+		child = &n.catchChild
+	case strings.HasPrefix(seg, ":"):
+		child = &n.paramChild
+	default:
+		if n.staticChild == nil {
+			return false
+		}
+		next := n.staticChild[seg]
+		if next == nil {
+			return false
+		}
+		removed := next.removeRouteSegments(segments, idx+1)
+		if removed && next.empty() {
+			delete(n.staticChild, seg)
+			if len(n.staticChild) == 0 {
+				n.staticChild = nil
+			}
+		}
+		return removed
+	}
+
+	if *child == nil {
+		return false
+	}
+
+	removed := (*child).removeRouteSegments(segments, idx+1)
+	if removed && (*child).empty() {
+		*child = nil
+	}
+	return removed
+}
+
+func (n *RouteNode) empty() bool {
+	return len(n.middlewares) == 0 &&
+		len(n.handlers) == 0 &&
+		len(n.staticChild) == 0 &&
+		n.paramChild == nil &&
+		n.catchChild == nil
+}
+
 func (n *RouteNode) match(path string, ctx Ctx) (HandlerFuncs, bool) {
 	segments := strings.Split(strings.Trim(path, "/"), "/")
 	current := n
@@ -140,6 +199,9 @@ func (n *RouteNode) match(path string, ctx Ctx) (HandlerFuncs, bool) {
 	}
 
 	// 到叶子节点，追加最终 handler
+	if len(current.handlers) == 0 {
+		return nil, false
+	}
 	chain = append(chain, current.handlers...)
 	return chain, true
 }

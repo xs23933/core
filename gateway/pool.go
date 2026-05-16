@@ -10,19 +10,19 @@ import (
 
 // ServicePool 服务连接池（按 instanceID 管理多个实例连接）
 type ServicePool struct {
-	name     string
+	name      string
 	instances map[string]*ReflectionProxy // instanceID -> proxy
-	idx      uint64                       // atomic round-robin index
-	mu       sync.RWMutex
-	app      *core.Core
+	idx       uint64                      // atomic round-robin index
+	mu        sync.RWMutex
+	app       *core.Core
 }
 
 // NewServicePool 创建服务连接池
 func NewServicePool(app *core.Core, name string) *ServicePool {
 	return &ServicePool{
-		name:     name,
+		name:      name,
 		instances: make(map[string]*ReflectionProxy),
-		app:      app,
+		app:       app,
 	}
 }
 
@@ -48,6 +48,10 @@ func (p *ServicePool) AddOrUpdateInstance(instanceID, addr string) (*ReflectionP
 	// 加锁替换
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
+	if p.instances == nil {
+		p.instances = make(map[string]*ReflectionProxy)
+	}
 
 	// double check：可能另一个 goroutine 已抢先完成
 	if old, ok := p.instances[instanceID]; ok && old.addr == addr {
@@ -120,7 +124,7 @@ func (p *ServicePool) Close() {
 	for _, proxy := range p.instances {
 		proxy.Close()
 	}
-	p.instances = nil
+	p.instances = make(map[string]*ReflectionProxy)
 }
 
 // ConnectionPool 连接池管理器
@@ -187,7 +191,7 @@ func (cp *ConnectionPool) Close() {
 	for name, pool := range cp.pools {
 		pools[name] = pool
 	}
-	cp.pools = pools
+	cp.pools = make(map[string]*ServicePool)
 	cp.poolsMu.Unlock()
 
 	for _, pool := range pools {

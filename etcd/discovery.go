@@ -84,6 +84,9 @@ func (d *Discovery) Watch(serviceName string) error {
 	resp, err := d.client.Get(getCtx, prefix, clientv3.WithPrefix())
 	if err != nil {
 		cancel()
+		d.mu.Lock()
+		delete(d.watchers, serviceName)
+		d.mu.Unlock()
 		return err
 	}
 
@@ -105,9 +108,18 @@ func (d *Discovery) Watch(serviceName string) error {
 }
 
 func (d *Discovery) watchLoop(ctx context.Context, serviceName string, prefix string) {
+	defer func() {
+		d.mu.Lock()
+		delete(d.watchers, serviceName)
+		d.mu.Unlock()
+	}()
+
 	watchCh := d.client.Watch(ctx, prefix, clientv3.WithPrefix())
 
 	for resp := range watchCh {
+		if err := resp.Err(); err != nil {
+			continue
+		}
 		changed := false
 
 		d.mu.Lock()
@@ -191,6 +203,7 @@ func (d *Discovery) Close() error {
 	for _, cancel := range d.watchers {
 		cancel()
 	}
+	d.watchers = make(map[string]context.CancelFunc)
 	d.mu.Unlock()
 
 	return d.client.Close()

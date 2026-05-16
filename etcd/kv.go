@@ -147,7 +147,9 @@ func (d *Discovery) WatchKV(key string, onChange func(key, value string)) (cance
 	ctx, cancelCtx := context.WithCancel(context.Background())
 
 	// 先获取当前值
-	resp, err := d.client.Get(ctx, fullKey)
+	getCtx, getCancel := context.WithTimeout(ctx, 5*time.Second)
+	resp, err := d.client.Get(getCtx, fullKey)
+	getCancel()
 	if err != nil {
 		cancelCtx()
 		return nil, err
@@ -162,6 +164,9 @@ func (d *Discovery) WatchKV(key string, onChange func(key, value string)) (cance
 
 	go func() {
 		for resp := range watchCh {
+			if err := resp.Err(); err != nil {
+				continue
+			}
 			for _, ev := range resp.Events {
 				relKey := string(ev.Kv.Key)[len(KVPrefix):]
 				switch ev.Type {
@@ -184,7 +189,9 @@ func (d *Discovery) WatchPrefix(prefix string, onChange func(key, value string))
 	ctx, cancelCtx := context.WithCancel(context.Background())
 
 	// 先获取当前值
-	resp, err := d.client.Get(ctx, fullPrefix, clientv3.WithPrefix())
+	getCtx, getCancel := context.WithTimeout(ctx, 5*time.Second)
+	resp, err := d.client.Get(getCtx, fullPrefix, clientv3.WithPrefix())
+	getCancel()
 	if err != nil {
 		cancelCtx()
 		return nil, err
@@ -199,6 +206,9 @@ func (d *Discovery) WatchPrefix(prefix string, onChange func(key, value string))
 
 	go func() {
 		for resp := range watchCh {
+			if err := resp.Err(); err != nil {
+				continue
+			}
 			for _, ev := range resp.Events {
 				relKey := string(ev.Kv.Key)[len(fullPrefix):]
 				switch ev.Type {

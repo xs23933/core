@@ -82,12 +82,16 @@ func (r *Registry) doRegister() error {
 	// 注册服务
 	_, err = r.client.Put(r.ctx, r.opts.ServiceKey(), string(value), clientv3.WithLease(r.leaseID))
 	if err != nil {
+		_, _ = r.lease.Revoke(context.Background(), r.leaseID)
+		r.leaseID = 0
 		return fmt.Errorf("put service: %w", err)
 	}
 
 	// 自动续约
 	r.keepAliveCh, err = r.lease.KeepAlive(r.ctx, r.leaseID)
 	if err != nil {
+		_, _ = r.lease.Revoke(context.Background(), r.leaseID)
+		r.leaseID = 0
 		return fmt.Errorf("keep alive: %w", err)
 	}
 
@@ -124,15 +128,20 @@ func (r *Registry) keepAlive() {
 
 // Deregister 注销服务
 func (r *Registry) Deregister() error {
-	r.cancel()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 
 	if r.leaseID > 0 {
-		_, _ = r.lease.Revoke(context.Background(), r.leaseID)
+		_, _ = r.lease.Revoke(ctx, r.leaseID)
+		r.leaseID = 0
 	}
 
-	if _, err := r.client.Delete(context.Background(), r.opts.ServiceKey()); err != nil {
+	if _, err := r.client.Delete(ctx, r.opts.ServiceKey()); err != nil {
+		r.cancel()
 		return fmt.Errorf("deregister service: %w", err)
 	}
+
+	r.cancel()
 
 	// 关闭 etcd 客户端
 	if err := r.client.Close(); err != nil {
