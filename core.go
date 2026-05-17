@@ -234,18 +234,18 @@ func New(options ...Options) *Core {
 
 	app.Use(Logger(LoggerConfig{ForceColor: colorful, App: app, Debug: app.Debug, Output: out}), Recovery())
 
-	if conf := Conf.GetMap("database"); conf != nil {
+	if conf := Conf.GetMap("database"); len(conf) > 0 {
 		if _, err := NewModel(conf, app.Debug, colorful); err != nil {
 			Erro("disconnect %s: %w", conf.GetString("dsn"), err)
 		}
 	}
-	if conf := Conf.GetMap("redis"); conf != nil {
+	if conf := Conf.GetMap("redis"); len(conf) > 0 {
 		if _, err := NewRedis(conf, app.Debug); err != nil {
 			Erro("redis connect failed: %v", err)
 		}
 		app.OnShutdown(func() { CloseRedis() })
 	}
-	if conf := Conf.GetMap("nsq"); conf != nil {
+	if conf := Conf.GetMap("nsq"); len(conf) > 0 {
 		if err := InitNSQ(conf, app.Debug); err != nil {
 			Erro("nsq init failed: %v", err)
 		}

@@ -119,11 +119,16 @@ func (id *ID) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 
-	if len(data) < 3 || data[0] != '"' || data[len(data)-1] != '"' {
+	var raw string
+	if len(data) >= 2 && data[0] == '"' && data[len(data)-1] == '"' {
+		raw = string(data[1 : len(data)-1])
+	} else if len(data) > 0 {
+		raw = string(data)
+	} else {
 		return JSONSyntaxError{Original: data}
 	}
 
-	val, err := ParseString(string(data[1 : len(data)-1]))
+	val, err := ParseString(raw)
 	if err != nil {
 		return err
 	}
@@ -164,6 +169,18 @@ func (id *ID) Scan(value any) error {
 		*id = ID(v)
 	case int:
 		*id = ID(v)
+	case float64:
+		parsed, err := idFromFloat64(v)
+		if err != nil {
+			return err
+		}
+		*id = parsed
+	case float32:
+		parsed, err := idFromFloat64(float64(v))
+		if err != nil {
+			return err
+		}
+		*id = parsed
 	case string:
 		parsed, err := ParseString(v)
 		if err != nil {
@@ -206,6 +223,13 @@ func ParseString(s string) (ID, error) {
 		i, err := strconv.ParseInt(s, 10, 64)
 		return ID(i), err
 	}
+	if isFloatDigits(s) {
+		v, err := strconv.ParseFloat(s, 64)
+		if err != nil {
+			return 0, err
+		}
+		return idFromFloat64(v)
+	}
 
 	return Decode(s)
 }
@@ -218,6 +242,33 @@ func isDigits(s string) bool {
 		}
 	}
 	return true
+}
+
+func isFloatDigits(s string) bool {
+	dot := false
+	digit := false
+	for i, c := range s {
+		if c == '.' {
+			if dot || i == 0 || i == len(s)-1 {
+				return false
+			}
+			dot = true
+			continue
+		}
+		if c < '0' || c > '9' {
+			return false
+		}
+		digit = true
+	}
+	return dot && digit
+}
+
+func idFromFloat64(v float64) (ID, error) {
+	id := ID(v)
+	if float64(id) != v {
+		return 0, fmt.Errorf("invalid non-integer xid: %v", v)
+	}
+	return id, nil
 }
 
 // Next 生成 8 位 Base62 ID

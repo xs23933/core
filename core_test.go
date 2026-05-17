@@ -56,3 +56,13 @@ func TestRemoteIPFallbacks(t *testing.T) {
 		t.Fatalf("invalid forwarded header should fall back to remote addr, got %v", got)
 	}
 }
+
+func TestNewWithoutNSQConfigDoesNotInitializeProducer(t *testing.T) {
+	CloseNSQ()
+
+	New(Options{"debug": false})
+
+	if NProducer() != nil {
+		t.Fatal("nsq producer initialized without nsq config")
+	}
+}

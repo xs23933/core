@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/xs23933/core/v3/nid"
 	"github.com/xs23933/core/v3/sid"
 	"github.com/xs23933/core/v3/xid"
 	"github.com/xs23933/uid"
@@ -68,6 +69,10 @@ func NewSnID() sid.ID {
 
 func NewXID() xid.ID {
 	return XID.MustGenerate()
+}
+
+func NewNID() nid.ID {
+	return nid.MustGenerate()
 }
 
 func openDB(conf Options, debug, colorful bool) (db *DB, err error) {
