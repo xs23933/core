@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -101,7 +102,7 @@ func New(options ...Options) *Core {
 		MaxMultipartMemory: defaultMultipartMemory,
 	}
 
-	out := os.Stdout
+	var out io.Writer = os.Stdout
 	colorful := app.Debug
 	if len(options) > 0 {
 		app.Conf = options[0]
@@ -123,13 +124,19 @@ func New(options ...Options) *Core {
 		app.modName = app.Conf.GetString("mod_prefix", "mod")
 
 		if log := app.Conf.GetString("log", ""); log != "" {
-			var err error
-			out, err = os.OpenFile(log, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0640)
-			colorful = false
-			if err != nil {
-				panic(err)
+			rotateOpts := LogRotateOptionsFromConfig(app.Conf)
+			rotatingOut, rotateErr := NewRotatingLogWriter(log, rotateOpts...)
+			if rotateErr != nil {
+				panic(rotateErr)
 			}
-			os.Stdout = out
+			if rotateErr = rotatingOut.RedirectStdout(); rotateErr != nil {
+				panic(rotateErr)
+			}
+			out = rotatingOut
+			colorful = false
+			if closer, ok := out.(io.Closer); ok {
+				app.OnShutdown(func() { _ = closer.Close() })
+			}
 		} else if app.Debug {
 			out = os.Stdout
 		}

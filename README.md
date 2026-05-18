@@ -88,6 +88,16 @@ debug: true # 调试模式
 network: tcp4 # 网络协议
 listen: 8080 # 监听端口
 prefork: false # 是否启用 prefork 模式
+log: /var/log/myapp/app.log # 可选：日志文件路径
+log_rotate:
+  - size: 300M # 文件达到 300MB 后切割
+  - daily # 每日切割
+  - rotate: 30 # 保留最近 30 天的切割日志
+  - compress # 切割后的日志 gzip 压缩
+  - delaycompress: 24h # 延迟压缩，需配合 compress
+  - missingok # 日志文件不存在时不报错
+  - notifempty # 空日志不切割
+  - copytruncate # 复制后截断原文件，不替换当前文件句柄
 
 # RESTful 响应格式配置
 restful:
@@ -1589,6 +1599,65 @@ core.Info("用户登录成功: %s", username)
 core.Warn("API 调用频繁: %s", ip)
 core.Erro("数据库连接失败: %v", err)
 core.D("请求参数: %v", params)
+```
+
+#### 日志轮转
+
+框架内置日志文件轮转，配置文件方式：
+
+```yaml
+log: /var/log/myapp/app.log
+log_rotate:
+  - size: 300M
+  - daily
+  - rotate: 30
+  - compress
+  - delaycompress: 24h
+  - missingok
+  - notifempty
+  - copytruncate
+```
+
+只要配置了 `log` 且 `log_rotate` 未配置、为 `null`、空字符串或空数组，框架会自动套用上面的默认轮转配置。
+
+参数说明：
+
+| 参数 | 含义 |
+| --- | --- |
+| `size: 300M` | 日志文件达到指定大小后切割，支持 `K/KB/M/MB/G/GB`，也支持纯数字字节数 |
+| `daily` | 按天切割，跨日期后第一次写入会创建新的日志文件 |
+| `rotate: 30` | 保留最近 30 天的切割日志，超过期限自动删除 |
+| `compress` | 切割后的日志文件压缩为 `.gz` |
+| `delaycompress` | 延迟压缩切割日志，默认延迟 `24h`，需配合 `compress` |
+| `delaycompress: 2h` | 指定延迟压缩时长，支持 Go duration 格式，如 `30m`、`2h`、`24h` |
+| `missingok` | 日志文件不存在时继续运行并重新创建，不返回错误 |
+| `notifempty` | 当前日志文件为空时不切割、不压缩、不生成空的轮转文件 |
+| `copytruncate` | 切割时复制当前日志再截断原文件，适合不希望替换文件句柄的部署方式 |
+
+代码方式：
+
+```go
+w, err := core.NewRotatingLogWriter(
+    "/var/log/myapp/app.log",
+    "size: 300M",
+    "daily",
+    "rotate: 30",
+    "compress",
+    "delaycompress: 24h",
+    "missingok",
+    "notifempty",
+    "copytruncate",
+)
+if err != nil {
+    panic(err)
+}
+defer w.Close()
+
+app.Use(core.Logger(core.LoggerConfig{
+    App:    app,
+    Debug:  app.Debug,
+    Output: w,
+}))
 ```
 
 ### 4. 性能监控

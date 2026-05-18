@@ -2,6 +2,7 @@ package core
 
 import (
 	"bytes"
+	"compress/gzip"
 	"errors"
 	"fmt"
 	"io"
@@ -10,7 +11,10 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"os"
+	"path/filepath"
 	"runtime"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -182,6 +186,607 @@ const (
 	erro = "[E]"
 	warn = "[W]"
 )
+
+type LogRotateConfig struct {
+	MaxSize       int64
+	Daily         bool
+	RetainDays    int
+	Compress      bool
+	CopyTruncate  bool
+	DelayCompress time.Duration
+	MissingOK     bool
+	NotifEmpty    bool
+}
+
+var DefaultLogRotateOptions = []string{
+	"size: 300M",
+	"daily",
+	"rotate: 30",
+	"compress",
+	"delaycompress: 24h",
+	"missingok",
+	"notifempty",
+	"copytruncate",
+}
+
+type RotatingLogWriter struct {
+	mu             sync.Mutex
+	path           string
+	file           *os.File
+	cfg            LogRotateConfig
+	size           int64
+	day            string
+	redirectStdout bool
+	nowFunc        func() time.Time
+}
+
+func LogRotateOptionsFromConfig(conf Options) []string {
+	raw, ok := conf["log_rotate"]
+	if !ok || raw == nil {
+		return append([]string(nil), DefaultLogRotateOptions...)
+	}
+
+	clean := normalizeLogRotateOptions(raw)
+	if len(clean) == 0 {
+		return append([]string(nil), DefaultLogRotateOptions...)
+	}
+	return clean
+}
+
+func normalizeLogRotateOptions(raw any) []string {
+	switch v := raw.(type) {
+	case string:
+		return cleanLogRotateStrings([]string{v})
+	case []string:
+		return cleanLogRotateStrings(v)
+	case []any:
+		clean := make([]string, 0, len(v))
+		for _, item := range v {
+			if opt := normalizeLogRotateOption(item); opt != "" {
+				clean = append(clean, opt)
+			}
+		}
+		return clean
+	default:
+		if opt := normalizeLogRotateOption(v); opt != "" {
+			return []string{opt}
+		}
+		return nil
+	}
+}
+
+func cleanLogRotateStrings(opts []string) []string {
+	clean := make([]string, 0, len(opts))
+	for _, opt := range opts {
+		if strings.TrimSpace(opt) != "" {
+			clean = append(clean, strings.TrimSpace(opt))
+		}
+	}
+	return clean
+}
+
+func normalizeLogRotateOption(item any) string {
+	switch v := item.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	case map[string]any:
+		return logRotateMapOption(v)
+	case map[string]string:
+		m := make(map[string]any, len(v))
+		for key, val := range v {
+			m[key] = val
+		}
+		return logRotateMapOption(m)
+	case Options:
+		return logRotateMapOption(map[string]any(v))
+	case map[any]any:
+		m := make(map[string]any, len(v))
+		for key, val := range v {
+			m[fmt.Sprint(key)] = val
+		}
+		return logRotateMapOption(m)
+	default:
+		return ""
+	}
+}
+
+func logRotateMapOption(m map[string]any) string {
+	if len(m) != 1 {
+		return ""
+	}
+	for key, val := range m {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			return ""
+		}
+		if val == nil {
+			return key
+		}
+		value := strings.TrimSpace(fmt.Sprint(val))
+		if value == "" {
+			return key
+		}
+		return key + ": " + value
+	}
+	return ""
+}
+
+func splitLogRotateOption(opt string) (string, string, bool, error) {
+	opt = strings.TrimSpace(opt)
+	if opt == "" {
+		return "", "", false, nil
+	}
+	if strings.Contains(opt, ":") {
+		key, value, ok := strings.Cut(opt, ":")
+		if !ok {
+			return "", "", false, fmt.Errorf("invalid log rotate option %q", opt)
+		}
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if key == "" || value == "" {
+			return "", "", false, fmt.Errorf("invalid log rotate option %q", opt)
+		}
+		if strings.Contains(key, " ") {
+			return "", "", false, fmt.Errorf("invalid log rotate option key %q", key)
+		}
+		return key, value, true, nil
+	}
+	fields := strings.Fields(opt)
+	if len(fields) == 0 {
+		return "", "", false, nil
+	}
+	if len(fields) != 1 {
+		return "", "", false, fmt.Errorf("log rotate option %q must use YAML syntax key: value", opt)
+	}
+	return fields[0], "", false, nil
+}
+
+func ParseLogRotateConfig(opts ...string) (LogRotateConfig, error) {
+	var cfg LogRotateConfig
+	for _, opt := range opts {
+		key, value, hasValue, err := splitLogRotateOption(opt)
+		if err != nil {
+			return cfg, err
+		}
+		if key == "" {
+			continue
+		}
+		switch strings.ToLower(key) {
+		case "size":
+			if !hasValue {
+				return cfg, fmt.Errorf("log rotate size expects YAML value")
+			}
+			size, err := parseLogSize(value)
+			if err != nil {
+				return cfg, err
+			}
+			cfg.MaxSize = size
+		case "daily":
+			if hasValue {
+				return cfg, fmt.Errorf("log rotate daily does not accept values")
+			}
+			cfg.Daily = true
+		case "rotate":
+			if !hasValue {
+				return cfg, fmt.Errorf("log rotate rotate expects YAML day count")
+			}
+			days, err := strconv.Atoi(value)
+			if err != nil || days < 0 {
+				return cfg, fmt.Errorf("invalid log rotate retention days %q", value)
+			}
+			cfg.RetainDays = days
+		case "compress":
+			if hasValue {
+				return cfg, fmt.Errorf("log rotate compress does not accept values")
+			}
+			cfg.Compress = true
+		case "copytruncate":
+			if hasValue {
+				return cfg, fmt.Errorf("log rotate copytruncate does not accept values")
+			}
+			cfg.CopyTruncate = true
+		case "delaycompress":
+			delay := 24 * time.Hour
+			if hasValue {
+				var err error
+				delay, err = time.ParseDuration(value)
+				if err != nil || delay <= 0 {
+					return cfg, fmt.Errorf("invalid log rotate delaycompress duration %q", value)
+				}
+			}
+			cfg.DelayCompress = delay
+		case "missingok":
+			if hasValue {
+				return cfg, fmt.Errorf("log rotate missingok does not accept values")
+			}
+			cfg.MissingOK = true
+		case "notifempty":
+			if hasValue {
+				return cfg, fmt.Errorf("log rotate notifempty does not accept values")
+			}
+			cfg.NotifEmpty = true
+		default:
+			return cfg, fmt.Errorf("unknown log rotate option %q", key)
+		}
+	}
+	if cfg.DelayCompress > 0 && !cfg.Compress {
+		return cfg, fmt.Errorf("log rotate delaycompress requires compress")
+	}
+	return cfg, nil
+}
+
+func NewRotatingLogWriter(path string, opts ...string) (*RotatingLogWriter, error) {
+	cfg, err := ParseLogRotateConfig(opts...)
+	if err != nil {
+		return nil, err
+	}
+	return NewRotatingLogWriterConfig(path, cfg)
+}
+
+func NewRotatingLogWriterConfig(path string, cfg LogRotateConfig) (*RotatingLogWriter, error) {
+	if path == "" {
+		return nil, fmt.Errorf("log path is required")
+	}
+	if cfg.MaxSize < 0 {
+		return nil, fmt.Errorf("log rotate size cannot be negative")
+	}
+	if cfg.RetainDays < 0 {
+		return nil, fmt.Errorf("log rotate retention days cannot be negative")
+	}
+	w := &RotatingLogWriter{
+		path:    path,
+		cfg:     cfg,
+		nowFunc: time.Now,
+	}
+	if err := w.open(); err != nil {
+		return nil, err
+	}
+	return w, nil
+}
+
+func (w *RotatingLogWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if w.cfg.Compress && w.cfg.DelayCompress > 0 {
+		if err := w.compressDue(w.now()); err != nil {
+			return 0, err
+		}
+	}
+	if err := w.rotateIfNeeded(len(p)); err != nil {
+		return 0, err
+	}
+	n, err := w.file.Write(p)
+	w.size += int64(n)
+	return n, err
+}
+
+func (w *RotatingLogWriter) RedirectStdout() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.file == nil {
+		if err := w.open(); err != nil {
+			return err
+		}
+	}
+	w.redirectStdout = true
+	os.Stdout = w.file
+	return nil
+}
+
+func (w *RotatingLogWriter) Close() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.file == nil {
+		return nil
+	}
+	err := w.file.Close()
+	w.file = nil
+	return err
+}
+
+func (w *RotatingLogWriter) open() error {
+	if err := os.MkdirAll(filepath.Dir(w.path), 0755); err != nil {
+		return err
+	}
+	file, err := os.OpenFile(w.path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0640)
+	if err != nil {
+		return err
+	}
+	old := w.file
+	w.file = file
+	w.day = logDay(w.now())
+	if st, err := file.Stat(); err == nil {
+		w.size = st.Size()
+	}
+	if w.redirectStdout {
+		os.Stdout = file
+	}
+	if old != nil && old != file {
+		if err := old.Close(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (w *RotatingLogWriter) rotateIfNeeded(incoming int) error {
+	now := w.now()
+	if w.file != nil {
+		if st, err := w.file.Stat(); err == nil {
+			w.size = st.Size()
+		} else if errors.Is(err, os.ErrNotExist) && w.cfg.MissingOK {
+			w.size = 0
+		}
+	}
+	if w.cfg.Daily && w.day != "" && logDay(now) != w.day {
+		return w.rotate(now)
+	}
+	if w.cfg.MaxSize > 0 && w.size+int64(incoming) > w.cfg.MaxSize {
+		return w.rotate(now)
+	}
+	return nil
+}
+
+func (w *RotatingLogWriter) rotate(now time.Time) error {
+	if w.file == nil {
+		return w.open()
+	}
+
+	if st, err := os.Stat(w.path); err != nil {
+		if errors.Is(err, os.ErrNotExist) && w.cfg.MissingOK {
+			return w.reopenAfterMissing(now)
+		}
+		return err
+	} else if w.cfg.NotifEmpty && st.Size() == 0 {
+		w.size = 0
+		w.day = logDay(now)
+		return nil
+	}
+
+	rotated := nextRotatedLogPath(w.path, now)
+	if w.cfg.CopyTruncate {
+		if err := copyFile(w.path, rotated); err != nil {
+			if errors.Is(err, os.ErrNotExist) && w.cfg.MissingOK {
+				return w.reopenAfterMissing(now)
+			}
+			return err
+		}
+		if err := w.file.Truncate(0); err != nil {
+			return err
+		}
+		if err := w.open(); err != nil {
+			return err
+		}
+	} else {
+		if _, err := os.Stat(w.path); err == nil {
+			if err := os.Rename(w.path, rotated); err != nil {
+				return err
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if err := w.open(); err != nil {
+			if _, statErr := os.Stat(w.path); errors.Is(statErr, os.ErrNotExist) {
+				_ = os.Rename(rotated, w.path)
+			}
+			return err
+		}
+	}
+
+	if w.cfg.Compress {
+		if err := w.compressRotated(rotated, now); err != nil {
+			return err
+		}
+	}
+	w.size = 0
+	w.day = logDay(now)
+	return w.clean(now)
+}
+
+func (w *RotatingLogWriter) reopenAfterMissing(now time.Time) error {
+	w.size = 0
+	w.day = logDay(now)
+	return w.open()
+}
+
+func (w *RotatingLogWriter) compressRotated(path string, now time.Time) error {
+	if w.cfg.DelayCompress > 0 {
+		return w.compressDue(now)
+	}
+	if err := gzipFile(path); err != nil && !(w.cfg.MissingOK && errors.Is(err, os.ErrNotExist)) {
+		return err
+	}
+	return nil
+}
+
+func (w *RotatingLogWriter) compressDue(now time.Time) error {
+	files, err := rotatedLogFiles(w.path)
+	if err != nil {
+		return err
+	}
+	cutoff := now.Add(-w.cfg.DelayCompress)
+	for _, file := range files {
+		if strings.HasSuffix(file, ".gz") {
+			continue
+		}
+		st, err := os.Stat(file)
+		if err != nil {
+			if w.cfg.MissingOK && errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return err
+		}
+		if st.ModTime().After(cutoff) {
+			continue
+		}
+		if w.cfg.NotifEmpty && st.Size() == 0 {
+			continue
+		}
+		if err := gzipFile(file); err != nil {
+			if w.cfg.MissingOK && errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return err
+		}
+	}
+	return nil
+}
+
+func (w *RotatingLogWriter) clean(now time.Time) error {
+	if w.cfg.RetainDays <= 0 {
+		return nil
+	}
+	cutoff := now.Add(-time.Duration(w.cfg.RetainDays) * 24 * time.Hour)
+	files, err := rotatedLogFiles(w.path)
+	if err != nil {
+		return err
+	}
+	for _, file := range files {
+		st, err := os.Stat(file)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return err
+		}
+		if st.ModTime().Before(cutoff) {
+			if err := os.Remove(file); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (w *RotatingLogWriter) now() time.Time {
+	if w.nowFunc != nil {
+		return w.nowFunc()
+	}
+	return time.Now()
+}
+
+func parseLogSize(s string) (int64, error) {
+	if s == "" {
+		return 0, fmt.Errorf("log rotate size is required")
+	}
+	unit := int64(1)
+	raw := strings.TrimSpace(strings.ToUpper(s))
+	for _, suffix := range []struct {
+		text string
+		mul  int64
+	}{
+		{"KB", 1024}, {"K", 1024},
+		{"MB", 1024 * 1024}, {"M", 1024 * 1024},
+		{"GB", 1024 * 1024 * 1024}, {"G", 1024 * 1024 * 1024},
+		{"B", 1},
+	} {
+		if strings.HasSuffix(raw, suffix.text) {
+			unit = suffix.mul
+			raw = strings.TrimSpace(strings.TrimSuffix(raw, suffix.text))
+			break
+		}
+	}
+	n, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || n <= 0 {
+		return 0, fmt.Errorf("invalid log rotate size %q", s)
+	}
+	return n * unit, nil
+}
+
+func rotatedLogPath(path string, t time.Time) string {
+	return fmt.Sprintf("%s.%s", path, t.Format("20060102-150405.000000000"))
+}
+
+func nextRotatedLogPath(path string, t time.Time) string {
+	base := rotatedLogPath(path, t)
+	if !logFileExists(base) && !logFileExists(base+".gz") {
+		return base
+	}
+	for i := 1; ; i++ {
+		next := fmt.Sprintf("%s.%d", base, i)
+		if !logFileExists(next) && !logFileExists(next+".gz") {
+			return next
+		}
+	}
+}
+
+func logFileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+func rotatedLogFiles(path string) ([]string, error) {
+	dir := filepath.Dir(path)
+	base := filepath.Base(path) + "."
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	files := make([]string, 0)
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasPrefix(name, base) {
+			continue
+		}
+		files = append(files, filepath.Join(dir, name))
+	}
+	sort.Strings(files)
+	return files, nil
+}
+
+func logDay(t time.Time) string {
+	return t.Format("2006-01-02")
+}
+
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0640)
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(out, in)
+	closeErr := out.Close()
+	if copyErr != nil {
+		return copyErr
+	}
+	return closeErr
+}
+
+func gzipFile(path string) error {
+	in, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.OpenFile(path+".gz", os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0640)
+	if err != nil {
+		return err
+	}
+	gz := gzip.NewWriter(out)
+	_, copyErr := io.Copy(gz, in)
+	closeGzErr := gz.Close()
+	closeOutErr := out.Close()
+	if copyErr != nil {
+		return copyErr
+	}
+	if closeGzErr != nil {
+		return closeGzErr
+	}
+	if closeOutErr != nil {
+		return closeOutErr
+	}
+	return os.Remove(path)
+}
 
 // timeFormat returns a customized time string for logger.
 func timeFormat(t time.Time) string {
