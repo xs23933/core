@@ -3,7 +3,6 @@ module github.com/xs23933/core/v3
 go 1.25.0
 
 require (
-	github.com/ClickHouse/clickhouse-go/v2 v2.46.0
 	github.com/bytedance/sonic v1.15.1
 	github.com/caddyserver/certmagic v0.25.3
 	github.com/davecgh/go-spew v1.1.1
@@ -14,11 +13,14 @@ require (
 	github.com/jhump/protoreflect v1.18.0
 	github.com/libdns/cloudflare v0.2.2
 	github.com/mattn/go-isatty v0.0.22
+	github.com/nsqio/go-nsq v1.1.0
 	github.com/quic-go/quic-go v0.59.1
+	github.com/redis/go-redis/v9 v9.19.0
 	github.com/swaggo/files/v2 v2.0.2
 	github.com/swaggo/swag v1.16.6
 	github.com/xs23933/uid v1.0.3
 	github.com/yuin/goldmark v1.8.2
+	go.etcd.io/etcd/api/v3 v3.6.11
 	go.etcd.io/etcd/client/v3 v3.6.11
 	golang.org/x/crypto v0.51.0
 	golang.org/x/net v0.54.0
@@ -38,6 +40,7 @@ require (
 require (
 	filippo.io/edwards25519 v1.2.0 // indirect
 	github.com/ClickHouse/ch-go v0.71.0 // indirect
+	github.com/ClickHouse/clickhouse-go/v2 v2.46.0 // indirect
 	github.com/KyleBanks/depth v1.2.1 // indirect
 	github.com/andybalholm/brotli v1.2.1 // indirect
 	github.com/bytedance/gopkg v0.1.4 // indirect
@@ -82,16 +85,13 @@ require (
 	github.com/mattn/go-sqlite3 v1.14.44 // indirect
 	github.com/mholt/acmez/v3 v3.1.6 // indirect
 	github.com/miekg/dns v1.1.72 // indirect
-	github.com/nsqio/go-nsq v1.1.0 // indirect
 	github.com/paulmach/orb v0.13.0 // indirect
 	github.com/pierrec/lz4/v4 v4.1.26 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
-	github.com/redis/go-redis/v9 v9.19.0 // indirect
 	github.com/segmentio/asm v1.2.1 // indirect
 	github.com/shopspring/decimal v1.4.0 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/zeebo/blake3 v0.2.4 // indirect
-	go.etcd.io/etcd/api/v3 v3.6.11 // indirect
 	go.etcd.io/etcd/client/pkg/v3 v3.6.11 // indirect
 	go.opentelemetry.io/otel v1.43.0 // indirect
 	go.opentelemetry.io/otel/trace v1.43.0 // indirect
