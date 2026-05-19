@@ -16,6 +16,7 @@ require (
 	github.com/nsqio/go-nsq v1.1.0
 	github.com/quic-go/quic-go v0.59.1
 	github.com/redis/go-redis/v9 v9.19.0
+	github.com/spf13/cobra v1.10.2
 	github.com/swaggo/files/v2 v2.0.2
 	github.com/swaggo/swag v1.16.6
 	github.com/xs23933/uid v1.0.3
@@ -91,7 +92,6 @@ require (
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/segmentio/asm v1.2.1 // indirect
 	github.com/shopspring/decimal v1.4.0 // indirect
-	github.com/spf13/cobra v1.10.2 // indirect
 	github.com/spf13/pflag v1.0.9 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/zeebo/blake3 v0.2.4 // indirect
