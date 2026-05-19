@@ -113,6 +113,19 @@ database:
   # PostgreSQL 示例: host=localhost user=postgres password=postgres dbname=test port=5432 sslmode=disable
 ```
 
+
+## corectl 命令行工具
+
+```bash
+brew install xs23933/core/corectl
+
+# generate restful app
+corectl new myapp
+
+# generate grpc app
+corectl new myapp -t=grpc
+```
+
 ## 核心概念
 
 ### 1. 应用 (Core)
