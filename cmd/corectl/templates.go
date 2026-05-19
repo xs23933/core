@@ -10,20 +10,27 @@ require github.com/xs23933/core/v3 {{.CoreVersion}}
 const mainGoTemplate = `package main
 
 import (
+	"flag"
 	"log"
 
 	"github.com/xs23933/core/v3"
 	"github.com/xs23933/core/v3/middleware/cors"
 	"github.com/xs23933/core/v3/middleware/requestid"
 
-	_ "{{.ModulePath}}/internal/handler"
+	"{{.ModulePath}}/internal/dao"
+	"{{.ModulePath}}/internal/handler"
 )
 
+var configFile = flag.String("f", "config.yaml", "Configuration file path")
+
 func main() {
-	app := core.New(core.LoadConfigFile("config.yaml"))
+	app := core.New(core.LoadConfigFile(*configFile))
 
 	app.Use(requestid.New())
 	app.Use(cors.New(app))
+
+	userDAO := dao.NewUserDAO(core.Conn())
+	handler.NewHandler(userDAO)
 
 	if err := app.Run(); err != nil {
 		log.Fatalf("server startup failed: %v", err)
@@ -34,15 +41,11 @@ func main() {
 const handlerGoTemplate = `package handler
 
 import (
-	"github.com/xs23933/core/v3"
+	"{{.ModulePath}}/internal/dao"
 	"{{.ModulePath}}/internal/service"
-)
 
-// BaseHandler 提供所有 Handler 的基础能力
-// 可通过嵌入此 struct 快速创建新的 Handler
-type BaseHandler struct {
-	core.Handler
-}
+	"github.com/xs23933/core/v3"
+)
 
 // UserHandler 用户相关 HTTP 接口
 type UserHandler struct {
@@ -50,9 +53,9 @@ type UserHandler struct {
 	svc *service.UserService
 }
 
-func init() {
+func NewHandler(userDAO *dao.UserDAO) {
 	core.RegHandle(&UserHandler{
-		svc: service.NewUserService(),
+		svc: service.NewUserService(userDAO),
 	})
 }
 
@@ -198,8 +201,8 @@ type UserService struct {
 }
 
 // NewUserService 创建 UserService 实例（依赖注入）
-func NewUserService() *UserService {
-	return &UserService{dao: dao.UserDAOApp}
+func NewUserService(userDAO *dao.UserDAO) *UserService {
+	return &UserService{dao: userDAO}
 }
 
 // UserVO 用户视图对象（对外输出）
@@ -274,5 +277,167 @@ func Auth() func(core.Ctx) error {
 		// TODO: 实现实际的 Token 验证逻辑
 		return c.Next()
 	}
+}
+`
+
+const mainGoGrpcTemplate = `package main
+
+import (
+	"flag"
+	"log"
+	"os"
+
+	"github.com/xs23933/core/v3"
+
+	"{{.ModulePath}}/internal/dao"
+	"{{.ModulePath}}/internal/grpc"
+	"{{.ModulePath}}/internal/service"
+)
+
+var configFile = flag.String("f", "config.yaml", "Configuration file path")
+
+func main() {
+	app := core.New(core.LoadConfigFile(*configFile))
+
+	// 启用 etcd 服务注册
+	if err := app.EnableEtcdRegistry(nil); err != nil {
+		core.Erro("Failed to enable etcd registry: %v", err)
+		os.Exit(1)
+	}
+
+	userDAO := dao.NewUserDAO(core.Conn())
+
+	svc := service.NewUserService(userDAO)
+	_ = grpc.NewUserService(app, svc)
+
+	if err := app.Run(); err != nil {
+		log.Fatalf("server startup failed: %v", err)
+	}
+}
+`
+
+const grpcUserTemplate = `package grpc
+
+import (
+	"context"
+
+	"github.com/xs23933/core/v3"
+
+	pb "{{.ModulePath}}/gen/api/v1"
+	"{{.ModulePath}}/internal/service"
+)
+
+type UserService struct {
+	pb.UnimplementedUserServiceServer
+	svc *service.UserService
+}
+
+func NewUserService(app *core.Core, svc *service.UserService) *UserService {
+	svr := &UserService{svc: svc}
+	pb.RegisterUserServiceServer(app.GetGRPCServer(), svr)
+	return svr
+}
+
+func (s *UserService) GetUser(ctx context.Context, req *pb.GetUserRequest) (*pb.GetUserResponse, error) {
+	vo, err := s.svc.GetUserByID(ctx, req.Id)
+	if err != nil {
+		return nil, err
+	}
+	return &pb.GetUserResponse{
+		User: &pb.User{
+			Id:        vo.ID,
+			Username:  vo.Username,
+			Email:     vo.Email,
+			Phone:     vo.Phone,
+			Status:    int32(vo.Status),
+			CreatedAt: vo.CreatedAt,
+			UpdatedAt: vo.UpdatedAt,
+		},
+	}, nil
+}
+
+func (s *UserService) ListUsers(ctx context.Context, req *pb.ListUsersRequest) (*pb.ListUsersResponse, error) {
+	whr := &core.Map{}
+	if req.Username != "" {
+		(*whr)["username"] = req.Username
+	}
+	resp, err := s.svc.GetUserList(ctx, whr)
+	if err != nil {
+		return nil, err
+	}
+	users := make([]*pb.User, 0, len(resp.Data))
+	for _, vo := range resp.Data {
+		users = append(users, &pb.User{
+			Id:        vo.ID,
+			Username:  vo.Username,
+			Email:     vo.Email,
+			Phone:     vo.Phone,
+			Status:    int32(vo.Status),
+			CreatedAt: vo.CreatedAt,
+			UpdatedAt: vo.UpdatedAt,
+		})
+	}
+	return &pb.ListUsersResponse{Users: users}, nil
+}
+`
+
+const configYamlGrpcTemplate = `debug: true
+listen: ":8080"
+
+database:
+  default:
+    type: "sqlite"
+    dsn: "data.db"
+
+etcd:
+  endpoints:
+    - 127.0.0.1:2379
+  service_name: {{.ProjectName}}
+  service_addr: 127.0.0.1:8080
+  service_id: "{{.ProjectName}}-1"
+  ttl: 10
+  version: "1.0.0"
+
+restful:
+  status: "status"
+  data: "data"
+  message: "msg"
+`
+
+const protoTemplate = `syntax = "proto3";
+
+package api.v1;
+
+option go_package = "gen/api/v1;pb";
+
+service UserService {
+  rpc GetUser(GetUserRequest) returns (GetUserResponse);
+  rpc ListUsers(ListUsersRequest) returns (ListUsersResponse);
+}
+
+message User {
+  string id = 1;
+  string username = 2;
+  string email = 3;
+  string phone = 4;
+  int32 status = 5;
+  string created_at = 6;
+  string updated_at = 7;
+}
+
+message GetUserRequest {
+  string id = 1;
+}
+
+message GetUserResponse {
+  User user = 1;
+}
+
+message ListUsersRequest {
+  string username = 1;
+}
+
+message ListUsersResponse {
+  repeated User users = 1;
 }
 `

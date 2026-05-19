@@ -13,6 +13,7 @@ type ProjectConfig struct {
 	ModulePath  string // Go module 路径，如 github.com/example/myapp
 	GoVersion   string // Go 版本号
 	CoreVersion string // Core Framework 版本号，如 v3.1.18
+	ProjectType string // 项目类型: http | grpc
 	OutputDir   string // 输出目录
 }
 
@@ -24,16 +25,27 @@ type TemplateFile struct {
 
 // getProjectTemplates 返回项目所需的全部文件模板
 func getProjectTemplates(cfg *ProjectConfig) []TemplateFile {
-	return []TemplateFile{
+	common := []TemplateFile{
 		{Path: "go.mod", Template: goModTemplate},
-		{Path: "cmd/main.go", Template: mainGoTemplate},
-		{Path: "config.yaml", Template: configYamlTemplate},
-		{Path: "internal/handler/handler.go", Template: handlerGoTemplate},
 		{Path: "internal/models/user.go", Template: userModelTemplate},
 		{Path: "internal/dao/user.go", Template: userDaoTemplate},
 		{Path: "internal/service/user.go", Template: userServiceTemplate},
-		{Path: "internal/middleware/auth.go", Template: middlewareAuthTemplate},
 	}
+
+	if cfg.ProjectType == "grpc" {
+		return append(common,
+			TemplateFile{Path: "cmd/main.go", Template: mainGoGrpcTemplate},
+			TemplateFile{Path: "config.yaml", Template: configYamlGrpcTemplate},
+			TemplateFile{Path: "proto/user.proto", Template: protoTemplate},
+			TemplateFile{Path: "internal/grpc/user.go", Template: grpcUserTemplate},
+		)
+	}
+	return append(common,
+		TemplateFile{Path: "cmd/main.go", Template: mainGoTemplate},
+		TemplateFile{Path: "config.yaml", Template: configYamlTemplate},
+		TemplateFile{Path: "internal/handler/handler.go", Template: handlerGoTemplate},
+		TemplateFile{Path: "internal/middleware/auth.go", Template: middlewareAuthTemplate},
+	)
 }
 
 // CreateProject 根据配置创建完整的项目目录和文件
@@ -47,6 +59,7 @@ func CreateProject(cfg *ProjectConfig) error {
 
 	fmt.Printf("Creating project %s ...\n", cfg.ProjectName)
 	fmt.Printf("  Module:      %s\n", cfg.ModulePath)
+	fmt.Printf("  Type:        %s\n", cfg.ProjectType)
 	fmt.Printf("  Core:        %s\n", cfg.CoreVersion)
 	fmt.Printf("  Output:      %s\n\n", projectDir)
 
