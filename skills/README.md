@@ -19,6 +19,8 @@ skills/
 ├── core-fileupload.md       # 文件上传处理
 ├── core-test.md             # 测试编写
 ├── core-ctx.md              # Ctx 上下文使用规范（避坑指南/场景模板）
-└── core-refactor.md         # 代码重构指南
+├── core-refactor.md         # 代码重构指南
+├── core-gen.md              # Enum 代码生成器（YAML 配置/程序化生成）
+└── core-corectl.md          # 项目脚手架工具（corectl 使用指南）
 
 ```

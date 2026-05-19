@@ -10,3 +10,5 @@ tmp
 dat
 *.http
 *debug*
+private/
+darwin

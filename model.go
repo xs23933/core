@@ -1223,33 +1223,33 @@ func Where(whr *Map, db ...*DB) (*DB, int, int) {
 				delete(wher, k)
 				continue
 			}
-			if strings.HasSuffix(k, " NOTIN") {
-				tx = tx.Where(fmt.Sprintf("%s NOT IN (?)", strings.TrimSuffix(k, " NOTIN")), v)
+			if before, ok0 := strings.CutSuffix(k, " NOTIN"); ok0 {
+				tx = tx.Where(fmt.Sprintf("%s NOT IN (?)", before), v)
 				delete(wher, k)
 				continue
 			}
-			if strings.HasSuffix(k, " IN") {
-				tx = tx.Where(fmt.Sprintf("%s in (?)", strings.TrimSuffix(k, " IN")), v)
+			if before, ok0 := strings.CutSuffix(k, " IN"); ok0 {
+				tx = tx.Where(fmt.Sprintf("%s in (?)", before), v)
 				delete(wher, k)
 				continue
 			}
-			if strings.HasPrefix(k, "^") {
-				tx = tx.Where(fmt.Sprintf("%s like ?", strings.TrimPrefix(k, "^")), fmt.Sprintf("%s%%", v))
+			if after, ok0 := strings.CutPrefix(k, "^"); ok0 {
+				tx = tx.Where(fmt.Sprintf("%s like ?", after), fmt.Sprintf("%s%%", v))
 				delete(wher, k)
 				continue
 			}
-			if strings.HasSuffix(k, "$") {
-				tx = tx.Where(fmt.Sprintf("%s like ?", strings.TrimSuffix(k, "$")), fmt.Sprintf("%%%s", v))
+			if before, ok0 := strings.CutSuffix(k, "$"); ok0 {
+				tx = tx.Where(fmt.Sprintf("%s like ?", before), fmt.Sprintf("%%%s", v))
 				delete(wher, k)
 				continue
 			}
-			if strings.HasSuffix(k, "*") {
-				tx = tx.Where(fmt.Sprintf("%s like ?", strings.TrimSuffix(k, "*")), fmt.Sprintf("%%%s%%", v))
+			if before, ok0 := strings.CutSuffix(k, "*"); ok0 {
+				tx = tx.Where(fmt.Sprintf("%s like ?", before), fmt.Sprintf("%%%s%%", v))
 				delete(wher, k)
 				continue
 			}
-			if strings.HasSuffix(k, " !=") {
-				tx = tx.Where(fmt.Sprintf("`%s` <> ?", strings.TrimSuffix(k, " !=")), v)
+			if before, ok0 := strings.CutSuffix(k, " !="); ok0 {
+				tx = tx.Where(fmt.Sprintf("`%s` <> ?", before), v)
 				delete(wher, k)
 				continue
 			}
