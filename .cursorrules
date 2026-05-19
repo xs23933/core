@@ -9,11 +9,21 @@ project:
 # 自动加载的文档
 docs:
   - AI_CONTEXT.md
+  - skills/core-skills.md
   - skills/core-handler.md
   - skills/core-model.md
   - skills/core-service.md
   - skills/core-middleware.md
   - skills/core-page.md
+  - skills/core-grpc.md
+  - skills/core-redis.md
+  - skills/core-cache.md
+  - skills/core-nsq.md
+  - skills/core-logger.md
+  - skills/core-fetch.md
+  - skills/core-ctx.md
+  - skills/core-test.md
+  - skills/core-refactor.md
 
 # 代码生成规则
 rules:
@@ -21,9 +31,113 @@ rules:
   - "Handler 方法名遵循命名规范（Get/Post/Put/Delete + 路径）"
   - "使用 c.ToJSON() 返回响应"
   - "错误必须显式处理，禁止 panic"
+  - "严格遵循 models/dao/services 三层目录结构规范"
+  - "Service 层必须同时兼容 HTTP 和 gRPC 两种调用方式"
+  - "Model 定义必须嵌入 core.Model/core.Models/core.SModels/core.IModel 之一"
+  - "DAO 层禁止包含业务逻辑，只做数据访问"
 
 # 文件模板
 templates:
   handler: "skills/core-handler.md"
   model: "skills/core-model.md"
   service: "skills/core-service.md"
+
+# 新建技能模块开发指引规则
+module_development_guide:
+  directory_conventions:
+    models:
+      path: "internal/model/ 或 models/"
+      description: "所有数据库模型定义结构文件必须统一放置在 models 目录下"
+      rules:
+        - "文件命名: {业务名}_model.go（如 user_model.go）"
+        - "必须嵌入 core.Model / core.Models / core.SModels / core.IModel 之一"
+        - "仅包含数据结构定义和 GORM 标签，禁止包含业务逻辑"
+        - "金额字段使用 core.Money 或 core.IntMoney 类型"
+        - "JSON 字段使用 core.JSON 类型"
+        - "每个文件只放一个业务实体的模型定义"
+        - "必须实现 GORM 的 Tabler 接口指定表名（如非默认）"
+    dao:
+      path: "internal/dao/ 或 dao/"
+      description: "所有 CRUD 操作相关代码文件必须集中放置在 dao 目录中，确保数据操作层与业务逻辑层分离"
+      rules:
+        - "文件命名: {业务名}_dao.go（如 user_dao.go）"
+        - "DAO 层仅负责数据库的增删改查操作，禁止包含业务逻辑"
+        - "使用 core.Conn() 获取数据库连接，支持多库时使用 core.Conn('name')"
+        - "复杂查询条件使用 core.Map + core.FindPageBy / core.FindNextBy"
+        - "DAO 方法必须接收 context.Context 作为第一个参数"
+        - "DAO 方法返回值类型为 (model, error) 或 ([]model, int64, error)"
+        - "禁止在 DAO 中直接返回 HTTP 响应或 gRPC 响应"
+        - "缓存逻辑使用 cache 子包封装，通过 cache.New() 创建实例"
+    services:
+      path: "internal/service/ 或 service/"
+      description: "业务逻辑实现代码，该层代码设计应同时兼容 HTTP 和 gRPC 两种调用方式"
+      rules:
+        - "文件命名: {业务名}_service.go（如 user_service.go）"
+        - "Service 层不依赖 HTTP 请求上下文（core.Ctx），只使用 context.Context"
+        - "Service 方法签名与协议无关，输入为 DTO 或基础类型，输出为 VO 或基础类型 + error"
+        - "事务操作在 Service 层实现，使用 core.WithTransaction()"
+        - "Service 调用 DAO 层完成数据操作，调用外部服务通过 fetch 或 gRPC client"
+        - "同一个 Service 方法可被 HTTP Handler 和 gRPC Handler 同时调用"
+        - "Service 层禁止直接操作 http.ResponseWriter 或 *http.Request"
+        - "Service 层使用依赖注入模式，通过构造函数 NewXxxService() 注入依赖"
+    handler:
+      path: "internal/handler/ 或 handler/"
+      description: "HTTP 请求处理层，负责参数解析、调用 Service、返回响应"
+      rules:
+        - "文件命名: {业务名}_handler.go（如 user_handler.go）"
+        - "必须嵌入 core.Handler 并通过 init() + core.RegHandle() 注册"
+        - "Handler 方法仅负责: 参数解析 → 调用 Service → 返回响应"
+        - "禁止在 Handler 中直接操作数据库"
+        - "使用 c.ReadBody(&dto) 解析请求体"
+        - "使用 c.ToJSON(data, err) 统一返回响应"
+    grpc:
+      path: "internal/grpc/ 或 grpc/"
+      description: "gRPC 服务实现层，负责协议适配、调用 Service"
+      rules:
+        - "文件命名: {业务名}_grpc.go（如 user_grpc.go）"
+        - "实现 protobuf 生成的 service interface"
+        - "gRPC Handler 方法仅做: proto 消息 ↔ DTO/VO 转换 → 调用 Service"
+        - "通过 app.RegisterGRPCService() 或 app.GetGRPCServer() 注册"
+        - "gRPC Handler 与 HTTP Handler 共享同一个 Service 实例"
+    dto:
+      path: "internal/dto/ 或 dto/"
+      description: "数据传输对象，定义请求参数结构"
+      rules:
+        - "文件命名: {业务名}_dto.go（如 user_dto.go）"
+        - "用于 Handler 层接收和校验请求参数"
+        - "支持 validate tag 进行参数校验"
+    vo:
+      path: "internal/vo/ 或 vo/"
+      description: "视图对象，定义响应数据结构"
+      rules:
+        - "文件命名: {业务名}_vo.go（如 user_vo.go）"
+        - "用于 Service 层返回给 Handler 的数据结构"
+        - "禁止将 Model 直接暴露给前端"
+        - "提供 ToXxxVO(model) 转换函数"
+
+  layered_architecture:
+    call_chain: "Handler/gRPC → Service → DAO → Model"
+    forbidden_calls:
+      - "Handler → DAO（跨层调用）"
+      - "DAO → Handler（反向依赖）"
+      - "Model → Service（模型依赖业务层）"
+      - "Service → HTTP/gRPC 协议对象（协议耦合）"
+    dependency_direction: "外层依赖内层，内层不依赖外层"
+
+  naming_conventions:
+    handler: "XxxHandler"
+    service: "XxxService"
+    dao: "XxxDAO"
+    model: "Xxx"
+    dto: "XxxRequest / CreateXxxRequest / UpdateXxxRequest"
+    vo: "XxxVO / XxxResponse"
+    grpc: "XxxService（实现 proto 接口）"
+
+  gprc_http_compatibility:
+    description: "Service 层必须同时兼容 HTTP 和 gRPC 两种调用方式"
+    implementation:
+      - "Service 方法只使用 context.Context，不使用 core.Ctx"
+      - "输入参数使用 DTO 结构体或基础类型，不使用 proto 消息类型"
+      - "返回值使用 VO 结构体或基础类型 + error，不使用 proto 消息类型"
+      - "HTTP Handler 负责: HTTP 请求解析 → DTO → Service → VO → JSON 响应"
+      - "gRPC Handler 负责: proto 消息 → DTO → Service → VO → proto 响应"

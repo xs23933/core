@@ -1,5 +1,6 @@
 ```sh
 skills/
+├── core-skills.md           # 技能模块总览（功能概述/使用规范/最佳实践）
 ├── core-handler.md          # 创建 RESTful Handler
 ├── core-model.md            # 定义数据模型
 ├── core-service.md          # 编写业务逻辑层
@@ -17,6 +18,7 @@ skills/
 ├── core-fetch.md            # Fetch API 客户端（外部 API 调用、Header、Cookie、Hook、响应 Header）
 ├── core-fileupload.md       # 文件上传处理
 ├── core-test.md             # 测试编写
+├── core-ctx.md              # Ctx 上下文使用规范（避坑指南/场景模板）
 └── core-refactor.md         # 代码重构指南
 
 ```
