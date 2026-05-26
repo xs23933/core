@@ -36,7 +36,7 @@ func getProjectTemplates(cfg *ProjectConfig) []TemplateFile {
 		return append(common,
 			TemplateFile{Path: "cmd/main.go", Template: mainGoGrpcTemplate},
 			TemplateFile{Path: "config.yaml", Template: configYamlGrpcTemplate},
-			TemplateFile{Path: "proto/user.proto", Template: protoTemplate},
+			TemplateFile{Path: "proto/user/v1/user.proto", Template: protoTemplate},
 			TemplateFile{Path: "internal/grpc/user.go", Template: grpcUserTemplate},
 		)
 	}
