@@ -41,6 +41,7 @@ func (w *WS) Handler() func(core.Ctx) error {
 
 		wsConn, err := upgrader.Upgrade(c.Response(), c.Request(), nil)
 		if err != nil {
+			core.Erro("upgrade websocket failed: %v", err)
 			return err
 		}
 

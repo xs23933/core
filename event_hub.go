@@ -89,7 +89,6 @@ func (h *EventHub) storeNamedClients(named map[string]chan EventData) {
 }
 
 func (h *EventHub) start() {
-	Info("event hub run with %ds batch interval", h.interval.Seconds())
 	ticker := time.NewTicker(h.interval)
 	defer ticker.Stop()
 

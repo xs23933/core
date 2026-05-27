@@ -434,9 +434,31 @@ func main() {
 		).OnClose(func(c *websocket.Conn) {
 		println("Connection closed")
 	}).Handler())
-	app.Run()
+app.Run()
 }
 
+```
+
+按用户推送消息：
+
+```go
+app.GET("/ws", func(c core.Ctx) error {
+	userID := c.Query("user_id")
+	if userID == "" {
+		return c.SendStatus(401, "missing user_id")
+	}
+
+	return websocket.New().
+		OnConnect(func(conn *websocket.Conn) {
+			websocket.DefaultUserManager.Add(userID, conn)
+		}).
+		OnClose(func(conn *websocket.Conn) {
+			websocket.DefaultUserManager.Remove(conn)
+		}).
+		Handler()(c)
+})
+
+websocket.DefaultUserManager.SendToUser("1001", []byte(`{"type":"notice","data":"hello"}`))
 ```
 
 ### 10. 模板渲染

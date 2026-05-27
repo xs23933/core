@@ -371,6 +371,7 @@ func (c *Conn) Close() {
 	c.batchMu.Unlock()
 
 	DefaultManager.Remove(c)
+	DefaultUserManager.Remove(c)
 	if c.conn != nil {
 		c.conn.Close()
 	}

@@ -8,7 +8,7 @@ skills/
 ├── core-grpc.md             # gRPC 服务端（RegisterGRPCService / EnableGRPC / EnableEtcdRegistry）
 ├── core-grpc-client.md      # gRPC 客户端（GrpcClient / MustGrpcClient / etcd discovery）
 ├── core-gateway.md          # HTTP -> gRPC 网关（自动路由、管理接口、metadata）
-├── core-websocket.md        # WebSocket 处理
+├── core-websocket.md        # WebSocket 处理（连接管理/按用户推送/广播）
 ├── core-page.md             # 分页查询实现
 ├── core-utils.md            # 工具函数、Map/Array、加密与密码
 ├── core-redis.md            # Redis 封装（String/JSON/Hash/Set/ZSet/List/BitMap/Pipeline/Lua/PubSub/Stream）
