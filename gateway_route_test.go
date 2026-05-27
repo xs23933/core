@@ -6,6 +6,18 @@ import (
 	"testing"
 )
 
+type paramSaveTestHandler struct {
+	Handler
+}
+
+func (h *paramSaveTestHandler) Init() {
+	h.Prefix("/api")
+}
+
+func (h *paramSaveTestHandler) PostParamSave(c Ctx) {
+	c.SendString(c.Params("param"))
+}
+
 func TestRemoveHandle(t *testing.T) {
 	app := New()
 	app.GET("/gateway/:id", func(c Ctx) error {
@@ -111,6 +123,107 @@ func TestNestedGroupRoutePrefix(t *testing.T) {
 
 	if rec.Code != http.StatusOK || rec.Body.String() != "users" {
 		t.Fatalf("status/body = %d/%q, want 200/users", rec.Code, rec.Body.String())
+	}
+}
+
+func TestParamRouteBeforeStaticSegment(t *testing.T) {
+	app := New()
+
+	app.POST("/api/:param/save", func(c Ctx) error {
+		return c.SendString(c.Params("param"))
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/bkash/save", nil)
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || rec.Body.String() != "bkash" {
+		t.Fatalf("status/body = %d/%q, want 200/bkash", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAutoRouteParamBeforeStaticSegment(t *testing.T) {
+	app := New()
+	app.addHandler(&paramSaveTestHandler{})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/bkash/save", nil)
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || rec.Body.String() != "bkash" {
+		t.Fatalf("status/body = %d/%q, want 200/bkash", rec.Code, rec.Body.String())
+	}
+}
+
+func TestParamRouteCanCoexistWithStaticRoute(t *testing.T) {
+	app := New()
+
+	app.POST("/api/:param/save", func(c Ctx) error {
+		return c.SendString("param-save:" + c.Params("param"))
+	})
+	app.POST("/api/save/:param", func(c Ctx) error {
+		return c.SendString("save-param:" + c.Params("param"))
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/bkash/save", nil)
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || rec.Body.String() != "param-save:bkash" {
+		t.Fatalf("param route status/body = %d/%q, want 200/param-save:bkash", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/save/bkash", nil)
+	rec = httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || rec.Body.String() != "save-param:bkash" {
+		t.Fatalf("static route status/body = %d/%q, want 200/save-param:bkash", rec.Code, rec.Body.String())
+	}
+}
+
+func TestParamRouteFallbackWhenStaticPrefixMisses(t *testing.T) {
+	app := New()
+
+	app.POST("/api/bkash/verify", func(c Ctx) error {
+		return c.SendString("verify")
+	})
+	app.POST("/api/:param/save", func(c Ctx) error {
+		return c.SendString("save:" + c.Params("param"))
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/bkash/verify", nil)
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || rec.Body.String() != "verify" {
+		t.Fatalf("static route status/body = %d/%q, want 200/verify", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/bkash/save", nil)
+	rec = httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || rec.Body.String() != "save:bkash" {
+		t.Fatalf("param fallback status/body = %d/%q, want 200/save:bkash", rec.Code, rec.Body.String())
+	}
+}
+
+func TestConfiguredPostOnlyMethodStillRegistersPostRoute(t *testing.T) {
+	app := New(Options{
+		"methods": []string{http.MethodPost},
+	})
+
+	app.POST("/api/:param/save", func(c Ctx) error {
+		return c.SendString(c.Params("param"))
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/bkash/save", nil)
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || rec.Body.String() != "bkash" {
+		t.Fatalf("status/body = %d/%q, want 200/bkash", rec.Code, rec.Body.String())
 	}
 }
 

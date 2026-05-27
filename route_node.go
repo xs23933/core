@@ -132,72 +132,79 @@ func (n *RouteNode) empty() bool {
 
 func (n *RouteNode) match(path string, ctx Ctx) (HandlerFuncs, bool) {
 	segments := strings.Split(strings.Trim(path, "/"), "/")
-	current := n
 
 	var chain HandlerFuncs
 	if baseCtx, ok := ctx.(*BaseCtx); ok {
 		chain = baseCtx.handlers[:0]
 	}
-	// 根节点中间件
-	chain = append(chain, current.middlewares...)
+	return n.matchSegments(segments, 0, ctx, append(chain, n.middlewares...))
+}
 
-	for i, seg := range segments {
-		matched := false
-		// 再匹配静态节点
-		if current.staticChild != nil {
-			if child, ok := current.staticChild[seg]; ok {
-				current = child
-				chain = append(chain, current.middlewares...)
-				matched = true
+func (n *RouteNode) matchSegments(segments []string, idx int, ctx Ctx, chain HandlerFuncs) (HandlerFuncs, bool) {
+	if idx == len(segments) {
+		if len(n.handlers) > 0 {
+			return append(chain, n.handlers...), true
+		}
+		if n.paramChild != nil && n.paramChild.nType == params {
+			childChain := append(chain, n.paramChild.middlewares...)
+			if len(n.paramChild.handlers) > 0 {
+				return append(childChain, n.paramChild.handlers...), true
 			}
 		}
-
-		// 先匹配参数节点
-		if !matched && current.paramChild != nil {
-			paramName := current.paramChild.path
-			switch current.paramChild.nType {
-			case params:
-				// 可选参数： 设置参数值
-				ctx.SetParams(paramName[1:], seg)
-				current = current.paramChild
-				chain = append(chain, current.middlewares...)
-				matched = true
-			case param:
-				if seg != "" {
-					ctx.SetParams(paramName[1:], seg)
-					current = current.paramChild
-					chain = append(chain, current.middlewares...)
-					matched = true
-				}
-			}
-		}
-
-		if !matched && current.catchChild != nil {
-			ctx.SetParams(current.catchChild.path[1:], strings.Join(segments[i:], "/"))
-			current = current.catchChild
-			chain = append(chain, current.middlewares...)
-			chain = append(chain, current.handlers...)
-			return chain, true
-		}
-
-		if !matched {
-			return nil, false
-		}
-	}
-	// 4. 处理可选参数的特殊情况：检查当前节点是否有可选参数子节点
-	// 这种情况处理路径段数少于注册路径的情况，比如注册了 /a/b/:c?，但访问 /a/b
-	if current.paramChild != nil && current.paramChild.nType == params {
-		// 使用可选参数节点，但不设置参数值（参数为空）
-		current = current.paramChild
-		chain = append(chain, current.middlewares...)
-	}
-
-	// 到叶子节点，追加最终 handler
-	if len(current.handlers) == 0 {
 		return nil, false
 	}
-	chain = append(chain, current.handlers...)
-	return chain, true
+
+	seg := segments[idx]
+	if n.staticChild != nil {
+		if child, ok := n.staticChild[seg]; ok {
+			if matched, ok := child.matchSegments(segments, idx+1, ctx, append(chain, child.middlewares...)); ok {
+				return matched, true
+			}
+		}
+	}
+
+	if n.paramChild != nil && seg != "" {
+		paramName := n.paramChild.path[1:]
+		oldParams := cloneParams(ctx)
+		ctx.SetParams(paramName, seg)
+		if matched, ok := n.paramChild.matchSegments(segments, idx+1, ctx, append(chain, n.paramChild.middlewares...)); ok {
+			return matched, true
+		}
+		restoreParams(ctx, oldParams)
+	}
+
+	if n.catchChild != nil {
+		oldParams := cloneParams(ctx)
+		ctx.SetParams(n.catchChild.path[1:], strings.Join(segments[idx:], "/"))
+		chain = append(chain, n.catchChild.middlewares...)
+		chain = append(chain, n.catchChild.handlers...)
+		if len(n.catchChild.handlers) > 0 {
+			return chain, true
+		}
+		restoreParams(ctx, oldParams)
+	}
+
+	return nil, false
+}
+
+func cloneParams(ctx Ctx) map[string]string {
+	baseCtx, ok := ctx.(*BaseCtx)
+	if !ok || len(baseCtx.params) == 0 {
+		return nil
+	}
+	params := make(map[string]string, len(baseCtx.params))
+	for k, v := range baseCtx.params {
+		params[k] = v
+	}
+	return params
+}
+
+func restoreParams(ctx Ctx, params map[string]string) {
+	baseCtx, ok := ctx.(*BaseCtx)
+	if !ok {
+		return
+	}
+	baseCtx.params = params
 }
 
 func (n *RouteNode) addRouteNode(path string) *RouteNode {

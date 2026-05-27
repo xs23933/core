@@ -196,8 +196,10 @@ func New(options ...Options) *Core {
 
 	app.RequestMethods = Conf.GetStrings("methods", Methods[:len(Methods)-1])
 
-	// 为每个 HTTP 方法初始化一个 Trie 根节点
-	app.trees = make([]*RouteNode, len(app.RequestMethods))
+	// 路由树下标使用 methodPos 的固定 HTTP 方法序号，不能按配置 methods 的长度裁剪。
+	// methods 只控制自动路由扫描哪些方法；路由树本身必须保持固定下标，否则
+	// methods: [POST] 会让 POST 的固定下标 1 越界，表现为注册日志存在但请求 404。
+	app.trees = make([]*RouteNode, len(Methods)-1)
 	for i := range app.trees {
 		app.trees[i] = &RouteNode{
 			path:        "/",
