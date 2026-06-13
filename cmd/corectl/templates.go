@@ -24,6 +24,7 @@ import (
 var configFile = flag.String("f", "config.yaml", "Configuration file path")
 
 func main() {
+	flag.Parse()
 	app := core.New(core.LoadConfigFile(*configFile))
 
 	app.Use(requestid.New())
@@ -297,6 +298,7 @@ import (
 var configFile = flag.String("f", "config.yaml", "Configuration file path")
 
 func main() {
+	flag.Parse()
 	app := core.New(core.LoadConfigFile(*configFile))
 
 	// 启用 etcd 服务注册

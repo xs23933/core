@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
 	"runtime"
@@ -17,11 +18,12 @@ var (
 	outputDir   string
 
 	// coreVersion 通过 -ldflags 在构建时注入，默认 "latest"
-	// 示例: go build -ldflags "-X main.coreVersion=v3.1.18" ./cmd/corectl/
+	// 示例: go build -ldflags "-X main.coreVersion=v3.1.20" ./cmd/corectl/
 	coreVersion = "latest"
 )
 
 func main() {
+	flag.Parse()
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)

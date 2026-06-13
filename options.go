@@ -212,6 +212,30 @@ func (opt *Options) ToString(k string, def ...string) string {
 	return ""
 }
 
+// 初始化函数，在 flag.Parse 之前处理
+func init() {
+	// 检查是否有 -generate 参数
+	for _, arg := range os.Args[1:] {
+		if arg == "--generate" || arg == "-generate" {
+			// 找到 -generate 后面的配置文件参数
+			configFile := "config.dat" // 默认值
+			for j := 0; j < len(os.Args[1:]); j++ {
+				if os.Args[1:][j] == "-f" && j+1 < len(os.Args[1:]) {
+					configFile = os.Args[1:][j+1]
+					break
+				}
+			}
+
+			// 执行生成逻辑
+			if ok := checkGenerate(configFile); !ok {
+				fmt.Fprintf(os.Stderr, "Generate config failed: %v\n", ok)
+				os.Exit(1)
+			}
+			os.Exit(0)
+		}
+	}
+}
+
 func LoadConfigFile(file string, opts ...Options) Options {
 	conf := make(Options)
 	if len(opts) > 0 {
@@ -219,9 +243,9 @@ func LoadConfigFile(file string, opts ...Options) Options {
 	}
 
 	// 检查 --generate 标志
-	if checkGenerate(file) {
-		os.Exit(0)
-	}
+	// if checkGenerate(file) {
+	// 	os.Exit(0)
+	// }
 
 	if strings.HasSuffix(file, ".dat") {
 		return loadEncryptedConfig(file, conf)
