@@ -35,6 +35,10 @@ type MethodDescriptor struct {
 	Method      string // method name, e.g. "PostLogin"
 	NewRequest  func() proto.Message
 	NewResponse func() proto.Message
+	Resolver    interface {
+		protoregistry.MessageTypeResolver
+		protoregistry.ExtensionTypeResolver
+	}
 }
 
 func NewReflectionProxy(app *core.Core, addr string) (*ReflectionProxy, error) {
@@ -111,6 +115,7 @@ func (p *ReflectionProxy) discoverAndRegister() error {
 
 		// 预构建消息描述符查找表
 		msgDescMap := buildMessageIndex(files)
+		resolver := dynamicpb.NewTypes(files)
 
 		// 注册所有方法
 		for _, method := range methods {
@@ -134,6 +139,7 @@ func (p *ReflectionProxy) discoverAndRegister() error {
 				Method:      method.GetName(),
 				NewRequest:  func() proto.Message { return dynamicpb.NewMessage(req) },
 				NewResponse: func() proto.Message { return dynamicpb.NewMessage(resp) },
+				Resolver:    resolver,
 			})
 		}
 	}
@@ -170,7 +176,7 @@ func (p *ReflectionProxy) Invoke(ctx context.Context, fullMethod string, jsonReq
 	desc := cached.(*MethodDescriptor)
 
 	req := desc.NewRequest()
-	if err := (&protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(jsonReq, req); err != nil {
+	if err := protoJSONUnmarshal(jsonReq, req, desc.Resolver); err != nil {
 		return nil, fmt.Errorf("parse request failed: %w", err)
 	}
 
@@ -179,7 +185,27 @@ func (p *ReflectionProxy) Invoke(ctx context.Context, fullMethod string, jsonReq
 		return nil, err
 	}
 
-	return (&protojson.MarshalOptions{UseProtoNames: true}).Marshal(resp)
+	return protoJSONMarshal(resp, desc.Resolver)
+}
+
+func protoJSONUnmarshal(data []byte, msg proto.Message, resolver interface {
+	protoregistry.MessageTypeResolver
+	protoregistry.ExtensionTypeResolver
+}) error {
+	return (&protojson.UnmarshalOptions{
+		DiscardUnknown: true,
+		Resolver:       resolver,
+	}).Unmarshal(data, msg)
+}
+
+func protoJSONMarshal(msg proto.Message, resolver interface {
+	protoregistry.MessageTypeResolver
+	protoregistry.ExtensionTypeResolver
+}) ([]byte, error) {
+	return (&protojson.MarshalOptions{
+		UseProtoNames: true,
+		Resolver:      resolver,
+	}).Marshal(msg)
 }
 
 // Methods 返回所有已注册的方法

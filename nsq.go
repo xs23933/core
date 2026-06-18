@@ -248,9 +248,14 @@ func (nc *NSQConsumer) Start(handler NSQHandlerFunc) error {
 	nc.handler = nsq.HandlerFunc(handler)
 	nc.consumer.AddConcurrentHandlers(nc.handler, nc.config.Concurrency)
 
+	lookupds, nsqds, err := nsqConsumerConnectionTargets(nc.config)
+	if err != nil {
+		return err
+	}
+
 	// 连接 nsqlookupd（推荐，自动发现 nsqd 节点）
-	if len(nc.config.Lookupds) > 0 {
-		for _, addr := range nc.config.Lookupds {
+	if len(lookupds) > 0 {
+		for _, addr := range lookupds {
 			if err := nc.consumer.ConnectToNSQLookupd(addr); err != nil {
 				return fmt.Errorf("nsq consumer connect to lookupd %s failed: %w", addr, err)
 			}
@@ -259,15 +264,11 @@ func (nc *NSQConsumer) Start(handler NSQHandlerFunc) error {
 	}
 
 	// 直连 nsqd（适用于单节点或测试环境）
-	if len(nc.config.NSQDs) > 0 {
-		if err := nc.consumer.ConnectToNSQDs(nc.config.NSQDs); err != nil {
+	if len(nsqds) > 0 {
+		if err := nc.consumer.ConnectToNSQDs(nsqds); err != nil {
 			return fmt.Errorf("nsq consumer connect to nsqd failed: %w", err)
 		}
-		D("NSQ consumer connected to nsqd %v", nc.config.NSQDs)
-	}
-
-	if len(nc.config.Lookupds) == 0 && len(nc.config.NSQDs) == 0 {
-		return fmt.Errorf("nsq consumer: at least one lookupd or nsqd address required")
+		D("NSQ consumer connected to nsqd %v", nsqds)
 	}
 
 	// 注册全局 consumer，方便关闭时统一清理
@@ -290,22 +291,23 @@ func (nc *NSQConsumer) StartAsync(handler NSQHandlerFunc) error {
 	nc.handler = nsq.HandlerFunc(handler)
 	nc.consumer.AddConcurrentHandlers(nc.handler, nc.config.Concurrency)
 
-	if len(nc.config.Lookupds) > 0 {
-		for _, addr := range nc.config.Lookupds {
+	lookupds, nsqds, err := nsqConsumerConnectionTargets(nc.config)
+	if err != nil {
+		return err
+	}
+
+	if len(lookupds) > 0 {
+		for _, addr := range lookupds {
 			if err := nc.consumer.ConnectToNSQLookupd(addr); err != nil {
 				return fmt.Errorf("nsq consumer connect to lookupd %s failed: %w", addr, err)
 			}
 		}
 	}
 
-	if len(nc.config.NSQDs) > 0 {
-		if err := nc.consumer.ConnectToNSQDs(nc.config.NSQDs); err != nil {
+	if len(nsqds) > 0 {
+		if err := nc.consumer.ConnectToNSQDs(nsqds); err != nil {
 			return fmt.Errorf("nsq consumer connect to nsqd failed: %w", err)
 		}
-	}
-
-	if len(nc.config.Lookupds) == 0 && len(nc.config.NSQDs) == 0 {
-		return fmt.Errorf("nsq consumer: at least one lookupd or nsqd address required")
 	}
 
 	nsqMu.Lock()
@@ -315,6 +317,19 @@ func (nc *NSQConsumer) StartAsync(handler NSQHandlerFunc) error {
 	Info("NSQ consumer started (async): topic=%s channel=%s concurrency=%d",
 		nc.config.Topic, nc.config.Channel, nc.config.Concurrency)
 	return nil
+}
+
+func nsqConsumerConnectionTargets(conf NSQConsumerConfig) (lookupds []string, nsqds []string, err error) {
+	if len(conf.Lookupds) > 0 {
+		if len(conf.NSQDs) > 0 {
+			D("NSQ consumer using lookupd %v; ignoring direct nsqd %v", conf.Lookupds, conf.NSQDs)
+		}
+		return conf.Lookupds, nil, nil
+	}
+	if len(conf.NSQDs) > 0 {
+		return nil, conf.NSQDs, nil
+	}
+	return nil, nil, fmt.Errorf("nsq consumer: at least one lookupd or nsqd address required")
 }
 
 // Stop 优雅停止消费者
@@ -450,11 +465,18 @@ func NewNSQConsumerBuilder(topic, channel string) *NSQConsumerBuilder {
 // WithLookupd 设置 lookupd 地址
 func (b *NSQConsumerBuilder) WithLookupd(addrs ...string) *NSQConsumerBuilder {
 	b.conf.Lookupds = addrs
+	if len(addrs) > 0 {
+		b.conf.NSQDs = nil
+	}
 	return b
 }
 
 // WithNSQD 设置 nsqd 直连地址
 func (b *NSQConsumerBuilder) WithNSQD(addrs ...string) *NSQConsumerBuilder {
+	if len(b.conf.Lookupds) > 0 {
+		D("NSQ consumer builder ignores direct nsqd %v because lookupd is configured %v", addrs, b.conf.Lookupds)
+		return b
+	}
 	b.conf.NSQDs = addrs
 	return b
 }

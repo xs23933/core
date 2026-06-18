@@ -23,10 +23,12 @@ import (
 
 type Route struct {
 	ID          string            `json:"id"`
+	Protocol    RouteProtocol     `json:"protocol,omitempty"`
 	Method      string            `json:"method"`
 	Path        string            `json:"path"`
 	ServiceName string            `json:"service_name"`
 	GRPCMethod  string            `json:"grpc_method"`
+	UpstreamPath string           `json:"upstream_path,omitempty"`
 	Description string            `json:"description"`
 	Headers     map[string]string `json:"headers,omitempty"`
 	Enabled     bool              `json:"enabled"`
@@ -55,9 +57,20 @@ const (
 
 // serviceInstance 用于解析 etcd 中注册的服务实例信息
 type serviceInstance struct {
-	Addr    string `json:"addr"`
-	ID      string `json:"id"`
-	Version string `json:"version,omitempty"`
+	Addr     string            `json:"addr"`
+	ID       string            `json:"id"`
+	Version  string            `json:"version,omitempty"`
+	Metadata map[string]string `json:"metadata,omitempty"`
+}
+
+func (s *serviceInstance) HTTPAddr() string {
+	if s != nil && s.Metadata != nil && s.Metadata["http_addr"] != "" {
+		return s.Metadata["http_addr"]
+	}
+	if s == nil {
+		return ""
+	}
+	return s.Addr
 }
 
 // EtcdGateway etcd 网关
@@ -76,6 +89,10 @@ type EtcdGateway struct {
 	watchCancel context.CancelFunc
 
 	circuitStates sync.Map // map[string]*CircuitBreaker
+
+	httpMu        sync.Mutex
+	httpInstances atomic.Value // map[string]map[string]string
+	httpIndexes   sync.Map     // map[string]*atomic.Uint64
 
 	// 连接池
 	connPool *ConnectionPool
@@ -240,6 +257,7 @@ func NewEtcdGateway(app *core.Core, conf ...*Config) (*EtcdGateway, error) {
 		connPool:          NewConnectionPool(),
 	}
 	gw.storeRoutes(make(map[string]*Route))
+	gw.storeHTTPInstances(make(map[string]map[string]string))
 
 	if err := gw.loadAllRoutes(); err != nil {
 		core.D("[Gateway] load all routes failed: %v", err)
@@ -311,8 +329,18 @@ func (gw *EtcdGateway) discoverAndConnectServices() {
 	resp, err := gw.etcdCli.Get(ctx, "/services/", clientv3.WithPrefix())
 	if err != nil {
 		core.Erro("[Gateway] discover services failed: %v", err)
+		gw.app.ErrGroup().Go(func() error {
+			gw.watchEtcdServices(0)
+			return nil
+		})
 		return
 	}
+	watchRev := resp.Header.GetRevision() + 1
+
+	gw.app.ErrGroup().Go(func() error {
+		gw.watchEtcdServices(watchRev)
+		return nil
+	})
 
 	// 按 serviceName 分组实例
 	type inst struct{ id, addr string }
@@ -330,6 +358,7 @@ func (gw *EtcdGateway) discoverAndConnectServices() {
 		if info.ID == "" {
 			info.ID = instanceID
 		}
+		gw.addHTTPInstance(serviceName, info.ID, info.HTTPAddr())
 		serviceInstances[serviceName] = append(serviceInstances[serviceName], inst{id: info.ID, addr: info.Addr})
 	}
 
@@ -358,10 +387,6 @@ func (gw *EtcdGateway) discoverAndConnectServices() {
 		}
 	}
 
-	gw.app.ErrGroup().Go(func() error {
-		gw.watchEtcdServices()
-		return nil
-	})
 }
 
 // connectInstance 连接单个服务实例（watch PUT 触发），带重试
@@ -377,9 +402,13 @@ func (gw *EtcdGateway) connectInstance(serviceName, instanceID, addr string) {
 	var changed bool
 	var err error
 
-	for attempt := range 3 {
+	for attempt := range gatewayConnectRetryAttempts {
 		if attempt > 0 {
-			time.Sleep(time.Duration(attempt*200) * time.Millisecond)
+			select {
+			case <-gw.watchCtx.Done():
+				return
+			case <-time.After(gatewayConnectRetryDelay(attempt)):
+			}
 		}
 		proxy, changed, err = pool.AddOrUpdateInstance(instanceID, addr)
 		if err == nil {
@@ -401,8 +430,19 @@ func (gw *EtcdGateway) connectInstance(serviceName, instanceID, addr string) {
 	}
 }
 
+const gatewayConnectRetryAttempts = 30
+
+func gatewayConnectRetryDelay(attempt int) time.Duration {
+	delay := time.Duration(attempt) * 500 * time.Millisecond
+	if delay > 5*time.Second {
+		return 5 * time.Second
+	}
+	return delay
+}
+
 // removeInstance 移除单个服务实例（watch DELETE 触发）
 func (gw *EtcdGateway) removeInstance(serviceName, instanceID string) {
+	gw.removeHTTPInstance(serviceName, instanceID)
 	pool := gw.connPool.Get(serviceName)
 	if pool == nil {
 		return
@@ -419,8 +459,12 @@ func (gw *EtcdGateway) removeInstance(serviceName, instanceID string) {
 }
 
 // watchEtcdServices 监听 etcd 中的服务变化
-func (gw *EtcdGateway) watchEtcdServices() {
-	watchChan := gw.etcdCli.Watch(gw.watchCtx, "/services/", clientv3.WithPrefix())
+func (gw *EtcdGateway) watchEtcdServices(startRev int64) {
+	opts := []clientv3.OpOption{clientv3.WithPrefix()}
+	if startRev > 0 {
+		opts = append(opts, clientv3.WithRev(startRev))
+	}
+	watchChan := gw.etcdCli.Watch(gw.watchCtx, "/services/", opts...)
 
 	for resp := range watchChan {
 		for _, ev := range resp.Events {
@@ -439,6 +483,7 @@ func (gw *EtcdGateway) watchEtcdServices() {
 				if info.ID == "" {
 					info.ID = instanceID
 				}
+				gw.addHTTPInstance(serviceName, info.ID, info.HTTPAddr())
 				// core.D("[Gateway] watch: %s/%s registered at %s", serviceName, info.ID, info.Addr)
 
 				go gw.connectInstance(serviceName, info.ID, info.Addr)
@@ -486,6 +531,7 @@ func (gw *EtcdGateway) autoRegisterRoutes(serviceName string, proxy *ReflectionP
 
 		nextRoutes[routeIDHash] = &Route{
 			ID:          routeIDHash,
+			Protocol:    RouteProtocolGRPC,
 			Method:      httpMethod,
 			Path:        httpPath,
 			ServiceName: serviceName,
@@ -591,6 +637,10 @@ func (gw *EtcdGateway) loadAllRoutes() error {
 		if err := json.Unmarshal(kv.Value, &route); err != nil {
 			continue
 		}
+		if err := normalizeAndValidateRoute(&route); err != nil {
+			core.Warn("[Gateway] ignore invalid route %s: %v", string(kv.Key), err)
+			continue
+		}
 		if route.Enabled {
 			gw.addOrUpdateRoute(&route)
 		}
@@ -622,6 +672,10 @@ func (gw *EtcdGateway) watchRoutes() {
 }
 
 func (gw *EtcdGateway) addOrUpdateRoute(route *Route) {
+	if err := normalizeAndValidateRoute(route); err != nil {
+		core.Warn("[Gateway] ignore invalid route: %v", err)
+		return
+	}
 	gw.mu.Lock()
 	defer gw.mu.Unlock()
 
@@ -652,21 +706,20 @@ func (gw *EtcdGateway) removeRouteByID(routeID string) {
 }
 
 func (gw *EtcdGateway) registerRoute(route *Route) {
-	handler := gw.createProxyHandler(route)
+	var handler core.HandlerFunc
+	if route.Protocol == RouteProtocolHTTP {
+		handler = gw.createHTTPProxyHandler(route)
+	} else {
+		handler = gw.createProxyHandler(route)
+	}
 
 	route.Path = strings.TrimSuffix(route.Path, "/")
-	core.D("Add Route ✅: %s %s -> %s", route.Method, route.Path, route.GRPCMethod)
-
-	switch strings.ToUpper(route.Method) {
-	case "GET":
-		gw.app.AddHandle([]string{"GET"}, route.Path, nil, handler)
-	case "POST":
-		gw.app.AddHandle([]string{"POST"}, route.Path, nil, handler)
-	case "PUT":
-		gw.app.AddHandle([]string{"PUT"}, route.Path, nil, handler)
-	case "DELETE":
-		gw.app.AddHandle([]string{"DELETE"}, route.Path, nil, handler)
+	target := route.GRPCMethod
+	if route.Protocol == RouteProtocolHTTP {
+		target = route.UpstreamPath
 	}
+	core.D("Add Route ✅: %s %s -> %s:%s", route.Method, route.Path, route.Protocol, target)
+	gw.app.AddHandle([]string{route.Method}, route.Path, nil, handler)
 }
 
 func (gw *EtcdGateway) unregisterRoute(route *Route) {
@@ -811,11 +864,9 @@ func (gw *EtcdGateway) createRoute(ctx core.Ctx) error {
 		return ctx.Status(400).JSON(core.Map{"code": 400, "message": err.Error()})
 	}
 
-	routeID := fmt.Sprintf("auto-%s-%s", route.ServiceName, strings.TrimPrefix(route.GRPCMethod, "/"))
-	route.ID = core.SHA256(routeID)
-	route.CreatedAt = time.Now()
-	route.UpdatedAt = time.Now()
-	route.Enabled = true
+	if err := prepareRoute(&route); err != nil {
+		return ctx.Status(400).JSON(core.Map{"code": 400, "message": err.Error()})
+	}
 
 	data, err := json.Marshal(route)
 	if err != nil {
@@ -838,6 +889,9 @@ func (gw *EtcdGateway) updateRoute(ctx core.Ctx) error {
 	}
 
 	route.ID = routeID
+	if err := normalizeAndValidateRoute(&route); err != nil {
+		return ctx.Status(400).JSON(core.Map{"code": 400, "message": err.Error()})
+	}
 	route.UpdatedAt = time.Now()
 
 	data, err := json.Marshal(route)

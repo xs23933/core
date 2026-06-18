@@ -64,6 +64,10 @@ func FromInt64(v int64) Money {
 	return Money{v}
 }
 
+func New(v int64) Money {
+	return Money{v}
+}
+
 func MustParse(s string) Money {
 	m, err := Parse(s)
 	if err != nil {
@@ -380,12 +384,24 @@ func (m Money) Cmp(x Money) int {
 	return 0
 }
 
+// Less 小于
 func (m Money) Less(x Money) bool {
 	return m.v < x.v
 }
 
+// Greater 大于
 func (m Money) Greater(x Money) bool {
 	return m.v > x.v
+}
+
+// Ge 基于 Cmp 实现的 >=
+func (m Money) Ge(x Money) bool { // >=
+	return m.Cmp(x) >= 0
+}
+
+// Le 居于 Cmp 实现的 <=
+func (m Money) Le(x Money) bool { // <=
+	return m.Cmp(x) <= 0
 }
 
 func (m Money) IsZero() bool {

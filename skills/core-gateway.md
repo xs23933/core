@@ -1,6 +1,6 @@
 ---
 name: core-gateway
-description: 使用 Core Framework gateway 子包把 etcd 中的 gRPC 服务自动映射为 HTTP 路由，覆盖自动注册、路由命名、管理接口和 metadata 透传
+description: 使用 Core Framework gateway 子包接入 HTTP 或 gRPC 微服务，覆盖显式注册、自动路由、路由命名、管理接口和 metadata 透传
 tags: [go, core-framework, gateway, grpc, etcd, http, reflection]
 ---
 
@@ -12,6 +12,8 @@ tags: [go, core-framework, gateway, grpc, etcd, http, reflection]
 
 - "启动网关"
 - "HTTP 转 gRPC"
+- "HTTP 微服务注册 gateway"
+- "gateway.RegisterHTTPRoute"
 - "gRPC 自动路由"
 - "gateway.NewEtcdGateway"
 - "网关管理接口"
@@ -19,13 +21,13 @@ tags: [go, core-framework, gateway, grpc, etcd, http, reflection]
 
 ## 1. 核心链路
 
-网关依赖 etcd 和 gRPC reflection：
+网关通过 etcd 发现服务实例和路由定义：
 
-1. 业务服务调用 `EnableEtcdRegistry` 注册服务实例，并自动开启 reflection。
+1. HTTP 或 gRPC 业务服务调用 `EnableEtcdRegistry` 注册服务实例。
 2. 网关调用 `EnableEtcdDiscovery` 连接 etcd。
-3. `gateway.NewEtcdGateway(app)` 读取服务列表，连接 gRPC reflection。
-4. 网关按 gRPC 方法名自动生成 HTTP 路由。
-5. HTTP 请求被转成 JSON message，再调用后端 gRPC 方法。
+3. HTTP 服务调用 `gateway.RegisterHTTPRoute` 显式发布路由定义。
+4. gRPC 服务自动开启 reflection，由网关按方法名生成 HTTP 路由。
+5. `gateway.NewEtcdGateway(app)` 读取服务实例和路由，并代理到对应协议的上游。
 
 ## 2. 网关启动模板
 
@@ -68,7 +70,85 @@ etcd:
   dial_timeout: 5
 ```
 
-## 3. 自动路由命名
+## 3. HTTP 微服务显式注册
+
+HTTP 微服务需要分别注册服务实例和 HTTP 路由：
+
+- `app.EnableEtcdRegistry(nil)`：把实例写入 `/services/<service_name>/<service_id>`，并通过租约续期。
+- `gateway.RegisterHTTPRoute(app, route)`：把路由写入 `/gateway/routes/<route_id>`。
+
+必须先调用 `EnableEtcdRegistry`，因为 `RegisterHTTPRoute` 通过 `app.EtcdDiscovery` 写入 etcd。一个服务有多条公开路由时，逐条调用 `RegisterHTTPRoute`。
+
+```go
+package main
+
+import (
+    "log"
+    "net/http"
+
+    core "github.com/xs23933/core/v3"
+    "github.com/xs23933/core/v3/gateway"
+)
+
+func main() {
+    app := core.New(core.LoadConfigFile("config.yaml"))
+
+    // 微服务内部真实路由。
+    app.Get("/tasks/:id", func(c core.Ctx) error {
+        return c.JSON(core.Map{"id": c.Params("id")})
+    })
+
+    // 注册当前服务实例，同时初始化 app.EtcdDiscovery。
+    if err := app.EnableEtcdRegistry(nil); err != nil {
+        log.Fatal("注册服务实例失败:", err)
+    }
+
+    // 注册 Gateway 对外路由；ServiceName 为空时读取 etcd.service_name。
+    if err := gateway.RegisterHTTPRoute(app, &gateway.Route{
+        Method:       http.MethodGet,
+        Path:         "/api/tasks/:id",
+        UpstreamPath: "/tasks/:id",
+        Description:  "查询任务",
+    }); err != nil {
+        log.Fatal("注册 HTTP 路由失败:", err)
+    }
+
+    if err := app.Run(); err != nil {
+        log.Fatal(err)
+    }
+}
+```
+
+微服务配置：
+
+```yaml
+listen: 8081
+
+etcd:
+  endpoints:
+    - 127.0.0.1:2379
+  service_name: task-service
+  service_addr: 127.0.0.1:8081
+  service_id: task-service-1
+  ttl: 10
+  version: 1.0.0
+```
+
+字段说明：
+
+| 字段 | 说明 |
+| ---- | ---- |
+| `Method` | Gateway 对外接受的 HTTP 方法 |
+| `Path` | Gateway 对外路径 |
+| `UpstreamPath` | HTTP 微服务内部真实路径；为空时使用 `Path` |
+| `ServiceName` | 对应 etcd 服务名；为空时读取 `etcd.service_name` |
+| `Headers` | Gateway 转发到上游时附加或覆盖的请求头 |
+
+`service_addr` 必须是 Gateway 进程可访问的地址。在容器或跨主机部署中，不要填写只对微服务自身有效的 `127.0.0.1`。
+
+gRPC 微服务不需要调用 `RegisterHTTPRoute`。它只需在 `Listen` / `Run` 前注册 protobuf service 并调用 `EnableEtcdRegistry`，Gateway 会通过 reflection 自动生成路由。
+
+## 4. 自动路由命名
 
 网关会把 proto package、service 和 method 合成 HTTP 路由。
 
@@ -89,7 +169,7 @@ etcd:
 - `By` 转成路径参数标记 `:`。
 - 缩写使用 `Id`，避免 `ID` 被拆成 `/i/d`。
 
-## 4. HTTP 请求映射
+## 5. HTTP 请求映射
 
 网关会合并三类输入：
 
@@ -114,7 +194,7 @@ X-Request-Id: req-1
 }
 ```
 
-## 5. Metadata 透传
+## 6. Metadata 透传
 
 默认会透传：
 
@@ -131,7 +211,7 @@ c.Set("user_id", "123")
 
 后端 gRPC handler 从 metadata 中读取。
 
-## 6. 管理接口
+## 7. 管理接口
 
 网关内置本地管理接口，仅允许 loopback 地址访问：
 
@@ -158,12 +238,14 @@ Content-Type: application/json
 }
 ```
 
-## 7. 排查优先级
+## 8. 排查优先级
 
 网关发现不到方法时按顺序检查：
 
 1. 业务服务是否调用了 `EnableEtcdRegistry`。
-2. `service_addr` 是否是网关进程可访问的地址。
-3. proto service 是否已在 `Listen` 前注册。
-4. 方法名是否以 `Post/Get/Put/Delete` 开头。
-5. 网关是否能连接同一个 etcd endpoints。
+2. HTTP 服务是否在 `EnableEtcdRegistry` 之后调用了 `RegisterHTTPRoute`。
+3. 路由的 `ServiceName` 是否与 `etcd.service_name` 一致。
+4. `service_addr` 是否是网关进程可访问的地址。
+5. proto service 是否已在 `Listen` 前注册。
+6. gRPC 方法名是否以 `Post/Get/Put/Delete` 开头。
+7. 网关与业务服务是否连接同一组 etcd endpoints。
