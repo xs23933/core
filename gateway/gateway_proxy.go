@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -192,10 +193,84 @@ func protoJSONUnmarshal(data []byte, msg proto.Message, resolver interface {
 	protoregistry.MessageTypeResolver
 	protoregistry.ExtensionTypeResolver
 }) error {
+	data = promoteFlatMessageFields(data, msg.ProtoReflect().Descriptor())
 	return (&protojson.UnmarshalOptions{
 		DiscardUnknown: true,
 		Resolver:       resolver,
 	}).Unmarshal(data, msg)
+}
+
+func promoteFlatMessageFields(data []byte, desc protoreflect.MessageDescriptor) []byte {
+	var values map[string]any
+	if err := json.Unmarshal(data, &values); err != nil {
+		return data
+	}
+
+	changed := false
+	fields := desc.Fields()
+	for i := 0; i < fields.Len(); i++ {
+		field := fields.Get(i)
+		if field.Kind() != protoreflect.MessageKind || field.IsList() || field.IsMap() {
+			continue
+		}
+
+		key, raw, ok := fieldValue(values, field)
+		if !ok || raw == nil {
+			continue
+		}
+		if _, alreadyNested := raw.(map[string]any); alreadyNested {
+			continue
+		}
+
+		childFields := field.Message().Fields()
+		anchor := childFields.ByJSONName(key)
+		if anchor == nil {
+			anchor = childFields.ByName(protoreflect.Name(key))
+		}
+		if anchor == nil || anchor.Kind() == protoreflect.MessageKind {
+			continue
+		}
+
+		nested := map[string]any{anchor.JSONName(): raw}
+		delete(values, key)
+		for j := 0; j < childFields.Len(); j++ {
+			child := childFields.Get(j)
+			if child == anchor || topLevelField(fields, child.JSONName()) != nil {
+				continue
+			}
+			if childKey, childValue, exists := fieldValue(values, child); exists {
+				nested[child.JSONName()] = childValue
+				delete(values, childKey)
+			}
+		}
+		values[field.JSONName()] = nested
+		changed = true
+	}
+
+	if !changed {
+		return data
+	}
+	normalized, err := json.Marshal(values)
+	if err != nil {
+		return data
+	}
+	return normalized
+}
+
+func fieldValue(values map[string]any, field protoreflect.FieldDescriptor) (string, any, bool) {
+	if value, ok := values[field.JSONName()]; ok {
+		return field.JSONName(), value, true
+	}
+	name := string(field.Name())
+	value, ok := values[name]
+	return name, value, ok
+}
+
+func topLevelField(fields protoreflect.FieldDescriptors, name string) protoreflect.FieldDescriptor {
+	if field := fields.ByJSONName(name); field != nil {
+		return field
+	}
+	return fields.ByName(protoreflect.Name(name))
 }
 
 func protoJSONMarshal(msg proto.Message, resolver interface {

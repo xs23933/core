@@ -78,6 +78,60 @@ func TestProtoJSONAnyUsesDynamicResolver(t *testing.T) {
 	}
 }
 
+func TestProtoJSONUnmarshalPromotesFlatPagination(t *testing.T) {
+	files, err := protodesc.NewFiles(&descriptorpb.FileDescriptorSet{
+		File: []*descriptorpb.FileDescriptorProto{
+			{
+				Name:    testPtr("pagination.proto"),
+				Package: testPtr("api.v1"),
+				Syntax:  testPtr("proto3"),
+				MessageType: []*descriptorpb.DescriptorProto{
+					{
+						Name: testPtr("PageRequest"),
+						Field: []*descriptorpb.FieldDescriptorProto{
+							{Name: testPtr("page"), JsonName: testPtr("page"), Number: testPtr[int32](1), Label: descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(), Type: descriptorpb.FieldDescriptorProto_TYPE_INT32.Enum()},
+							{Name: testPtr("limit"), JsonName: testPtr("limit"), Number: testPtr[int32](2), Label: descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(), Type: descriptorpb.FieldDescriptorProto_TYPE_INT32.Enum()},
+						},
+					},
+					{
+						Name: testPtr("TransactionListRequest"),
+						Field: []*descriptorpb.FieldDescriptorProto{
+							{Name: testPtr("user_id"), JsonName: testPtr("userId"), Number: testPtr[int32](1), Label: descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(), Type: descriptorpb.FieldDescriptorProto_TYPE_STRING.Enum()},
+							{Name: testPtr("page"), JsonName: testPtr("page"), Number: testPtr[int32](2), Label: descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(), Type: descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(), TypeName: testPtr(".api.v1.PageRequest")},
+						},
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("build files: %v", err)
+	}
+
+	desc, err := files.FindDescriptorByName("api.v1.TransactionListRequest")
+	if err != nil {
+		t.Fatalf("find request: %v", err)
+	}
+	msg := dynamicpb.NewMessage(desc.(protoreflect.MessageDescriptor))
+
+	err = protoJSONUnmarshal([]byte(`{"user_id":"27333218910867456","page":"1","limit":"10"}`), msg, dynamicpb.NewTypes(files))
+	if err != nil {
+		t.Fatalf("unmarshal flat pagination: %v", err)
+	}
+
+	pageField := msg.Descriptor().Fields().ByName("page")
+	page := msg.Get(pageField).Message()
+	if got := page.Get(page.Descriptor().Fields().ByName("page")).Int(); got != 1 {
+		t.Fatalf("page = %d, want 1", got)
+	}
+	if got := page.Get(page.Descriptor().Fields().ByName("limit")).Int(); got != 10 {
+		t.Fatalf("limit = %d, want 10", got)
+	}
+	if got := msg.Get(msg.Descriptor().Fields().ByName("user_id")).String(); got != "27333218910867456" {
+		t.Fatalf("user_id = %q, want 27333218910867456", got)
+	}
+}
+
 func testPtr[T any](v T) *T {
 	return &v
 }
