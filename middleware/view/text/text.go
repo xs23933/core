@@ -5,6 +5,7 @@ import (
 	"embed"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -61,9 +62,7 @@ func NewTextEngine(directory any, extension string, args ...any) *TextEngine {
 		case embed.FS:
 			engine.FileSystem = http.FS(arg)
 		case map[string]any:
-			for k, fn := range arg {
-				engine.Helpers[k] = fn
-			}
+			maps.Copy(engine.Helpers, arg)
 		}
 	}
 

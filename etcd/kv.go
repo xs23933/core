@@ -39,6 +39,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"go.etcd.io/etcd/api/v3/mvccpb"
@@ -51,6 +52,9 @@ const KVPrefix = "/config/"
 const kvTimeout = 5 * time.Second
 
 func kvKey(key string) string {
+	if strings.HasPrefix(key, "/") {
+		return key
+	}
 	return KVPrefix + key
 }
 
