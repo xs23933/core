@@ -22,18 +22,18 @@ import (
 )
 
 type Route struct {
-	ID          string            `json:"id"`
-	Protocol    RouteProtocol     `json:"protocol,omitempty"`
-	Method      string            `json:"method"`
-	Path        string            `json:"path"`
-	ServiceName string            `json:"service_name"`
-	GRPCMethod  string            `json:"grpc_method"`
-	UpstreamPath string           `json:"upstream_path,omitempty"`
-	Description string            `json:"description"`
-	Headers     map[string]string `json:"headers,omitempty"`
-	Enabled     bool              `json:"enabled"`
-	CreatedAt   time.Time         `json:"created_at"`
-	UpdatedAt   time.Time         `json:"updated_at"`
+	ID           string            `json:"id"`
+	Protocol     RouteProtocol     `json:"protocol,omitempty"`
+	Method       string            `json:"method"`
+	Path         string            `json:"path"`
+	ServiceName  string            `json:"service_name"`
+	GRPCMethod   string            `json:"grpc_method"`
+	UpstreamPath string            `json:"upstream_path,omitempty"`
+	Description  string            `json:"description"`
+	Headers      map[string]string `json:"headers,omitempty"`
+	Enabled      bool              `json:"enabled"`
+	CreatedAt    time.Time         `json:"created_at"`
+	UpdatedAt    time.Time         `json:"updated_at"`
 }
 
 // CircuitBreaker 熔断器
@@ -99,10 +99,23 @@ type EtcdGateway struct {
 }
 
 type Config struct {
-	EtcdEndpoints   []string      `yaml:"etcd_endpoints"`
-	EtcdDialTimeout time.Duration `yaml:"etcd_dial_timeout"`
-	RoutePrefix     string        `yaml:"route_prefix"`
-	HTTPAddr        string        `yaml:"http_addr"`
+	EtcdEndpoints       []string      `yaml:"etcd_endpoints"`
+	EtcdDialTimeout     time.Duration `yaml:"etcd_dial_timeout"`
+	RoutePrefix         string        `yaml:"route_prefix"`
+	HTTPAddr            string        `yaml:"http_addr"`
+	GRPCServiceExcludes []string      `yaml:"grpc_service_excludes"`
+}
+
+func grpcServiceExcluded(config *Config, service string) bool {
+	if config == nil {
+		return false
+	}
+	for _, excluded := range config.GRPCServiceExcludes {
+		if strings.TrimSpace(excluded) == service {
+			return true
+		}
+	}
+	return false
 }
 
 // circuitBreakerCheck 检查熔断器状态，返回 true 表示可以尝试连接
@@ -228,6 +241,7 @@ func NewEtcdGateway(app *core.Core, conf ...*Config) (*EtcdGateway, error) {
 		config = &Config{}
 		config.EtcdEndpoints = app.Conf.GetStrings("etcd.endpoints")
 		config.EtcdDialTimeout = time.Duration(app.Conf.GetInt64("etcd.dial_timeout", 5)) * time.Second
+		config.GRPCServiceExcludes = app.Conf.GetStrings("gateway.grpc_service_excludes")
 	}
 	if config.RoutePrefix == "" {
 		config.RoutePrefix = "/gateway/routes/"
@@ -510,6 +524,9 @@ func (gw *EtcdGateway) autoRegisterRoutes(serviceName string, proxy *ReflectionP
 	newHashesByService := make(map[string]map[string]bool)
 
 	for fullMethod, desc := range methods {
+		if grpcServiceExcluded(gw.config, desc.Service) {
+			continue
+		}
 		httpMethod, httpPath := grpcToHTTP(desc.Package, desc.Service, desc.Method)
 
 		serviceParts := strings.Split(desc.Service, ".")

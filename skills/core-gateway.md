@@ -148,6 +148,17 @@ etcd:
 
 gRPC 微服务不需要调用 `RegisterHTTPRoute`。它只需在 `Listen` / `Run` 前注册 protobuf service 并调用 `EnableEtcdRegistry`，Gateway 会通过 reflection 自动生成路由。
 
+内部 gRPC 契约不得自动暴露为 HTTP。Gateway 配置 `gateway.grpc_service_excludes`，使用完整 service 名精确排除：
+
+```yaml
+gateway:
+  grpc_service_excludes:
+    - payment.provider.v1.PaymentProviderService
+    - game.provider.v1.GameProviderService
+```
+
+排除只影响 HTTP 自动路由，不关闭 reflection，也不影响内部 gRPC 客户端按服务发现调用。
+
 ## 4. 自动路由命名
 
 网关会把 proto package、service 和 method 合成 HTTP 路由。

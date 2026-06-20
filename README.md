@@ -669,6 +669,17 @@ func main() {
 
 网关通过 gRPC reflection 读取服务方法，并按方法名前缀自动生成 HTTP 路由。
 
+只供内部服务调用的 gRPC 契约应通过完整 service 名排除，避免生成公共 HTTP 路由或与其它实例的同名契约冲突：
+
+```yaml
+gateway:
+  grpc_service_excludes:
+    - payment.provider.v1.PaymentProviderService
+    - game.provider.v1.GameProviderService
+```
+
+该配置不关闭 reflection，仅跳过指定 service 的 HTTP 自动路由。
+
 | gRPC 方法名        | HTTP 方法 | HTTP 路径示例              |
 | ------------------ | --------- | -------------------------- |
 | `PostLogin`        | `POST`    | `/v1/auth/user/login`      |
