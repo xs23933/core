@@ -313,23 +313,54 @@ func InitDB() {
 
 ```go
 // 自定义中间件
-func AuthMiddleware(next core.HandlerFunc) core.HandlerFunc {
-    return func(c core.Ctx) error {
-        token := c.GetHeader("Authorization")
-        if token == "" {
-            return c.SendStatus(401, "Unauthorized")
-        }
-        // 验证 token
-        // ...
-        return next(c)
+func AuthMiddleware(c core.Ctx) error {
+    token := c.GetHeader("Authorization")
+    if token == "" {
+        return c.SendStatus(401, "Unauthorized")
     }
+    // 验证 token
+    // ...
+    return c.Next()
 }
 
-// 使用中间件
+// 全局中间件
 app.Use(AuthMiddleware)
+
+// 路径级中间件：匹配 /api 及其所有子路径，不要添加 /*。
+app.Use("/api", AuthMiddleware)
 
 // 路由级中间件
 app.GET("/admin", AdminHandler, AuthMiddleware)
+```
+
+路径级中间件使用路径前缀节点。`app.Use("/api", middleware)` 会作用于 `/api`、`/api/users`、`/api/v1/orders` 等路由。不要写成 `app.Use("/api/*", middleware)`；`*` 是路由 catch-all 段，不是路径级中间件的前缀标记。
+
+```go
+app.Use("/api", authMiddleware.Handle)
+app.Use("/internal", internalAuthMiddleware.Handle)
+```
+
+中间件执行顺序：
+
+- 全局中间件通过 `app.Use(middleware)` 注册到根节点，后注册的会前置执行。需要按期望执行顺序反向注册。
+- 同一路径的中间件按注册顺序执行。
+- 嵌套路径始终按父路径到子路径执行，例如 `/api` 中间件先于 `/api/internal` 中间件。
+- 路径级中间件之后才执行路由自身的 middleware 和最终 handler。
+
+```go
+// 期望执行顺序：requestID -> accessLog -> handler。
+// 全局中间件需要反向注册。
+app.Use(accessLogMiddleware)
+app.Use(requestIDMiddleware)
+
+// 同一路径按注册顺序执行：auth -> audit -> handler。
+app.Use("/api", authMiddleware.Handle)
+app.Use("/api", auditMiddleware.Handle)
+
+// GET /api/internal/status：auth -> internalAuth -> handler。
+app.Use("/api", authMiddleware.Handle)
+app.Use("/api/internal", internalAuthMiddleware.Handle)
+app.GET("/api/internal/status", statusHandler)
 ```
 
 #### 内置中间件

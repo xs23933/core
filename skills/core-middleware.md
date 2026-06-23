@@ -10,6 +10,8 @@ tags: [go, core-framework, middleware, cors, metrics, ratelimit, requestid]
 
 - "写中间件"
 - "全局鉴权"
+- "路径级中间件"
+- "app.Use 路径前缀"
 - "加 request id"
 - "加 metrics"
 - "限流"
@@ -53,7 +55,38 @@ app.Use(ratelimit.New(ratelimit.Config{
 }))
 ```
 
-## 3. 自定义中间件模板
+## 3. 路径级中间件
+
+路径级中间件直接使用不带通配符的路径前缀：
+
+```go
+app.Use("/api", authMiddleware.Handle)
+app.Use("/internal", internalAuthMiddleware.Handle)
+```
+
+`app.Use("/api", middleware)` 会作用于 `/api` 及其所有子路径。不要写 `app.Use("/api/*", middleware)`；`*` 是路由 catch-all 段，不是中间件前缀标记。
+
+全局中间件、同一路径中间件和嵌套路径中间件的执行顺序规则：
+
+| 类型 | 执行顺序 |
+| --- | --- |
+| 全局 `app.Use(middleware)` | 后注册的前置执行；按期望顺序反向注册 |
+| 同一路径 `app.Use("/api", ...)` | 按注册顺序执行 |
+| 嵌套路径 | 父路径先于子路径执行 |
+| 路由 middleware 与 handler | 在全局和路径级中间件之后执行 |
+
+```go
+// 执行顺序：requestID -> accessLog -> handler。
+app.Use(accessLogMiddleware)
+app.Use(requestIDMiddleware)
+
+// GET /api/internal/status：auth -> internalAuth -> handler。
+app.Use("/api", authMiddleware.Handle)
+app.Use("/api/internal", internalAuthMiddleware.Handle)
+app.GET("/api/internal/status", statusHandler)
+```
+
+## 4. 自定义中间件模板
 
 ```go
 func AccessLog() core.HandlerFunc {
@@ -67,7 +100,7 @@ func AccessLog() core.HandlerFunc {
 }
 ```
 
-## 4. 限流建议
+## 5. 限流建议
 
 - 默认按 `method + path + ip` 作为限流 key。
 - 用户级限流请用 `KeyFunc`，例如取 `user_id`。
@@ -86,9 +119,10 @@ app.Use(ratelimit.New(ratelimit.Config{
 }))
 ```
 
-## 5. 生成代码时避免
+## 6. 生成代码时避免
 
 - 不要在中间件里吞掉 `c.Next()` 返回错误。
+- 不要使用 `app.Use("/api/*", middleware)` 表示路径前缀；应使用 `app.Use("/api", middleware)`。
 - 不要在限流失败时返回 200。
 - 不要把 metrics、鉴权、限流都写进一个巨大中间件。
 - 不要在中间件里进行阻塞式慢 IO。

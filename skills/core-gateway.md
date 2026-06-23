@@ -207,12 +207,14 @@ X-Request-Id: req-1
 
 ## 6. Metadata 透传
 
-默认会透传：
+默认会把 HTTP 请求 Header 透传到 gRPC metadata，metadata key 使用小写 header 名。
+同名 Header 的多个值会全部保留。HTTP/2 或 gRPC 传输层禁止的 Header
+（如 `connection`、`content-length`、`content-type`）不会写入 metadata。
 
-- `authorization`
-- `x-request-id`
-- `x-user-id`
-- `Ctx.Vars()` 中由前置 middleware 写入的本地变量
+同时会透传 `Ctx.Vars()` 中由前置 middleware 写入的本地变量。
+
+对于声明了 `raw_body` / `headers` 字段的 gRPC 请求，Gateway 会额外把 HTTP 原始请求体写入
+`raw_body`，并把 HTTP Header 写入 `headers` map，便于支付回调等场景在后端验签。
 
 常见做法是在网关 HTTP middleware 中解析 JWT，并写入：
 

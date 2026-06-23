@@ -1,9 +1,12 @@
 package gateway
 
 import (
+	"context"
 	"strings"
 	"testing"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/descriptorpb"
@@ -129,6 +132,63 @@ func TestProtoJSONUnmarshalPromotesFlatPagination(t *testing.T) {
 	}
 	if got := msg.Get(msg.Descriptor().Fields().ByName("user_id")).String(); got != "27333218910867456" {
 		t.Fatalf("user_id = %q, want 27333218910867456", got)
+	}
+}
+
+func TestReflectionProxyInvokeReturnsInvalidArgumentForParseFailure(t *testing.T) {
+	files, err := protodesc.NewFiles(&descriptorpb.FileDescriptorSet{
+		File: []*descriptorpb.FileDescriptorProto{
+			{
+				Name:    testPtr("parse_failure.proto"),
+				Package: testPtr("test"),
+				Syntax:  testPtr("proto3"),
+				MessageType: []*descriptorpb.DescriptorProto{
+					{
+						Name: testPtr("Request"),
+						Field: []*descriptorpb.FieldDescriptorProto{
+							{Name: testPtr("amount"), JsonName: testPtr("amount"), Number: testPtr[int32](1), Label: descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(), Type: descriptorpb.FieldDescriptorProto_TYPE_DOUBLE.Enum()},
+						},
+					},
+					{Name: testPtr("Response")},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("build files: %v", err)
+	}
+	reqDesc, err := files.FindDescriptorByName("test.Request")
+	if err != nil {
+		t.Fatalf("find request: %v", err)
+	}
+	respDesc, err := files.FindDescriptorByName("test.Response")
+	if err != nil {
+		t.Fatalf("find response: %v", err)
+	}
+	resolver := dynamicpb.NewTypes(files)
+
+	proxy := &ReflectionProxy{}
+	proxy.methodCache.Store("/test.Service/Post", &MethodDescriptor{
+		FullMethod: "/test.Service/Post",
+		NewRequest: func() protoreflect.ProtoMessage {
+			return dynamicpb.NewMessage(reqDesc.(protoreflect.MessageDescriptor))
+		},
+		NewResponse: func() protoreflect.ProtoMessage {
+			return dynamicpb.NewMessage(respDesc.(protoreflect.MessageDescriptor))
+		},
+		Resolver: resolver,
+	})
+
+	_, err = proxy.Invoke(context.Background(), "/test.Service/Post", []byte(`{"amount":"bad"}`))
+	st, ok := status.FromError(err)
+	if !ok {
+		t.Fatalf("Invoke error = %v, want grpc status", err)
+	}
+	if st.Code() != codes.InvalidArgument {
+		t.Fatalf("Invoke code = %s, want %s", st.Code(), codes.InvalidArgument)
+	}
+	if !strings.Contains(st.Message(), "parse request failed") {
+		t.Fatalf("Invoke message = %q, want parse request failed", st.Message())
 	}
 }
 

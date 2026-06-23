@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/xs23933/core/v3"
 )
 
 type FetchBeforeHook func(context.Context, *http.Request, []byte) error
@@ -79,9 +80,9 @@ type FetchError struct {
 
 func (e *FetchError) Error() string {
 	if len(e.Body) == 0 {
-		return fmt.Sprintf("fetch: %s", e.Status)
+		return fmt.Sprintf("%s", e.Status)
 	}
-	return fmt.Sprintf("fetch: %s: %s", e.Status, string(e.Body))
+	return fmt.Sprintf("%s: %s", e.Status, string(e.Body))
 }
 
 // New creates a reusable Fetch client.
@@ -398,20 +399,23 @@ func (r *FetchRequest) Result(ctx context.Context, out any) (*FetchResult, error
 			return nil, err
 		}
 	}
-
+	core.D("%s %s", r.method, reqURL)
 	resp, err := r.fetch.httpClient().Do(req)
 	if err != nil {
+		core.D("%s %s(%d): %v", r.method, reqURL, resp.StatusCode, err)
 		return nil, err
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
+		core.D("failed to read response body: %v", err)
 		return nil, err
 	}
 	for _, hook := range r.fetch.loadAfter() {
 		respBody, err = hook(ctx, resp, respBody)
 		if err != nil {
+			core.D("err to hook response: %v", err)
 			return nil, err
 		}
 	}
@@ -430,6 +434,7 @@ func (r *FetchRequest) Result(ctx context.Context, out any) (*FetchResult, error
 		}
 	}
 	if err := decodeFetchBody(respBody, out); err != nil {
+		core.D("decode Fetch Body err: %v", err)
 		return result, err
 	}
 	return result, nil

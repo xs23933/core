@@ -203,7 +203,7 @@ type NSQConsumer struct {
 // NewNSQConsumer 创建 NSQ Consumer
 func NewNSQConsumer(conf NSQConsumerConfig) (*NSQConsumer, error) {
 	if conf.Topic == "" || conf.Channel == "" {
-		return nil, fmt.Errorf("nsq consumer: topic and channel are required")
+		return nil, fmt.Errorf("nsq consumer: topic(%s) and channel(%s) are required", conf.Topic, conf.Channel)
 	}
 	if conf.Concurrency <= 0 {
 		conf.Concurrency = 1
@@ -329,7 +329,7 @@ func nsqConsumerConnectionTargets(conf NSQConsumerConfig) (lookupds []string, ns
 	if len(conf.NSQDs) > 0 {
 		return nil, conf.NSQDs, nil
 	}
-	return nil, nil, fmt.Errorf("nsq consumer: at least one lookupd or nsqd address required")
+	return nil, nil, fmt.Errorf("nsq consumer: at least one lookupd(%v) or nsqd address(%v) required", conf.Lookupds, conf.NSQDs)
 }
 
 // Stop 优雅停止消费者

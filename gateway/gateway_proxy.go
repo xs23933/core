@@ -11,8 +11,10 @@ import (
 	"github.com/jhump/protoreflect/grpcreflect"
 	"github.com/xs23933/core/v3"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/reflection/grpc_reflection_v1alpha"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
@@ -178,7 +180,8 @@ func (p *ReflectionProxy) Invoke(ctx context.Context, fullMethod string, jsonReq
 
 	req := desc.NewRequest()
 	if err := protoJSONUnmarshal(jsonReq, req, desc.Resolver); err != nil {
-		return nil, fmt.Errorf("parse request failed: %w", err)
+		core.Erro("[Gateway] gRPC request parse failed: grpc=%s json_bytes=%d err=%v", fullMethod, len(jsonReq), err)
+		return nil, status.Errorf(codes.InvalidArgument, "parse request failed: %v", err)
 	}
 
 	resp := desc.NewResponse()

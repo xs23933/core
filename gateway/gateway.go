@@ -1,9 +1,12 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"maps"
 	"net"
 	"net/http"
@@ -219,17 +222,7 @@ func grpcErrorToResponse(err error) core.Map {
 	}
 
 	code := int(st.Code())
-	msg := st.Message()
-
-	// 特殊处理：隐藏内部错误细节
-	switch st.Code() {
-	case codes.Internal:
-		msg = "internal server error"
-	case codes.Unavailable:
-		msg = "service unavailable"
-	}
-
-	return core.Map{"code": code, "msg": msg}
+	return core.Map{"code": code, "msg": "internal server error"}
 }
 
 func NewEtcdGateway(app *core.Core, conf ...*Config) (*EtcdGateway, error) {
@@ -754,35 +747,40 @@ func (gw *EtcdGateway) createProxyHandler(route *Route) core.HandlerFunc {
 			})
 		}
 
-		reqBody := make(core.Map, 8)
-		for k, v := range ctx.ParamsMaps() {
-			reqBody[k] = v
-		}
-		for k, v := range ctx.Request().URL.Query() {
-			if len(v) > 0 {
-				reqBody[k] = v[0]
+		var rawBody []byte
+		if ctx.Method() != "GET" {
+			var err error
+			rawBody, err = readAndResetBody(ctx.Request())
+			if err != nil {
+				core.Erro("[Gateway] gRPC proxy read body failed: method=%s path=%s grpc=%s err=%v",
+					ctx.Method(), ctx.Path(), route.GRPCMethod, err)
+				return ctx.Status(http.StatusBadRequest).JSON(core.Map{
+					"code": 400, "message": "invalid request body",
+				})
 			}
 		}
+		reqBody := buildGRPCRequestBody(ctx.ParamsMaps(), ctx.Request().URL.Query())
 		if ctx.Method() != "GET" {
 			var bodyMap core.Map
 			if err := ctx.Bind(&bodyMap); err == nil {
 				maps.Copy(reqBody, bodyMap)
+			} else {
+				core.Erro("[Gateway] gRPC proxy bind body failed: method=%s path=%s grpc=%s err=%v",
+					ctx.Method(), ctx.Path(), route.GRPCMethod, err)
 			}
 		}
+		appendGatewayRequestMetadata(reqBody, ctx.Request().Header, rawBody)
 
 		jsonReq, err := sonic.Marshal(reqBody)
 		if err != nil {
+			core.Erro("[Gateway] gRPC proxy marshal request failed: method=%s path=%s grpc=%s err=%v",
+				ctx.Method(), ctx.Path(), route.GRPCMethod, err)
 			return ctx.Status(http.StatusBadRequest).JSON(core.Map{
 				"code": 400, "message": "invalid request body",
 			})
 		}
-
 		md := metadata.New(nil)
-		for _, h := range []string{"authorization", "x-request-id", "x-user-id"} {
-			if val := ctx.GetHeader(h); val != "" {
-				md.Set(h, val)
-			}
-		}
+		appendHTTPHeadersToMetadata(md, ctx.Request().Header)
 
 		for k, v := range ctx.Vars() {
 			md.Set(k, fmt.Sprintf("%v", v))
@@ -795,9 +793,84 @@ func (gw *EtcdGateway) createProxyHandler(route *Route) core.HandlerFunc {
 
 		jsonResp, err := proxy.Invoke(callCtx, route.GRPCMethod, jsonReq)
 		if err != nil {
+			if st, ok := status.FromError(err); ok {
+				core.Erro("[Gateway] gRPC proxy upstream error: grpc=%s code=%s message=%q",
+					route.GRPCMethod, st.Code(), st.Message())
+			} else {
+				core.Erro("[Gateway] gRPC proxy upstream error: grpc=%s err=%v",
+					route.GRPCMethod, err)
+			}
 			return ctx.Status(grpcStatusToHTTP(err)).JSON(grpcErrorToResponse(err))
 		}
 		return ctx.Type("json").Send(jsonResp)
+	}
+}
+
+func readAndResetBody(req *http.Request) ([]byte, error) {
+	if req == nil || req.Body == nil {
+		return nil, nil
+	}
+	body, err := io.ReadAll(req.Body)
+	if err != nil {
+		return nil, err
+	}
+	req.Body = io.NopCloser(bytes.NewBuffer(body))
+	return body, nil
+}
+
+func buildGRPCRequestBody(params map[string]string, query map[string][]string) core.Map {
+	reqBody := make(core.Map, len(params)+len(query))
+	for k, v := range params {
+		reqBody[k] = v
+	}
+	for k, v := range query {
+		if len(v) > 0 {
+			reqBody[k] = v[0]
+		}
+	}
+	return reqBody
+}
+
+func appendGatewayRequestMetadata(reqBody core.Map, headers http.Header, rawBody []byte) {
+	if len(rawBody) > 0 {
+		reqBody["raw_body"] = base64.StdEncoding.EncodeToString(rawBody)
+	}
+	if len(headers) > 0 {
+		reqBody["headers"] = headerMap(headers)
+	}
+}
+
+func headerMap(headers http.Header) map[string]string {
+	result := make(map[string]string, len(headers))
+	for key, values := range headers {
+		if key == "" || len(values) == 0 {
+			continue
+		}
+		result[strings.ToLower(key)] = strings.Join(values, ",")
+	}
+	return result
+}
+
+func appendHTTPHeadersToMetadata(md metadata.MD, headers http.Header) {
+	for key, values := range headers {
+		if key == "" || len(values) == 0 {
+			continue
+		}
+		key = strings.ToLower(key)
+		if grpcMetadataHeaderSkipped(key) {
+			continue
+		}
+		md.Append(key, values...)
+	}
+}
+
+func grpcMetadataHeaderSkipped(key string) bool {
+	switch key {
+	case "connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade",
+		"content-length", "content-type", "te", "trailer":
+		return true
+	default:
+		return strings.HasPrefix(key, ":") || strings.HasPrefix(key, "grpc-")
 	}
 }
 
