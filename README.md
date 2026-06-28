@@ -140,6 +140,15 @@ app := core.New(core.LoadConfigFile("config.yaml"))
 app.Listen()
 ```
 
+`core.New()` 会默认注册 `GET /health`，返回 `204 No Content`，用于基础存活探测。
+业务程序可以显式注册同一路径覆盖默认实现：
+
+```go
+app.GET("/health", func(c core.Ctx) error {
+    return c.SendString("ok")
+})
+```
+
 ### 2. 上下文 (Ctx)
 
 上下文对象封装了 HTTP 请求和响应，提供了丰富的操作方法。
@@ -246,6 +255,9 @@ _Params 是可选关键词 即:params?_
 - `GetUserByID` → `GET /user/:id`
 - `GetUser__Create` → `GET /user-create`
 - `GetUser__dot__Html` → `GET /user.html`
+
+框架内置默认路由 `GET /health`，返回 `204 No Content`。如果业务代码再次注册
+`GET /health`，业务 handler 会覆盖框架默认 handler。
 
 #### 路由注释
 

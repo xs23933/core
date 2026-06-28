@@ -51,6 +51,9 @@ func init() {
 | 连字符         | `GetUser__Create`   | `GET /user-create`   |
 | 点号           | `GetUser__dot__Html`| `GET /user.html`     |
 
+Core 默认注册 `GET /health`，返回 `204 No Content`。业务程序需要自定义健康检查时，
+可以显式注册同一路径，业务 handler 会覆盖默认实现。
+
 ### 3. 前缀设置
 
 ```go

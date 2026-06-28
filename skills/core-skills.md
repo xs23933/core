@@ -26,6 +26,7 @@ Core Framework v3 是一个轻量级企业级 Go Web 框架，模块路径为 `g
 ### 1.3 核心特性
 
 - **自动路由注册**：Handler 方法名即路由，无需手动配置路由表
+- **默认健康检查**：内置 `GET /health` 返回 `204 No Content`，业务同路径注册会覆盖默认实现
 - **DDD 分层架构**：handler → service → dao → model 清晰分层
 - **双协议兼容**：Service 层同时支持 HTTP 和 gRPC 调用
 - **多数据库支持**：MySQL、PostgreSQL、SQLite、ClickHouse 统一 GORM 接口
@@ -73,6 +74,7 @@ skills/
 
 **核心特性**：
 - 方法名自动路由映射（Get/Post/Put/Delete + 路径规则）
+- 默认 `GET /health` 存活探测，可由业务路由覆盖
 - Prefix 前缀设置，`Init()` 生命周期钩子
 - `Preload()` 请求前置拦截（鉴权/上下文注入）
 - `ReadBody()` 请求体解析 + `Validate()` 参数校验

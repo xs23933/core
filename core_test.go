@@ -3,6 +3,7 @@ package core
 import (
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"reflect"
 	"testing"
@@ -54,6 +55,33 @@ func TestRemoteIPFallbacks(t *testing.T) {
 	headers := http.Header{"X-Forwarded-For": []string{"bad-ip, 10.0.0.2"}}
 	if got := RemoteIP(headers, "127.0.0.1:8080"); !got.Equal(net.ParseIP("127.0.0.1")) {
 		t.Fatalf("invalid forwarded header should fall back to remote addr, got %v", got)
+	}
+}
+
+func TestDefaultHealthRoute(t *testing.T) {
+	app := New()
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+}
+
+func TestBusinessHealthRouteOverridesDefault(t *testing.T) {
+	app := New()
+	app.GET("/health", func(c Ctx) error {
+		return c.SendString("business health")
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || rec.Body.String() != "business health" {
+		t.Fatalf("status/body = %d/%q, want 200/business health", rec.Code, rec.Body.String())
 	}
 }
 

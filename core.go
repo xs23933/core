@@ -210,6 +210,7 @@ func New(options ...Options) *Core {
 			handlers:    nil,
 		}
 	}
+	app.registerHealthRoute()
 
 	app.ErrorHandler = DefaultErrorHandler
 
@@ -492,6 +493,14 @@ func (app *Core) prefork() error {
 func (app *Core) runProcess() {
 	app.loadMods() // load modules
 	// app.buildTree()
+}
+
+func (app *Core) registerHealthRoute() {
+	app.GET("/health", func(c Ctx) error {
+		c.Status(StatusNoContent)
+		c.Response().DoWriteHeader()
+		return nil
+	})
 }
 
 func (app *Core) Use(fn ...any) Router {

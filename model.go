@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -39,7 +40,7 @@ func NewModel(conf Options, debug, colorful bool) (map[string]*DB, error) {
 		Salt:        0xe5b08fe69dbe,
 	})
 
-	if conf.GetString("type") != "" && conf.GetString("dsn") != "" {
+	if conf.GetString("type") != "" && databaseDSN(conf) != "" {
 		db, err := openDB(conf, debug, colorful)
 		if err != nil {
 			return nil, err
@@ -52,7 +53,7 @@ func NewModel(conf Options, debug, colorful bool) (map[string]*DB, error) {
 	confs := Conf.GetMap("database")
 	for name, cfg := range confs {
 		c := cfg.(Options)
-		db, err := openDB(c, debug, colorful)
+		db, err := openDB(c, debug, colorful, name)
 		if err != nil {
 			return nil, fmt.Errorf("db %s init failed: %w", name, err)
 		}
@@ -75,9 +76,9 @@ func NewNID() nid.ID {
 	return nid.MustGenerate()
 }
 
-func openDB(conf Options, debug, colorful bool) (db *DB, err error) {
+func openDB(conf Options, debug, colorful bool, name ...string) (db *DB, err error) {
 	tp := conf.GetString("type")
-	dsn := conf.GetString("dsn")
+	dsn := databaseDSN(conf, name...)
 	if dsn == "" {
 		return nil, ErrNoConfig
 	}
@@ -132,6 +133,46 @@ func openDB(conf Options, debug, colorful bool) (db *DB, err error) {
 	}
 	D("%s Connected", tp)
 	return db, err
+}
+
+const databaseDSNEnv = "CORE_DATABASE_DSN"
+
+func databaseDSN(conf Options, name ...string) string {
+	for _, envName := range databaseDSNEnvNames(name...) {
+		if dsn := os.Getenv(envName); dsn != "" {
+			return dsn
+		}
+	}
+	return conf.GetString("dsn")
+}
+
+func databaseDSNEnvNames(name ...string) []string {
+	if len(name) == 0 || name[0] == "" {
+		return []string{databaseDSNEnv}
+	}
+
+	envName := "CORE_DATABASE_" + normalizeDatabaseEnvName(name[0]) + "_DSN"
+	if name[0] == "default" {
+		return []string{envName, databaseDSNEnv}
+	}
+	return []string{envName}
+}
+
+func normalizeDatabaseEnvName(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r - 'a' + 'A')
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	return b.String()
 }
 
 type Model struct {
