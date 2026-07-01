@@ -226,6 +226,14 @@ func ParseString(s string) (ID, error) {
 	return Decode(s)
 }
 
+func MustParseString(s string) ID {
+	id, err := ParseString(s)
+	if err != nil {
+		panic(err)
+	}
+	return id
+}
+
 // Encode 使用自定义base32编码ID为短字符串
 func (id ID) Encode() string {
 	if id == 0 {
