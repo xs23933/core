@@ -91,11 +91,13 @@ type EtcdGateway struct {
 	watchCtx    context.Context
 	watchCancel context.CancelFunc
 
-	circuitStates sync.Map // map[string]*CircuitBreaker
+	circuitStates   sync.Map // map[string]*CircuitBreaker
+	connectInFlight sync.Map // map[string]struct{}
 
 	httpMu        sync.Mutex
-	httpInstances atomic.Value // map[string]map[string]string
-	httpIndexes   sync.Map     // map[string]*atomic.Uint64
+	httpInstances atomic.Value // map[string]httpServiceInstances
+	httpIndexMu   sync.Mutex
+	httpIndexes   atomic.Value // map[string]*atomic.Uint64
 
 	// 连接池
 	connPool *ConnectionPool
@@ -170,6 +172,13 @@ func (gw *EtcdGateway) circuitBreakerRecordFailure(serviceName string) {
 
 	cb.failCount++
 	cb.lastFailTime = time.Now()
+
+	if cb.state == circuitHalfOpen {
+		cb.state = circuitOpen
+		cb.failCount = circuitFailThreshold
+		core.D("[Gateway] circuit breaker for %s reopened after half-open failure", serviceName)
+		return
+	}
 
 	if cb.failCount >= circuitFailThreshold && cb.state == circuitClosed {
 		cb.state = circuitOpen
@@ -264,7 +273,8 @@ func NewEtcdGateway(app *core.Core, conf ...*Config) (*EtcdGateway, error) {
 		connPool:          NewConnectionPool(),
 	}
 	gw.storeRoutes(make(map[string]*Route))
-	gw.storeHTTPInstances(make(map[string]map[string]string))
+	gw.storeHTTPInstances(make(map[string]httpServiceInstances))
+	gw.storeHTTPIndexes(make(map[string]*atomic.Uint64))
 
 	if err := gw.loadAllRoutes(); err != nil {
 		core.D("[Gateway] load all routes failed: %v", err)
@@ -447,6 +457,24 @@ func gatewayConnectRetryDelay(attempt int) time.Duration {
 	return delay
 }
 
+func connectInstanceKey(serviceName, instanceID string) string {
+	return serviceName + "/" + instanceID
+}
+
+func (gw *EtcdGateway) beginConnectInstance(serviceName, instanceID string) (string, bool) {
+	key := connectInstanceKey(serviceName, instanceID)
+	if _, loaded := gw.connectInFlight.LoadOrStore(key, struct{}{}); loaded {
+		return key, false
+	}
+	return key, true
+}
+
+func (gw *EtcdGateway) finishConnectInstance(key string) {
+	if key != "" {
+		gw.connectInFlight.Delete(key)
+	}
+}
+
 // removeInstance 移除单个服务实例（watch DELETE 触发）
 func (gw *EtcdGateway) removeInstance(serviceName, instanceID string) {
 	gw.removeHTTPInstance(serviceName, instanceID)
@@ -493,7 +521,12 @@ func (gw *EtcdGateway) watchEtcdServices(startRev int64) {
 				gw.addHTTPInstance(serviceName, info.ID, info.HTTPAddr())
 				// core.D("[Gateway] watch: %s/%s registered at %s", serviceName, info.ID, info.Addr)
 
-				go gw.connectInstance(serviceName, info.ID, info.Addr)
+				if key, ok := gw.beginConnectInstance(serviceName, info.ID); ok {
+					go func() {
+						defer gw.finishConnectInstance(key)
+						gw.connectInstance(serviceName, info.ID, info.Addr)
+					}()
+				}
 
 			case clientv3.EventTypeDelete:
 				core.D("[Gateway] watch: %s/%s deregistered", serviceName, instanceID)
@@ -786,7 +819,7 @@ func (gw *EtcdGateway) createProxyHandler(route *Route) core.HandlerFunc {
 			md.Set(k, fmt.Sprintf("%v", v))
 		}
 
-		grpcCtx := metadata.NewOutgoingContext(context.Background(), md)
+		grpcCtx := gatewayOutgoingContext(ctx.Context(), md)
 
 		callCtx, cancel := context.WithTimeout(grpcCtx, 10*time.Second)
 		defer cancel()
@@ -804,6 +837,13 @@ func (gw *EtcdGateway) createProxyHandler(route *Route) core.HandlerFunc {
 		}
 		return ctx.Type("json").Send(jsonResp)
 	}
+}
+
+func gatewayOutgoingContext(parent context.Context, md metadata.MD) context.Context {
+	if parent == nil {
+		parent = context.Background()
+	}
+	return metadata.NewOutgoingContext(parent, md)
 }
 
 func readAndResetBody(req *http.Request) ([]byte, error) {

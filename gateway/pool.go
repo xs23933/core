@@ -10,11 +10,16 @@ import (
 
 // ServicePool 服务连接池（按 instanceID 管理多个实例连接）
 type ServicePool struct {
-	name      string
-	instances atomic.Value // map[string]*ReflectionProxy, copy-on-write
-	idx       uint64       // atomic round-robin index
-	mu        sync.Mutex
-	app       *core.Core
+	name  string
+	state atomic.Value // servicePoolState, copy-on-write
+	idx   uint64       // atomic round-robin index
+	mu    sync.Mutex
+	app   *core.Core
+}
+
+type servicePoolState struct {
+	byID map[string]*ReflectionProxy
+	all  []*ReflectionProxy
 }
 
 // NewServicePool 创建服务连接池
@@ -23,26 +28,38 @@ func NewServicePool(app *core.Core, name string) *ServicePool {
 		name: name,
 		app:  app,
 	}
-	p.storeInstances(make(map[string]*ReflectionProxy))
+	p.storeState(servicePoolState{byID: make(map[string]*ReflectionProxy)})
 	return p
 }
 
-func (p *ServicePool) loadInstances() map[string]*ReflectionProxy {
-	if instances, ok := p.instances.Load().(map[string]*ReflectionProxy); ok && instances != nil {
-		return instances
+func (p *ServicePool) loadState() servicePoolState {
+	if state, ok := p.state.Load().(servicePoolState); ok && state.byID != nil {
+		return state
 	}
-	return nil
+	return servicePoolState{byID: make(map[string]*ReflectionProxy)}
 }
 
-func (p *ServicePool) storeInstances(instances map[string]*ReflectionProxy) {
-	p.instances.Store(instances)
+func (p *ServicePool) storeState(state servicePoolState) {
+	p.state.Store(state)
+}
+
+func copyServicePoolState(state servicePoolState, extra int) servicePoolState {
+	nextByID := make(map[string]*ReflectionProxy, len(state.byID)+extra)
+	for id, proxy := range state.byID {
+		nextByID[id] = proxy
+	}
+	nextAll := make([]*ReflectionProxy, 0, len(nextByID))
+	for _, proxy := range nextByID {
+		nextAll = append(nextAll, proxy)
+	}
+	return servicePoolState{byID: nextByID, all: nextAll}
 }
 
 // AddOrUpdateInstance 添加或更新一个实例连接
 // 返回 changed=true 表示是新增或重建了 proxy
 func (p *ServicePool) AddOrUpdateInstance(instanceID, addr string) (*ReflectionProxy, bool, error) {
 	// 快速路径：已有同 ID 同地址且连接健康，直接跳过
-	if old, ok := p.loadInstances()[instanceID]; ok && old.addr == addr {
+	if old, ok := p.loadState().byID[instanceID]; ok && old.addr == addr {
 		if old.conn != nil && old.conn.GetState() == connectivity.Ready {
 			return old, false, nil
 		}
@@ -58,23 +75,26 @@ func (p *ServicePool) AddOrUpdateInstance(instanceID, addr string) (*ReflectionP
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	instances := p.loadInstances()
+	state := p.loadState()
 
 	// double check：可能另一个 goroutine 已抢先完成
-	if old, ok := instances[instanceID]; ok && old.addr == addr {
+	if old, ok := state.byID[instanceID]; ok && old.addr == addr {
 		if old.conn != nil && old.conn.GetState() == connectivity.Ready {
 			proxy.Close() // 丢弃新创建的
 			return old, false, nil
 		}
 	}
 
-	next := make(map[string]*ReflectionProxy, len(instances)+1)
-	for id, existing := range instances {
-		next[id] = existing
+	next := copyServicePoolState(state, 1)
+	old := next.byID[instanceID]
+	next.byID[instanceID] = proxy
+	next.all = append(next.all[:0], next.byID[instanceID])
+	for id, existing := range next.byID {
+		if id != instanceID {
+			next.all = append(next.all, existing)
+		}
 	}
-	old := next[instanceID]
-	next[instanceID] = proxy
-	p.storeInstances(next)
+	p.storeState(next)
 	if old != nil {
 		old.Close()
 	}
@@ -86,34 +106,28 @@ func (p *ServicePool) RemoveInstance(instanceID string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	instances := p.loadInstances()
-	proxy, ok := instances[instanceID]
+	state := p.loadState()
+	proxy, ok := state.byID[instanceID]
 	if !ok {
 		return
 	}
 
-	next := make(map[string]*ReflectionProxy, len(instances)-1)
-	for id, existing := range instances {
-		if id != instanceID {
-			next[id] = existing
-		}
+	next := copyServicePoolState(state, 0)
+	delete(next.byID, instanceID)
+	next.all = next.all[:0]
+	for _, existing := range next.byID {
+		next.all = append(next.all, existing)
 	}
-	p.storeInstances(next)
+	p.storeState(next)
 	proxy.Close()
 }
 
 // Get 获取一个可用的 proxy（round-robin + 健康检查）
 func (p *ServicePool) Get() *ReflectionProxy {
-	instances := p.loadInstances()
-	n := len(instances)
+	all := p.loadState().all
+	n := len(all)
 	if n == 0 {
 		return nil
-	}
-
-	// 收集所有 proxy 到 slice 用于 round-robin
-	all := make([]*ReflectionProxy, 0, n)
-	for _, proxy := range instances {
-		all = append(all, proxy)
 	}
 
 	// round-robin
@@ -131,7 +145,7 @@ func (p *ServicePool) Get() *ReflectionProxy {
 
 // Size 返回实例数量
 func (p *ServicePool) Size() int {
-	return len(p.loadInstances())
+	return len(p.loadState().byID)
 }
 
 // Close 关闭所有连接
@@ -139,9 +153,9 @@ func (p *ServicePool) Close() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	instances := p.loadInstances()
-	p.storeInstances(make(map[string]*ReflectionProxy))
-	for _, proxy := range instances {
+	state := p.loadState()
+	p.storeState(servicePoolState{byID: make(map[string]*ReflectionProxy)})
+	for _, proxy := range state.byID {
 		proxy.Close()
 	}
 }

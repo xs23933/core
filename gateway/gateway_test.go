@@ -3,6 +3,7 @@ package gateway
 import (
 	"encoding/base64"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"testing"
 	"time"
@@ -143,5 +144,125 @@ func TestGRPCErrorToResponseHidesErrorDetails(t *testing.T) {
 	}
 	if got["code"] != int(codes.InvalidArgument) {
 		t.Fatalf("code = %v, want %d", got["code"], codes.InvalidArgument)
+	}
+}
+
+func TestHTTPInstanceSelectionUsesSnapshotWithoutAllocating(t *testing.T) {
+	gw := &EtcdGateway{}
+	gw.storeHTTPInstances(make(map[string]httpServiceInstances))
+	gw.addHTTPInstance("task-service", "task-2", "127.0.0.1:8082")
+	gw.addHTTPInstance("task-service", "task-1", "127.0.0.1:8081")
+
+	first := gw.getHTTPInstance("task-service")
+	second := gw.getHTTPInstance("task-service")
+	if first == "" || second == "" || first == second {
+		t.Fatalf("round-robin instances = %q, %q; want two non-empty different addresses", first, second)
+	}
+
+	_ = gw.getHTTPInstance("task-service")
+	allocs := testing.AllocsPerRun(1000, func() {
+		_ = gw.getHTTPInstance("task-service")
+	})
+	if allocs != 0 {
+		t.Fatalf("getHTTPInstance allocations = %v, want 0", allocs)
+	}
+}
+
+func TestHTTPInstanceRemovalRebuildsSnapshot(t *testing.T) {
+	gw := &EtcdGateway{}
+	gw.storeHTTPInstances(make(map[string]httpServiceInstances))
+	gw.addHTTPInstance("task-service", "task-1", "127.0.0.1:8081")
+	gw.addHTTPInstance("task-service", "task-2", "127.0.0.1:8082")
+
+	gw.removeHTTPInstance("task-service", "task-1")
+
+	for i := 0; i < 4; i++ {
+		if got := gw.getHTTPInstance("task-service"); got != "127.0.0.1:8082" {
+			t.Fatalf("instance after removal = %q, want remaining address", got)
+		}
+	}
+}
+
+func TestServicePoolGetUsesSnapshotWithoutAllocating(t *testing.T) {
+	pool := NewServicePool(nil, "billing-service")
+	pool.storeState(servicePoolState{
+		byID: map[string]*ReflectionProxy{
+			"billing-1": {addr: "127.0.0.1:9001"},
+		},
+		all: []*ReflectionProxy{{addr: "127.0.0.1:9001"}},
+	})
+
+	if got := pool.Get(); got == nil || got.addr != "127.0.0.1:9001" {
+		t.Fatalf("pool.Get() = %#v, want billing proxy", got)
+	}
+
+	allocs := testing.AllocsPerRun(1000, func() {
+		_ = pool.Get()
+	})
+	if allocs != 0 {
+		t.Fatalf("ServicePool.Get allocations = %v, want 0", allocs)
+	}
+}
+
+func TestConnectInstanceGuardSuppressesDuplicateInFlightAttempts(t *testing.T) {
+	gw := &EtcdGateway{}
+
+	key, ok := gw.beginConnectInstance("billing-service", "billing-1")
+	if !ok {
+		t.Fatal("first connect attempt should start")
+	}
+	if _, ok := gw.beginConnectInstance("billing-service", "billing-1"); ok {
+		t.Fatal("duplicate in-flight connect attempt should be suppressed")
+	}
+
+	gw.finishConnectInstance(key)
+	if _, ok := gw.beginConnectInstance("billing-service", "billing-1"); !ok {
+		t.Fatal("connect attempt should be allowed after previous attempt finishes")
+	}
+}
+
+func TestCircuitBreakerHalfOpenFailureReopensCircuit(t *testing.T) {
+	gw := &EtcdGateway{}
+	gw.circuitStates.Store("billing-service", &CircuitBreaker{state: circuitHalfOpen})
+
+	gw.circuitBreakerRecordFailure("billing-service")
+
+	value, ok := gw.circuitStates.Load("billing-service")
+	if !ok {
+		t.Fatal("missing circuit breaker")
+	}
+	cb := value.(*CircuitBreaker)
+	if cb.state != circuitOpen {
+		t.Fatalf("circuit state = %d, want open", cb.state)
+	}
+	if gw.circuitBreakerCheck("billing-service") {
+		t.Fatal("open circuit should reject requests during cooldown")
+	}
+}
+
+func TestPrepareHTTPProxyRequestRewritesTargetPathAndHeaders(t *testing.T) {
+	target, err := parseHTTPServiceURL("http://127.0.0.1:8081/base")
+	if err != nil {
+		t.Fatalf("parse target: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/tasks/42?debug=1", nil)
+	route := &Route{
+		UpstreamPath: "/tasks/:id",
+		Headers:      map[string]string{"X-Gateway": "core"},
+	}
+
+	prepareHTTPProxyRequest(req, target, route, map[string]string{"id": "42"})
+
+	if req.URL.Scheme != "http" || req.URL.Host != "127.0.0.1:8081" {
+		t.Fatalf("target = %s://%s, want http://127.0.0.1:8081", req.URL.Scheme, req.URL.Host)
+	}
+	if req.URL.Path != "/base/tasks/42" {
+		t.Fatalf("path = %q, want /base/tasks/42", req.URL.Path)
+	}
+	if req.URL.RawQuery != "debug=1" {
+		t.Fatalf("query = %q, want debug=1", req.URL.RawQuery)
+	}
+	if got := req.Header.Get("X-Gateway"); got != "core" {
+		t.Fatalf("X-Gateway = %q, want core", got)
 	}
 }

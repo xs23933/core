@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -180,6 +181,15 @@ func resolveHTTPUpstreamPath(template, requestPath string, params map[string]str
 }
 
 func (gw *EtcdGateway) createHTTPProxyHandler(route *Route) core.HandlerFunc {
+	proxy := &httputil.ReverseProxy{
+		Director: func(*http.Request) {},
+		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, proxyErr error) {
+			core.Erro("[Gateway] HTTP proxy %s failed: %v", route.ServiceName, proxyErr)
+			w.Header().Set(core.HeaderContentType, core.MIMEApplicationJSONCharsetUTF8)
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write([]byte(`{"code":502,"message":"bad gateway"}`))
+		},
+	}
 	return func(ctx core.Ctx) error {
 		addr := gw.getHTTPInstance(route.ServiceName)
 		if addr == "" {
@@ -197,22 +207,36 @@ func (gw *EtcdGateway) createHTTPProxyHandler(route *Route) core.HandlerFunc {
 		}
 
 		req := ctx.Request().Clone(ctx.Context())
-		req.URL.Path = resolveHTTPUpstreamPath(route.UpstreamPath, req.URL.Path, ctx.ParamsMaps())
-		req.URL.RawPath = ""
-		for key, value := range route.Headers {
-			req.Header.Set(key, value)
-		}
+		prepareHTTPProxyRequest(req, target, route, ctx.ParamsMaps())
 
-		proxy := httputil.NewSingleHostReverseProxy(target)
-		proxy.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, proxyErr error) {
-			core.Erro("[Gateway] HTTP proxy %s failed: %v", route.ServiceName, proxyErr)
-			w.Header().Set(core.HeaderContentType, core.MIMEApplicationJSONCharsetUTF8)
-			w.WriteHeader(http.StatusBadGateway)
-			_, _ = w.Write([]byte(`{"code":502,"message":"bad gateway"}`))
-		}
 		proxy.ServeHTTP(ctx.Response(), req)
 		return nil
 	}
+}
+
+func prepareHTTPProxyRequest(req *http.Request, target *url.URL, route *Route, params map[string]string) {
+	req.URL.Scheme = target.Scheme
+	req.URL.Host = target.Host
+	req.URL.Path = joinHTTPProxyPath(target.Path, resolveHTTPUpstreamPath(route.UpstreamPath, req.URL.Path, params))
+	req.URL.RawPath = ""
+	if target.RawQuery == "" || req.URL.RawQuery == "" {
+		req.URL.RawQuery = target.RawQuery + req.URL.RawQuery
+	} else {
+		req.URL.RawQuery = target.RawQuery + "&" + req.URL.RawQuery
+	}
+	for key, value := range route.Headers {
+		req.Header.Set(key, value)
+	}
+}
+
+func joinHTTPProxyPath(basePath, reqPath string) string {
+	if basePath == "" || basePath == "/" {
+		return normalizeRoutePath(reqPath)
+	}
+	if reqPath == "" || reqPath == "/" {
+		return normalizeRoutePath(basePath)
+	}
+	return strings.TrimRight(basePath, "/") + "/" + strings.TrimLeft(reqPath, "/")
 }
 
 func parseHTTPServiceURL(addr string) (*url.URL, error) {
@@ -230,25 +254,78 @@ func parseHTTPServiceURL(addr string) (*url.URL, error) {
 	return target, nil
 }
 
-func (gw *EtcdGateway) loadHTTPInstances() map[string]map[string]string {
-	if value, ok := gw.httpInstances.Load().(map[string]map[string]string); ok && value != nil {
+type httpServiceInstances struct {
+	byID  map[string]string
+	addrs []string
+}
+
+func newHTTPServiceInstances(byID map[string]string) httpServiceInstances {
+	ids := make([]string, 0, len(byID))
+	for id := range byID {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+
+	addrs := make([]string, 0, len(ids))
+	for _, id := range ids {
+		addrs = append(addrs, byID[id])
+	}
+	return httpServiceInstances{byID: byID, addrs: addrs}
+}
+
+func (gw *EtcdGateway) loadHTTPInstances() map[string]httpServiceInstances {
+	if value, ok := gw.httpInstances.Load().(map[string]httpServiceInstances); ok && value != nil {
 		return value
 	}
 	return nil
 }
 
-func (gw *EtcdGateway) storeHTTPInstances(instances map[string]map[string]string) {
+func (gw *EtcdGateway) storeHTTPInstances(instances map[string]httpServiceInstances) {
 	gw.httpInstances.Store(instances)
 }
 
-func copyHTTPInstances(instances map[string]map[string]string) map[string]map[string]string {
-	next := make(map[string]map[string]string, len(instances))
+func (gw *EtcdGateway) loadHTTPIndexes() map[string]*atomic.Uint64 {
+	if value, ok := gw.httpIndexes.Load().(map[string]*atomic.Uint64); ok && value != nil {
+		return value
+	}
+	return nil
+}
+
+func (gw *EtcdGateway) storeHTTPIndexes(indexes map[string]*atomic.Uint64) {
+	gw.httpIndexes.Store(indexes)
+}
+
+func (gw *EtcdGateway) getHTTPIndex(serviceName string) *atomic.Uint64 {
+	if index := gw.loadHTTPIndexes()[serviceName]; index != nil {
+		return index
+	}
+
+	gw.httpIndexMu.Lock()
+	defer gw.httpIndexMu.Unlock()
+
+	indexes := gw.loadHTTPIndexes()
+	if index := indexes[serviceName]; index != nil {
+		return index
+	}
+
+	next := make(map[string]*atomic.Uint64, len(indexes)+1)
+	for name, index := range indexes {
+		next[name] = index
+	}
+	index := &atomic.Uint64{}
+	next[serviceName] = index
+	gw.storeHTTPIndexes(next)
+	return index
+}
+
+func copyHTTPInstances(instances map[string]httpServiceInstances) map[string]httpServiceInstances {
+	next := make(map[string]httpServiceInstances, len(instances))
 	for serviceName, serviceInstances := range instances {
-		copied := make(map[string]string, len(serviceInstances))
-		for instanceID, addr := range serviceInstances {
-			copied[instanceID] = addr
+		byID := make(map[string]string, len(serviceInstances.byID))
+		for instanceID, addr := range serviceInstances.byID {
+			byID[instanceID] = addr
 		}
-		next[serviceName] = copied
+		next[serviceName] = newHTTPServiceInstances(byID)
 	}
 	return next
 }
@@ -260,10 +337,12 @@ func (gw *EtcdGateway) addHTTPInstance(serviceName, instanceID, addr string) {
 	gw.httpMu.Lock()
 	defer gw.httpMu.Unlock()
 	instances := copyHTTPInstances(gw.loadHTTPInstances())
-	if instances[serviceName] == nil {
-		instances[serviceName] = make(map[string]string)
+	byID := instances[serviceName].byID
+	if byID == nil {
+		byID = make(map[string]string)
 	}
-	instances[serviceName][instanceID] = addr
+	byID[instanceID] = addr
+	instances[serviceName] = newHTTPServiceInstances(byID)
 	gw.storeHTTPInstances(instances)
 }
 
@@ -274,26 +353,25 @@ func (gw *EtcdGateway) removeHTTPInstance(serviceName, instanceID string) {
 	gw.httpMu.Lock()
 	defer gw.httpMu.Unlock()
 	instances := copyHTTPInstances(gw.loadHTTPInstances())
-	if instances[serviceName] == nil {
+	serviceInstances := instances[serviceName]
+	if serviceInstances.byID == nil {
 		return
 	}
-	delete(instances[serviceName], instanceID)
-	if len(instances[serviceName]) == 0 {
+	delete(serviceInstances.byID, instanceID)
+	if len(serviceInstances.byID) == 0 {
 		delete(instances, serviceName)
+	} else {
+		instances[serviceName] = newHTTPServiceInstances(serviceInstances.byID)
 	}
 	gw.storeHTTPInstances(instances)
 }
 
 func (gw *EtcdGateway) getHTTPInstance(serviceName string) string {
-	instances := gw.loadHTTPInstances()[serviceName]
-	if len(instances) == 0 {
+	serviceInstances := gw.loadHTTPInstances()[serviceName]
+	addrs := serviceInstances.addrs
+	if len(addrs) == 0 {
 		return ""
 	}
-	all := make([]string, 0, len(instances))
-	for _, addr := range instances {
-		all = append(all, addr)
-	}
-	value, _ := gw.httpIndexes.LoadOrStore(serviceName, &atomic.Uint64{})
-	idx := value.(*atomic.Uint64).Add(1) - 1
-	return all[int(idx%uint64(len(all)))]
+	idx := gw.getHTTPIndex(serviceName).Add(1) - 1
+	return addrs[int(idx%uint64(len(addrs)))]
 }

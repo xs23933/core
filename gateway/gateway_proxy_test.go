@@ -4,8 +4,10 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -13,6 +15,26 @@ import (
 	"google.golang.org/protobuf/types/dynamicpb"
 	"google.golang.org/protobuf/types/known/anypb"
 )
+
+func TestGatewayOutgoingContextInheritsInboundCancellation(t *testing.T) {
+	parent, cancel := context.WithCancel(context.Background())
+	md := metadata.Pairs("x-request-id", "req-1")
+
+	out := gatewayOutgoingContext(parent, md)
+	cancel()
+
+	select {
+	case <-out.Done():
+	case <-time.After(time.Second):
+		t.Fatal("outgoing context was not canceled when inbound context was canceled")
+	}
+	if got := metadata.ValueFromIncomingContext(out, "x-request-id"); len(got) != 0 {
+		t.Fatalf("incoming metadata = %#v, want none on outgoing context", got)
+	}
+	if got, ok := metadata.FromOutgoingContext(out); !ok || len(got.Get("x-request-id")) != 1 {
+		t.Fatalf("outgoing metadata = %#v, want x-request-id", got)
+	}
+}
 
 func TestProtoJSONAnyUsesDynamicResolver(t *testing.T) {
 	files, err := protodesc.NewFiles(&descriptorpb.FileDescriptorSet{
