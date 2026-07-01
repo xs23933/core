@@ -131,17 +131,16 @@ func (n *RouteNode) empty() bool {
 }
 
 func (n *RouteNode) match(path string, ctx Ctx) (HandlerFuncs, bool) {
-	segments := strings.Split(strings.Trim(path, "/"), "/")
-
 	var chain HandlerFuncs
 	if baseCtx, ok := ctx.(*BaseCtx); ok {
 		chain = baseCtx.handlers[:0]
 	}
-	return n.matchSegments(segments, 0, ctx, append(chain, n.middlewares...))
+	trimmed := strings.Trim(path, "/")
+	return n.matchPath(trimmed, trimmed == "", ctx, append(chain, n.middlewares...))
 }
 
-func (n *RouteNode) matchSegments(segments []string, idx int, ctx Ctx, chain HandlerFuncs) (HandlerFuncs, bool) {
-	if idx == len(segments) {
+func (n *RouteNode) matchPath(path string, forceEmptySegment bool, ctx Ctx, chain HandlerFuncs) (HandlerFuncs, bool) {
+	if path == "" && !forceEmptySegment {
 		if len(n.handlers) > 0 {
 			return append(chain, n.handlers...), true
 		}
@@ -154,10 +153,20 @@ func (n *RouteNode) matchSegments(segments []string, idx int, ctx Ctx, chain Han
 		return nil, false
 	}
 
-	seg := segments[idx]
+	seg := ""
+	rest := ""
+	if !forceEmptySegment {
+		if slash := strings.IndexByte(path, '/'); slash >= 0 {
+			seg = path[:slash]
+			rest = path[slash+1:]
+		} else {
+			seg = path
+		}
+	}
+
 	if n.staticChild != nil {
 		if child, ok := n.staticChild[seg]; ok {
-			if matched, ok := child.matchSegments(segments, idx+1, ctx, append(chain, child.middlewares...)); ok {
+			if matched, ok := child.matchPath(rest, false, ctx, append(chain, child.middlewares...)); ok {
 				return matched, true
 			}
 		}
@@ -167,7 +176,7 @@ func (n *RouteNode) matchSegments(segments []string, idx int, ctx Ctx, chain Han
 		paramName := n.paramChild.path[1:]
 		oldParams := cloneParams(ctx)
 		ctx.SetParams(paramName, seg)
-		if matched, ok := n.paramChild.matchSegments(segments, idx+1, ctx, append(chain, n.paramChild.middlewares...)); ok {
+		if matched, ok := n.paramChild.matchPath(rest, false, ctx, append(chain, n.paramChild.middlewares...)); ok {
 			return matched, true
 		}
 		restoreParams(ctx, oldParams)
@@ -175,7 +184,11 @@ func (n *RouteNode) matchSegments(segments []string, idx int, ctx Ctx, chain Han
 
 	if n.catchChild != nil {
 		oldParams := cloneParams(ctx)
-		ctx.SetParams(n.catchChild.path[1:], strings.Join(segments[idx:], "/"))
+		catchValue := path
+		if forceEmptySegment {
+			catchValue = ""
+		}
+		ctx.SetParams(n.catchChild.path[1:], catchValue)
 		chain = append(chain, n.catchChild.middlewares...)
 		chain = append(chain, n.catchChild.handlers...)
 		if len(n.catchChild.handlers) > 0 {

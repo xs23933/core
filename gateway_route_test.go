@@ -245,3 +245,28 @@ func TestRootCatchAllDoesNotShadowStaticRoute(t *testing.T) {
 		t.Fatalf("status/body = %d/%q, want 200/health", rec.Code, rec.Body.String())
 	}
 }
+
+func TestStaticRouteMatchDoesNotAllocate(t *testing.T) {
+	root := &RouteNode{
+		path:        "/",
+		nType:       root,
+		staticChild: make(map[string]*RouteNode),
+	}
+	root.addRoute("/api/users/list", HandlerFuncs{func(Ctx) error { return nil }})
+	ctx := &BaseCtx{handlers: make(HandlerFuncs, 0, 4)}
+
+	handlers, ok := root.match("/api/users/list", ctx)
+	if !ok || len(handlers) != 1 {
+		t.Fatalf("match handlers = %d/%v, want one handler", len(handlers), ok)
+	}
+
+	allocs := testing.AllocsPerRun(1000, func() {
+		handlers, ok := root.match("/api/users/list", ctx)
+		if !ok || len(handlers) != 1 {
+			t.Fatalf("match handlers = %d/%v, want one handler", len(handlers), ok)
+		}
+	})
+	if allocs != 0 {
+		t.Fatalf("static route match allocations = %v, want 0", allocs)
+	}
+}

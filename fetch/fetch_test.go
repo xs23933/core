@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -153,6 +154,19 @@ func TestFetchReturnsStatusError(t *testing.T) {
 	}
 	if ferr.StatusCode != http.StatusBadRequest || string(ferr.Body) != `{"error":"bad"}` {
 		t.Fatalf("fetch error = %#v, want status/body", ferr)
+	}
+}
+
+func TestFetchTransportErrorWithoutResponseDoesNotPanic(t *testing.T) {
+	transportErr := errors.New("dial failed")
+	client := New("https://api.example.com").
+		Client(&http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return nil, transportErr
+		})})
+
+	err := client.Get("/down").Do(context.Background(), nil)
+	if !errors.Is(err, transportErr) {
+		t.Fatalf("error = %v, want transport error", err)
 	}
 }
 

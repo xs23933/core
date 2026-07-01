@@ -402,7 +402,11 @@ func (r *FetchRequest) Result(ctx context.Context, out any) (*FetchResult, error
 	core.D("%s %s", r.method, reqURL)
 	resp, err := r.fetch.httpClient().Do(req)
 	if err != nil {
-		core.D("%s %s(%d): %v", r.method, reqURL, resp.StatusCode, err)
+		if resp != nil {
+			core.D("%s %s(%d): %v", r.method, reqURL, resp.StatusCode, err)
+		} else {
+			core.D("%s %s: %v", r.method, reqURL, err)
+		}
 		return nil, err
 	}
 	defer resp.Body.Close()
