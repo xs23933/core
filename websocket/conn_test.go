@@ -17,3 +17,15 @@ func TestSendAfterCloseDoesNotQueueMessage(t *testing.T) {
 		t.Fatalf("queued messages after close = %d, want 0", got)
 	}
 }
+
+func TestPutBufferDropsOversizedBuffers(t *testing.T) {
+	oversized := make([]byte, 0, maxPooledBufferCap+1)
+
+	putBuffer(&oversized)
+
+	got := bufferPool.Get().(*[]byte)
+	defer putBuffer(got)
+	if cap(*got) > maxPooledBufferCap {
+		t.Fatalf("pooled buffer cap = %d, want <= %d", cap(*got), maxPooledBufferCap)
+	}
+}

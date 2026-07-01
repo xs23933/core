@@ -48,6 +48,8 @@ type EventHub struct {
 	namedClients atomic.Value // map[string]chan EventData, copy-on-write（ID 模式）
 	queue        chan EventData
 	interval     time.Duration
+	stop         chan struct{}
+	closed       atomic.Bool
 }
 
 func NewEventHub(interval ...time.Duration) *EventHub {
@@ -58,6 +60,7 @@ func NewEventHub(interval ...time.Duration) *EventHub {
 	h := &EventHub{
 		queue:    make(chan EventData, 1000),
 		interval: itv,
+		stop:     make(chan struct{}),
 	}
 	h.storeClients(make(map[chan EventData]struct{}))
 	h.storeNamedClients(make(map[string]chan EventData))
@@ -95,6 +98,8 @@ func (h *EventHub) start() {
 	var buffer []EventData
 	for {
 		select {
+		case <-h.stop:
+			return
 		case data, ok := <-h.queue:
 			if !ok {
 				return
@@ -121,8 +126,17 @@ func (h *EventHub) start() {
 }
 
 func (h *EventHub) Register(c chan EventData, id ...string) {
+	if h.closed.Load() {
+		close(c)
+		return
+	}
+
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.closed.Load() {
+		close(c)
+		return
+	}
 
 	if len(id) > 0 && id[0] != "" {
 		named := h.loadNamedClients()
@@ -225,11 +239,33 @@ func (h *EventHub) broadcast(data EventData) {
 }
 
 func (h *EventHub) Broadcast(data EventData) {
+	if h.closed.Load() {
+		return
+	}
 	select {
 	case h.queue <- data:
 		return
+	case <-h.stop:
+		return
 	default:
 	}
+}
+
+func (h *EventHub) Close() {
+	if !h.closed.CompareAndSwap(false, true) {
+		return
+	}
+	close(h.stop)
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	clients := h.loadClients()
+	for ch := range clients {
+		close(ch)
+	}
+	h.storeClients(make(map[chan EventData]struct{}))
+	h.storeNamedClients(make(map[string]chan EventData))
 }
 
 func (h *EventHub) Get(c Ctx) {
@@ -287,6 +323,9 @@ func (h *EventHub) PostData(c Ctx) {
 
 // SendTo 向指定 ID 的客户端发送通知，非阻塞
 func (h *EventHub) SendTo(id string, data EventData) {
+	if h.closed.Load() {
+		return
+	}
 	named := h.loadNamedClients()
 	c, ok := named[id]
 	if !ok {

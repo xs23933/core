@@ -28,6 +28,19 @@ var bufferPool = sync.Pool{
 	},
 }
 
+const maxPooledBufferCap = 64 << 10
+
+func putBuffer(buf *[]byte) {
+	if buf == nil {
+		return
+	}
+	if cap(*buf) > maxPooledBufferCap {
+		return
+	}
+	*buf = (*buf)[:0]
+	bufferPool.Put(buf)
+}
+
 type BatchConfig struct {
 	Enabled    bool          // 是否启用批量
 	MaxSize    int           // 最大批量大小
@@ -146,7 +159,7 @@ func (c *Conn) flushBatch() {
 		// 如果池中的缓冲区不够大，创建新的
 		// 注意：这里不归还，因为会扩容
 		newBuf := make([]byte, 0, totalSize)
-		bufferPool.Put(mergedBuf)
+		putBuffer(mergedBuf)
 		mergedBuf = &newBuf
 	}
 
@@ -156,7 +169,7 @@ func (c *Conn) flushBatch() {
 			*mergedBuf = append(*mergedBuf, '\n')
 		}
 		*mergedBuf = append(*mergedBuf, *msg.data...)
-		bufferPool.Put(msg.data)
+		putBuffer(msg.data)
 	}
 
 	// 发送合并后的消息
@@ -176,7 +189,7 @@ func (c *Conn) flushBatchSeparate() {
 
 func (c *Conn) sendDirectWithType(messageType MessageType, data *[]byte) {
 	if c.closed.Load() {
-		bufferPool.Put(data)
+		putBuffer(data)
 		return
 	}
 	msg := &message{
@@ -186,7 +199,7 @@ func (c *Conn) sendDirectWithType(messageType MessageType, data *[]byte) {
 	select {
 	case c.send <- msg:
 	default:
-		bufferPool.Put(data)
+		putBuffer(data)
 		c.Close()
 	}
 }
@@ -210,7 +223,7 @@ func (c *Conn) SendWithType(messageType MessageType, data []byte) {
 	select {
 	case c.send <- msg:
 	default:
-		bufferPool.Put(buf)
+		putBuffer(buf)
 		c.Close()
 	}
 }
@@ -238,14 +251,14 @@ func (c *Conn) readLoop(onMessage func(*Conn, MessageType, []byte)) {
 				break
 			}
 			if err != nil {
-				bufferPool.Put(buf)
+				putBuffer(buf)
 				return
 			}
 		}
 
 		onMessage(c, MessageType(messageType), *buf)
 
-		bufferPool.Put(buf)
+		putBuffer(buf)
 	}
 }
 
@@ -263,23 +276,23 @@ func (c *Conn) writeLoop() {
 		case msg := <-c.send:
 			writer, err := c.conn.NextWriter(int(msg.typ))
 			if err != nil {
-				bufferPool.Put(msg.data)
+				putBuffer(msg.data)
 				return
 			}
 
 			_, err = writer.Write(*msg.data)
 			if err != nil {
 				writer.Close()
-				bufferPool.Put(msg.data)
+				putBuffer(msg.data)
 				return
 			}
 
 			err = writer.Close()
 			if err != nil {
-				bufferPool.Put(msg.data)
+				putBuffer(msg.data)
 				return
 			}
-			bufferPool.Put(msg.data)
+			putBuffer(msg.data)
 
 		case <-ticker.C:
 			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
@@ -364,7 +377,7 @@ func (c *Conn) Close() {
 	}
 	for _, msg := range c.batchMsgs {
 		if msg != nil {
-			bufferPool.Put(msg.data)
+			putBuffer(msg.data)
 		}
 	}
 	c.batchMsgs = nil

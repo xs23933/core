@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func Test_Slice(t *testing.T) {
@@ -93,4 +94,25 @@ func TestNewWithoutNSQConfigDoesNotInitializeProducer(t *testing.T) {
 	if NProducer() != nil {
 		t.Fatal("nsq producer initialized without nsq config")
 	}
+}
+
+func TestEventHubCloseClosesRegisteredClients(t *testing.T) {
+	hub := NewEventHub(time.Millisecond)
+	ch := make(chan EventData, 1)
+	hub.Register(ch, "client-1")
+
+	hub.Close()
+
+	_, ok := <-ch
+	if ok {
+		t.Fatal("registered client channel should be closed")
+	}
+	if clients := hub.loadClients(); len(clients) != 0 {
+		t.Fatalf("clients after close = %d, want 0", len(clients))
+	}
+	if named := hub.loadNamedClients(); len(named) != 0 {
+		t.Fatalf("named clients after close = %d, want 0", len(named))
+	}
+	hub.Broadcast(EventData{Event: "closed", Data: "ignored"})
+	hub.SendTo("client-1", EventData{Event: "closed", Data: "ignored"})
 }
