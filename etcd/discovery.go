@@ -3,7 +3,10 @@ package etcd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -28,6 +31,8 @@ type Discovery struct {
 
 	subID atomic.Uint64
 }
+
+var errWatchClosed = errors.New("etcd watch closed")
 
 func NewDiscovery(opts *Options) (*Discovery, error) {
 	if opts == nil {
@@ -85,6 +90,14 @@ func copyServices(services map[string]map[string]*ServiceInfo) map[string]map[st
 	return next
 }
 
+func parseServiceKey(key string) (serviceName, instanceID string, ok bool) {
+	parts := strings.Split(key, "/")
+	if len(parts) < 4 || parts[1] != "services" {
+		return "", "", false
+	}
+	return parts[2], parts[3], true
+}
+
 func (d *Discovery) Watch(serviceName string) error {
 	d.mu.Lock()
 	if _, ok := d.watchers[serviceName]; ok {
@@ -107,7 +120,7 @@ func (d *Discovery) Watch(serviceName string) error {
 	getCtx, getCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer getCancel()
 
-	resp, err := d.client.Get(getCtx, prefix, clientv3.WithPrefix())
+	revision, err := d.refreshService(getCtx, serviceName, prefix)
 	if err != nil {
 		cancel()
 		d.mu.Lock()
@@ -116,76 +129,156 @@ func (d *Discovery) Watch(serviceName string) error {
 		return err
 	}
 
-	d.mu.Lock()
-	services = copyServices(d.loadServices())
-	if services[serviceName] == nil {
-		services[serviceName] = make(map[string]*ServiceInfo)
+	go d.watchLoop(ctx, serviceName, prefix, revision+1)
+
+	return nil
+}
+
+func (d *Discovery) refreshService(ctx context.Context, serviceName string, prefix string) (int64, error) {
+	resp, err := d.client.Get(ctx, prefix, clientv3.WithPrefix())
+	if err != nil {
+		return 0, err
 	}
+
+	snapshot := make(map[string]*ServiceInfo, len(resp.Kvs))
 	for _, kv := range resp.Kvs {
 		var svc ServiceInfo
 		if err := json.Unmarshal(kv.Value, &svc); err != nil {
 			continue
 		}
-		services[serviceName][string(kv.Key)] = &svc
+		_, instanceID, ok := parseServiceKey(string(kv.Key))
+		if ok && svc.ID == "" {
+			svc.ID = instanceID
+		}
+		snapshot[string(kv.Key)] = &svc
 	}
-	d.storeServices(services)
-	d.mu.Unlock()
 
-	d.notify(serviceName)
-
-	go d.watchLoop(ctx, serviceName, prefix)
-
-	return nil
+	if d.replaceServiceSnapshot(serviceName, snapshot) {
+		d.notify(serviceName)
+	}
+	return resp.Header.GetRevision(), nil
 }
 
-func (d *Discovery) watchLoop(ctx context.Context, serviceName string, prefix string) {
+func (d *Discovery) replaceServiceSnapshot(serviceName string, snapshot map[string]*ServiceInfo) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	services := copyServices(d.loadServices())
+	if services == nil {
+		services = make(map[string]map[string]*ServiceInfo)
+	}
+	if services[serviceName] == nil {
+		services[serviceName] = make(map[string]*ServiceInfo)
+	}
+	if reflect.DeepEqual(services[serviceName], snapshot) {
+		return false
+	}
+
+	services[serviceName] = snapshot
+	d.storeServices(services)
+	return true
+}
+
+func (d *Discovery) watchLoop(ctx context.Context, serviceName string, prefix string, startRev int64) {
 	defer func() {
 		d.mu.Lock()
 		delete(d.watchers, serviceName)
 		d.mu.Unlock()
 	}()
 
-	watchCh := d.client.Watch(ctx, prefix, clientv3.WithPrefix())
+	nextRev := startRev
+	_ = runRetryLoop(ctx, time.Second, func(loopCtx context.Context) error {
+		revision, err := d.watchService(loopCtx, serviceName, prefix, nextRev)
+		if revision > 0 {
+			nextRev = revision
+		}
+		if err == nil {
+			return nil
+		}
+		if loopCtx.Err() != nil {
+			return loopCtx.Err()
+		}
+
+		refreshCtx, cancel := context.WithTimeout(loopCtx, 10*time.Second)
+		defer cancel()
+		refreshedRevision, refreshErr := d.refreshService(refreshCtx, serviceName, prefix)
+		if refreshErr != nil {
+			return refreshErr
+		}
+		nextRev = refreshedRevision + 1
+		return err
+	})
+}
+
+func (d *Discovery) watchService(ctx context.Context, serviceName string, prefix string, startRev int64) (int64, error) {
+	opts := []clientv3.OpOption{clientv3.WithPrefix()}
+	if startRev > 0 {
+		opts = append(opts, clientv3.WithRev(startRev))
+	}
+	watchCh := d.client.Watch(ctx, prefix, opts...)
+	nextRev := startRev
 
 	for resp := range watchCh {
+		if resp.Header.GetRevision() > 0 {
+			nextRev = resp.Header.GetRevision() + 1
+		}
 		if err := resp.Err(); err != nil {
-			continue
+			return nextRev, err
 		}
-		changed := false
-
-		d.mu.Lock()
-		services := copyServices(d.loadServices())
-		for _, ev := range resp.Events {
-			key := string(ev.Kv.Key)
-
-			switch ev.Type {
-			case clientv3.EventTypePut:
-				var svc ServiceInfo
-				if err := json.Unmarshal(ev.Kv.Value, &svc); err != nil {
-					continue
-				}
-				if services[serviceName] == nil {
-					services[serviceName] = make(map[string]*ServiceInfo)
-				}
-				services[serviceName][key] = &svc
-				changed = true
-
-			case clientv3.EventTypeDelete:
-				if services[serviceName] != nil {
-					delete(services[serviceName], key)
-				}
-				changed = true
-			}
-		}
-		if changed {
-			d.storeServices(services)
-		}
-		d.mu.Unlock()
-
-		if changed {
+		if d.applyWatchEvents(serviceName, resp.Events) {
 			d.notify(serviceName)
 		}
 	}
+	if err := ctx.Err(); err != nil {
+		return nextRev, err
+	}
+	return nextRev, errWatchClosed
+}
+
+func (d *Discovery) applyWatchEvents(serviceName string, events []*clientv3.Event) bool {
+	changed := false
+
+	d.mu.Lock()
+	services := copyServices(d.loadServices())
+	if services == nil {
+		services = make(map[string]map[string]*ServiceInfo)
+	}
+	for _, ev := range events {
+		key := string(ev.Kv.Key)
+
+		switch ev.Type {
+		case clientv3.EventTypePut:
+			var svc ServiceInfo
+			if err := json.Unmarshal(ev.Kv.Value, &svc); err != nil {
+				continue
+			}
+			_, instanceID, ok := parseServiceKey(key)
+			if ok && svc.ID == "" {
+				svc.ID = instanceID
+			}
+			if services[serviceName] == nil {
+				services[serviceName] = make(map[string]*ServiceInfo)
+			}
+			if !reflect.DeepEqual(services[serviceName][key], &svc) {
+				services[serviceName][key] = &svc
+				changed = true
+			}
+
+		case clientv3.EventTypeDelete:
+			if services[serviceName] != nil {
+				if _, ok := services[serviceName][key]; ok {
+					delete(services[serviceName], key)
+					changed = true
+				}
+			}
+		}
+	}
+	if changed {
+		d.storeServices(services)
+	}
+	d.mu.Unlock()
+
+	return changed
 }
 
 func (d *Discovery) GetServices(serviceName string) []*ServiceInfo {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -17,6 +18,7 @@ type Registry struct {
 	ctx         context.Context
 	cancel      context.CancelFunc
 	keepAliveCh <-chan *clientv3.LeaseKeepAliveResponse
+	mu          sync.Mutex
 }
 
 // ServiceInfo 服务信息
@@ -77,25 +79,32 @@ func (r *Registry) doRegister() error {
 	if err != nil {
 		return fmt.Errorf("grant lease: %w", err)
 	}
+	r.mu.Lock()
 	r.leaseID = grantResp.ID
+	r.mu.Unlock()
 
 	// 注册服务
-	_, err = r.client.Put(r.ctx, r.opts.ServiceKey(), string(value), clientv3.WithLease(r.leaseID))
+	_, err = r.client.Put(r.ctx, r.opts.ServiceKey(), string(value), clientv3.WithLease(grantResp.ID))
 	if err != nil {
-		_, _ = r.lease.Revoke(context.Background(), r.leaseID)
+		_, _ = r.lease.Revoke(context.Background(), grantResp.ID)
+		r.mu.Lock()
 		r.leaseID = 0
+		r.mu.Unlock()
 		return fmt.Errorf("put service: %w", err)
 	}
 
 	// 自动续约
-	r.keepAliveCh, err = r.lease.KeepAlive(r.ctx, r.leaseID)
+	keepAliveCh, err := r.lease.KeepAlive(r.ctx, grantResp.ID)
 	if err != nil {
-		_, _ = r.lease.Revoke(context.Background(), r.leaseID)
+		_, _ = r.lease.Revoke(context.Background(), grantResp.ID)
+		r.mu.Lock()
 		r.leaseID = 0
+		r.mu.Unlock()
 		return fmt.Errorf("keep alive: %w", err)
 	}
-
-	go r.keepAlive()
+	r.mu.Lock()
+	r.keepAliveCh = keepAliveCh
+	r.mu.Unlock()
 
 	return nil
 }
@@ -104,6 +113,7 @@ func (r *Registry) Register() error {
 	var err error
 	for i := range 3 {
 		if err = r.doRegister(); err == nil {
+			go r.keepAlive()
 			return nil
 		}
 
@@ -115,13 +125,61 @@ func (r *Registry) Register() error {
 // keepAlive 监听续约
 func (r *Registry) keepAlive() {
 	for {
+		r.mu.Lock()
+		keepAliveCh := r.keepAliveCh
+		r.mu.Unlock()
+
 		select {
-		case _, ok := <-r.keepAliveCh:
-			if !ok {
-				return
+		case resp, ok := <-keepAliveCh:
+			if !ok || resp == nil {
+				r.clearLease()
+				if err := runRetryLoop(r.ctx, time.Second, func(context.Context) error {
+					return r.doRegister()
+				}); err != nil {
+					return
+				}
+				continue
 			}
 		case <-r.ctx.Done():
 			return
+		}
+	}
+}
+
+func (r *Registry) clearLease() {
+	r.mu.Lock()
+	leaseID := r.leaseID
+	r.leaseID = 0
+	r.keepAliveCh = nil
+	r.mu.Unlock()
+
+	if leaseID > 0 {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_, _ = r.lease.Revoke(ctx, leaseID)
+	}
+}
+
+func runRetryLoop(ctx context.Context, baseDelay time.Duration, fn func(context.Context) error) error {
+	if baseDelay <= 0 {
+		baseDelay = time.Second
+	}
+	for attempt := 0; ; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := fn(ctx); err == nil {
+			return nil
+		}
+
+		delay := baseDelay * time.Duration(attempt+1)
+		if delay > 30*time.Second {
+			delay = 30 * time.Second
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(delay):
 		}
 	}
 }
@@ -131,19 +189,21 @@ func (r *Registry) Deregister() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if r.leaseID > 0 {
-		_, _ = r.lease.Revoke(ctx, r.leaseID)
-		r.leaseID = 0
+	r.cancel()
+	r.mu.Lock()
+	leaseID := r.leaseID
+	r.leaseID = 0
+	r.keepAliveCh = nil
+	r.mu.Unlock()
+
+	if leaseID > 0 {
+		_, _ = r.lease.Revoke(ctx, leaseID)
 	}
 
 	if _, err := r.client.Delete(ctx, r.opts.ServiceKey()); err != nil {
-		r.cancel()
 		return fmt.Errorf("deregister service: %w", err)
 	}
 
-	r.cancel()
-
-	// 关闭 etcd 客户端
 	if err := r.client.Close(); err != nil {
 		return fmt.Errorf("close etcd client: %w", err)
 	}
