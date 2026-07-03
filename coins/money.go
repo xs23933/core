@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -50,6 +51,15 @@ type Money struct {
 	v int64
 }
 
+type integer interface {
+	~int | ~int8 | ~int16 | ~int32 | ~int64 |
+		~uint | ~uint8 | ~uint16 | ~uint32 | ~uint64 | ~uintptr
+}
+
+type moneyInput interface {
+	~string | integer | ~float32 | ~float64
+}
+
 var ZeroMoney = Money{}
 
 // ==============================
@@ -64,19 +74,26 @@ func FromInt64(v int64) Money {
 	return Money{v}
 }
 
-func New(v int64) Money {
-	return Money{v}
-}
-
-func MustParse(s string) Money {
-	m, err := Parse(s)
+// New constructs Money from whole or decimal coin units.
+// Use FromInt64 when the value is already scaled by MoneyBase.
+func New[T moneyInput](v T) Money {
+	m, err := Parse(v)
 	if err != nil {
 		panic(err)
 	}
 	return m
 }
 
-func Parse(s string) (Money, error) {
+func MustParse[T moneyInput](v T) Money {
+	m, err := Parse(v)
+	if err != nil {
+		panic(err)
+	}
+	return m
+}
+
+func Parse[T moneyInput](v T) (Money, error) {
+	s := formatMoneyInput(v)
 
 	s = strings.TrimSpace(s)
 
@@ -118,6 +135,23 @@ func Parse(s string) (Money, error) {
 	}
 
 	return Money{n}, nil
+}
+
+func formatMoneyInput[T moneyInput](v T) string {
+	rv := reflect.ValueOf(v)
+
+	switch rv.Kind() {
+	case reflect.String:
+		return rv.String()
+	case reflect.Float32:
+		return strconv.FormatFloat(rv.Float(), 'f', -1, 32)
+	case reflect.Float64:
+		return strconv.FormatFloat(rv.Float(), 'f', -1, 64)
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return strconv.FormatUint(rv.Uint(), 10)
+	default:
+		return strconv.FormatInt(rv.Int(), 10)
+	}
 }
 
 // ==============================
