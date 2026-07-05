@@ -262,3 +262,12 @@ Content-Type: application/json
 5. proto service 是否已在 `Listen` 前注册。
 6. gRPC 方法名是否以 `Post/Get/Put/Delete` 开头。
 7. 网关与业务服务是否连接同一组 etcd endpoints。
+
+请求返回 `service <name> unavailable` 时，查看同一条错误日志中的 `state={...}`：
+
+- `pool=missing` 或 `pool_instances=0` 表示 Gateway 当前没有该服务的可用 proxy 池。
+- `discovery=disabled` 表示 Gateway 没有 fallback 服务发现快照。
+- `discovery_instances=0` 表示 fallback discovery 也没有该服务实例，继续检查 `/services/<service_name>/` 注册。
+- `circuit_state=1` 表示该服务连接连续失败后处于熔断冷却期。
+
+休眠恢复或网络抖动后，重点匹配 `etcd service watch error`、`etcd service watch stopped unexpectedly`、`watch: <service>/<id> deregistered`、`watch: <service>/<id> registered`。只看到注销没有看到重新注册，优先排查 Gateway watch 或业务服务租约续期；重新注册存在但仍不可用，继续看连接实例失败日志。

@@ -2,9 +2,11 @@ package gateway
 
 import (
 	"encoding/base64"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -136,14 +138,25 @@ func TestAppendGatewayRequestMetadataOverridesBodyFields(t *testing.T) {
 	}
 }
 
-func TestGRPCErrorToResponseHidesErrorDetails(t *testing.T) {
-	got := grpcErrorToResponse(status.Error(codes.InvalidArgument, "parse request failed: invalid amount"))
+func TestGRPCErrorToResponseIncludesStatusMessage(t *testing.T) {
+	got := grpcErrorToResponse(status.Error(codes.InvalidArgument, "coupon issue conditions not matched"))
+
+	if got["msg"] != "coupon issue conditions not matched" {
+		t.Fatalf("msg = %v, want coupon issue conditions not matched", got["msg"])
+	}
+	if got["code"] != int(codes.InvalidArgument) {
+		t.Fatalf("code = %v, want %d", got["code"], codes.InvalidArgument)
+	}
+}
+
+func TestGRPCErrorToResponseHidesNonStatusError(t *testing.T) {
+	got := grpcErrorToResponse(errors.New("connection reset by peer"))
 
 	if got["msg"] != "internal server error" {
 		t.Fatalf("msg = %v, want internal server error", got["msg"])
 	}
-	if got["code"] != int(codes.InvalidArgument) {
-		t.Fatalf("code = %v, want %d", got["code"], codes.InvalidArgument)
+	if got["code"] != 500 {
+		t.Fatalf("code = %v, want 500", got["code"])
 	}
 }
 
@@ -218,6 +231,21 @@ func TestConnectInstanceGuardSuppressesDuplicateInFlightAttempts(t *testing.T) {
 	gw.finishConnectInstance(key)
 	if _, ok := gw.beginConnectInstance("billing-service", "billing-1"); !ok {
 		t.Fatal("connect attempt should be allowed after previous attempt finishes")
+	}
+}
+
+func TestProxyLookupDebugStateReportsEmptyPoolAndMissingDiscovery(t *testing.T) {
+	gw := &EtcdGateway{connPool: NewConnectionPool()}
+
+	got := gw.proxyLookupDebugState("auth")
+	for _, want := range []string{
+		"service=auth",
+		"pool=missing",
+		"discovery=disabled",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("debug state = %q, want to contain %q", got, want)
+		}
 	}
 }
 

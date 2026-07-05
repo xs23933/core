@@ -231,7 +231,11 @@ func grpcErrorToResponse(err error) core.Map {
 	}
 
 	code := int(st.Code())
-	return core.Map{"code": code, "msg": "internal server error"}
+	msg := st.Message()
+	if msg == "" {
+		msg = "internal server error"
+	}
+	return core.Map{"code": code, "msg": msg}
 }
 
 func NewEtcdGateway(app *core.Core, conf ...*Config) (*EtcdGateway, error) {
@@ -480,6 +484,7 @@ func (gw *EtcdGateway) removeInstance(serviceName, instanceID string) {
 	gw.removeHTTPInstance(serviceName, instanceID)
 	pool := gw.connPool.Get(serviceName)
 	if pool == nil {
+		core.Warn("[Gateway] instance %s/%s removed from etcd but proxy pool is missing", serviceName, instanceID)
 		return
 	}
 
@@ -489,7 +494,7 @@ func (gw *EtcdGateway) removeInstance(serviceName, instanceID string) {
 	// 如果没有实例了，移除整个池
 	if pool.Size() == 0 {
 		gw.connPool.Remove(serviceName)
-		core.D("[Gateway] service %s fully disconnected", serviceName)
+		core.Warn("[Gateway] service %s fully disconnected after removing instance %s", serviceName, instanceID)
 	}
 }
 
@@ -499,13 +504,19 @@ func (gw *EtcdGateway) watchEtcdServices(startRev int64) {
 	if startRev > 0 {
 		opts = append(opts, clientv3.WithRev(startRev))
 	}
+	core.Info("[Gateway] watching etcd services from revision %d", startRev)
 	watchChan := gw.etcdCli.Watch(gw.watchCtx, "/services/", opts...)
 
 	for resp := range watchChan {
+		if err := resp.Err(); err != nil {
+			core.Warn("[Gateway] etcd service watch error at revision %d: %v", resp.Header.GetRevision(), err)
+			continue
+		}
 		for _, ev := range resp.Events {
 			key := string(ev.Kv.Key)
 			serviceName, instanceID, ok := parseServiceKey(key)
 			if !ok {
+				core.Warn("[Gateway] ignore invalid service key from etcd watch: %s", key)
 				continue
 			}
 
@@ -513,13 +524,14 @@ func (gw *EtcdGateway) watchEtcdServices(startRev int64) {
 			case clientv3.EventTypePut:
 				info, err := parseServiceInstance(ev.Kv.Value)
 				if err != nil {
+					core.Warn("[Gateway] ignore invalid service instance %s: %v", key, err)
 					continue
 				}
 				if info.ID == "" {
 					info.ID = instanceID
 				}
 				gw.addHTTPInstance(serviceName, info.ID, info.HTTPAddr())
-				// core.D("[Gateway] watch: %s/%s registered at %s", serviceName, info.ID, info.Addr)
+				core.Info("[Gateway] watch: %s/%s registered at %s", serviceName, info.ID, info.Addr)
 
 				if key, ok := gw.beginConnectInstance(serviceName, info.ID); ok {
 					go func() {
@@ -534,6 +546,11 @@ func (gw *EtcdGateway) watchEtcdServices(startRev int64) {
 			}
 		}
 	}
+	if gw.watchCtx.Err() != nil {
+		core.D("[Gateway] etcd service watch stopped: %v", gw.watchCtx.Err())
+		return
+	}
+	core.Warn("[Gateway] etcd service watch stopped unexpectedly at revision %d", startRev)
 }
 
 // autoRegisterRoutes 自动为 gRPC 方法注册 HTTP 路由，同时清理已删除方法的旧路由
@@ -773,7 +790,8 @@ func (gw *EtcdGateway) createProxyHandler(route *Route) core.HandlerFunc {
 	return func(ctx core.Ctx) error {
 		proxy := gw.doGetProxy(route.ServiceName)
 		if proxy == nil {
-			core.Erro("[Gateway] proxy not available for service: %s", route.ServiceName)
+			core.Erro("[Gateway] proxy not available for service: %s route=%s %s grpc=%s state={%s}",
+				route.ServiceName, ctx.Method(), ctx.Path(), route.GRPCMethod, gw.proxyLookupDebugState(route.ServiceName))
 			return ctx.Status(http.StatusServiceUnavailable).JSON(core.Map{
 				"code":    503,
 				"message": fmt.Sprintf("service %s unavailable", route.ServiceName),
@@ -931,10 +949,12 @@ func (gw *EtcdGateway) doGetProxy(serviceName string) *ReflectionProxy {
 
 	// 池为空，尝试通过 EtcdDiscovery 发现
 	if gw.app.EtcdDiscovery == nil {
+		core.Warn("[Gateway] doGetProxy: %s has no proxy pool and EtcdDiscovery is disabled", serviceName)
 		return nil
 	}
 	services := gw.app.EtcdDiscovery.GetServices(serviceName)
 	if len(services) == 0 {
+		core.Warn("[Gateway] doGetProxy: %s has no proxy pool and EtcdDiscovery returned no instances", serviceName)
 		return nil
 	}
 
@@ -945,7 +965,10 @@ func (gw *EtcdGateway) doGetProxy(serviceName string) *ReflectionProxy {
 		if instanceID == "" {
 			instanceID = s.Addr // fallback
 		}
-		newPool.AddOrUpdateInstance(instanceID, s.Addr)
+		if _, _, err := newPool.AddOrUpdateInstance(instanceID, s.Addr); err != nil {
+			core.Warn("[Gateway] doGetProxy: connect discovered instance %s/%s at %s failed: %v",
+				serviceName, instanceID, s.Addr, err)
+		}
 	}
 
 	proxy := newPool.Get()
@@ -956,6 +979,34 @@ func (gw *EtcdGateway) doGetProxy(serviceName string) *ReflectionProxy {
 
 	gw.circuitBreakerRecordSuccess(serviceName)
 	return proxy
+}
+
+func (gw *EtcdGateway) proxyLookupDebugState(serviceName string) string {
+	parts := []string{"service=" + serviceName}
+	if value, ok := gw.circuitStates.Load(serviceName); ok {
+		cb := value.(*CircuitBreaker)
+		cb.mu.Lock()
+		parts = append(parts, fmt.Sprintf("circuit_state=%d", cb.state))
+		parts = append(parts, fmt.Sprintf("circuit_failures=%d", cb.failCount))
+		cb.mu.Unlock()
+	} else {
+		parts = append(parts, "circuit_state=absent")
+	}
+
+	if gw.connPool == nil {
+		parts = append(parts, "pool=disabled")
+	} else if pool := gw.connPool.Get(serviceName); pool == nil {
+		parts = append(parts, "pool=missing")
+	} else {
+		parts = append(parts, fmt.Sprintf("pool_instances=%d", pool.Size()))
+	}
+
+	if gw.app == nil || gw.app.EtcdDiscovery == nil {
+		parts = append(parts, "discovery=disabled")
+	} else {
+		parts = append(parts, fmt.Sprintf("discovery_instances=%d", len(gw.app.EtcdDiscovery.GetServices(serviceName))))
+	}
+	return strings.Join(parts, " ")
 }
 
 func (gw *EtcdGateway) setupAdminAPI() {

@@ -694,9 +694,18 @@ func main() {
         panic(err)
     }
 
-    app.Listen(":8080")
+app.Listen(":8080")
 }
 ```
+
+当请求返回 `service <name> unavailable` 时，优先看 Gateway 日志中的 `state={...}` 诊断字段：
+
+- `pool=missing` 或 `pool_instances=0`：网关当前没有可用的 gRPC proxy 连接池。
+- `discovery=disabled`：网关没有启用 `EnableEtcdDiscovery`，无法 fallback 读取服务发现快照。
+- `discovery_instances=0`：fallback discovery 中也没有该服务实例，通常需要检查业务服务是否仍在 `/services/<service_name>/` 下注册。
+- `circuit_state=1`：该服务 proxy 连续失败后进入熔断冷却期。
+
+休眠、网络切换或 etcd 短暂不可用后，还应检查 Gateway 是否输出了 `etcd service watch error`、`etcd service watch stopped unexpectedly`、`watch: <service>/<id> deregistered` 和后续 `watch: <service>/<id> registered`。如果只看到注销没有看到重新注册，问题更接近 Gateway watch 或服务注册续约链路；如果重新注册存在但仍不可用，则继续看 `connect discovered instance` 或 `connect instance` 的连接错误。
 
 网关内置本地管理接口，仅允许 loopback 地址访问：
 
