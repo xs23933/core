@@ -170,15 +170,41 @@ gateway:
 | `PutProfile` | `PUT` | `/v1/auth/user/profile` |
 | `DeleteSession` | `DELETE` | `/v1/auth/user/session` |
 | `GetUserById` | `GET` | `/v1/auth/user/:id` |
+| `PostReward_Claims` | `POST` | `/v1/vip/reward-claims` |
+| `PostBenefitConfigs` | `POST` | `/v1/vip/benefit/configs` |
 
-转换规则：
+### 完整转换算法
 
-- proto package `v1.auth` 转成 `/v1/auth`。
-- service `v1.auth.UserService` 去掉 `Service` 后缀，转成 `/user`。
-- 方法名前缀 `Post/Get/Put/Delete` 转成 HTTP method。
-- 方法名剩余部分按 CamelCase 拆路径。
-- `By` 转成路径参数标记 `:`。
-- 缩写使用 `Id`，避免 `ID` 被拆成 `/i/d`。
+按以下步骤依次处理，每一步的输入是上一步的输出：
+
+1. **提取 HTTP 方法**：检查方法名是否以 `Post`/`Get`/`Put`/`Delete` 开头，若是则剥离此前缀作为 HTTP method，剩余部分进入下一步。若不匹配任何前缀，HTTP method 默认为 `POST`。
+
+2. **转换 proto package 为路径前缀**：将 proto package 中的 `.` 替换为 `/`，例如 `v1.auth` → `/v1/auth`。
+
+3. **转换 service 名为路径段**：取 service 全名（如 `v1.auth.UserService`）的最后一段，去掉 `Service` 后缀并转为全小写，例如 → `/user`。
+
+4. **转换方法名剩余部分为路径段**（核心规则）：
+   - **CamelCase 边界**：每个大写字母（首字符除外）前插入 `/`，并将该大写字母转为小写。例如 `BenefitConfigs` → `benefit/configs`。
+   - **下划线 `_`**：一律转换为连字符 `-`，其后紧跟的大写字母同时转为小写。例如 `Reward_Claims` → `reward-claims`。
+   - **注意**：下划线 **不会** 被转换为路径分隔符 `/`。`_` → `-`，不是 `_` → `/`。
+
+5. **处理 `By` 关键字**：将步骤 4 结果中的 `by`（及其后可能存在的 `/`）替换为 `:`，形成路径参数标记。例如 `user/by/id` → `user/:id`。
+
+6. **拼接最终路径**：`{package路径}/{service名}/{方法路径}`。
+
+### 命名约定
+
+- 方法名中的 `_` 用于连接语义相关的词，对应 HTTP 路径中的 `-`（连字符），**不对应** `/`（路径分隔符）。
+- 需要路径分隔符时，使用 CamelCase 大写字母边界。
+- 缩写使用 `Id` 而非 `ID`，避免 `ID` 被按 CamelCase 拆成 `/i/d`。
+
+### 常见错误示例
+
+| 错误写法 | 错误生成的路径 | 正确写法 | 正确路径 | 错误原因 |
+| -------- | -------------- | -------- | -------- | -------- |
+| `rpc PostReward_Claims(...)` | `/reward/claims` | 同上 | `/reward-claims` | 将 `_` 误当作路径分隔符 `/`，应转换为 `-` |
+| `rpc PostBenefitConfigs(...)` | `/configs/benefit` | 同上 | `/benefit/configs` | CamelCase 拆分后顺序颠倒，`Benefit` 在前、`Configs` 在后 |
+| `rpc GetUserByID(...)` | `/user/:id` | `rpc GetUserById(...)` | `/user/:id` | 使用 `ID` 全大写会被拆成 `/i/d`，应使用 `Id` |
 
 ## 5. HTTP 请求映射
 
