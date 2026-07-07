@@ -27,6 +27,17 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+func HeaderMap(headers http.Header) map[string]string {
+	result := make(map[string]string, len(headers))
+	for key, values := range headers {
+		if key == "" || len(values) == 0 {
+			continue
+		}
+		result[strings.ToLower(key)] = strings.Join(values, ",")
+	}
+	return result
+}
+
 func IsNumeric(s string) bool {
 	for _, c := range s {
 		if c < '0' || c > '9' {

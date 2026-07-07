@@ -1,12 +1,14 @@
 package gateway
 
 import (
+	"context"
 	"encoding/base64"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -15,6 +17,20 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
+
+type capturedRoutePut struct {
+	key   string
+	value any
+}
+
+type captureRouteStore struct {
+	puts []capturedRoutePut
+}
+
+func (s *captureRouteStore) Put(_ context.Context, key string, value any) error {
+	s.puts = append(s.puts, capturedRoutePut{key: key, value: value})
+	return nil
+}
 
 func TestGatewayConnectRetryDelayCapsAtFiveSeconds(t *testing.T) {
 	tests := []struct {
@@ -135,6 +151,105 @@ func TestAppendGatewayRequestMetadataOverridesBodyFields(t *testing.T) {
 	gotHeaders := reqBody["headers"].(map[string]string)
 	if gotHeaders["signature"] != "real" {
 		t.Fatalf("signature header = %q, want real", gotHeaders["signature"])
+	}
+}
+
+func TestPublishHTTPRouteUsesStableKey(t *testing.T) {
+	store := &captureRouteStore{}
+	route := &Route{
+		Method:       http.MethodGet,
+		Path:         "/trace.js",
+		ServiceName:  "analytics",
+		UpstreamPath: "/trace.js",
+	}
+
+	if err := publishHTTPRoute(context.Background(), store, "/gateway/routes/", route); err != nil {
+		t.Fatalf("first publish: %v", err)
+	}
+	if err := publishHTTPRoute(context.Background(), store, "/gateway/routes/", route); err != nil {
+		t.Fatalf("second publish: %v", err)
+	}
+
+	if len(store.puts) != 2 {
+		t.Fatalf("puts = %d, want 2", len(store.puts))
+	}
+	if store.puts[0].key == "" || store.puts[0].key != store.puts[1].key {
+		t.Fatalf("route keys = %q, %q; want same non-empty key", store.puts[0].key, store.puts[1].key)
+	}
+}
+
+func TestHTTPRouteRegisteredButMissingInstanceReturnsUnavailable(t *testing.T) {
+	app := core.New()
+	gw := &EtcdGateway{}
+	gw.app = app
+	gw.connPool = NewConnectionPool()
+	gw.storeRoutes(make(map[string]*Route))
+	gw.storeHTTPInstances(make(map[string]httpServiceInstances))
+	gw.storeHTTPIndexes(make(map[string]*atomic.Uint64))
+
+	gw.addOrUpdateRoute(&Route{
+		Protocol:     RouteProtocolHTTP,
+		Method:       http.MethodGet,
+		Path:         "/trace.js",
+		ServiceName:  "analytics",
+		UpstreamPath: "/trace.js",
+		Enabled:      true,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/trace.js", nil)
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503; route should match before upstream lookup", rec.Code)
+	}
+}
+
+func TestRemovingOldRouteIDKeepsReplacementForSameMethodPath(t *testing.T) {
+	app := core.New()
+	gw := &EtcdGateway{}
+	gw.app = app
+	gw.connPool = NewConnectionPool()
+	gw.storeRoutes(make(map[string]*Route))
+	gw.storeHTTPInstances(make(map[string]httpServiceInstances))
+	gw.storeHTTPIndexes(make(map[string]*atomic.Uint64))
+
+	gw.addOrUpdateRoute(&Route{
+		ID:           "old-trace-route",
+		Protocol:     RouteProtocolHTTP,
+		Method:       http.MethodGet,
+		Path:         "/trace.js",
+		ServiceName:  "analytics",
+		UpstreamPath: "/old-trace.js",
+		Enabled:      true,
+	})
+	gw.addOrUpdateRoute(&Route{
+		ID:           "new-trace-route",
+		Protocol:     RouteProtocolHTTP,
+		Method:       http.MethodGet,
+		Path:         "/trace.js",
+		ServiceName:  "analytics",
+		UpstreamPath: "/trace.js",
+		Enabled:      true,
+	})
+
+	gw.removeRouteByID("old-trace-route")
+
+	req := httptest.NewRequest(http.MethodGet, "/trace.js", nil)
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503; replacement route should remain matched", rec.Code)
+	}
+}
+
+func TestNextRouteWatchRevisionStartsAfterLoadedSnapshot(t *testing.T) {
+	if got := nextRouteWatchRevision(42); got != 43 {
+		t.Fatalf("nextRouteWatchRevision(42) = %d, want 43", got)
+	}
+	if got := nextRouteWatchRevision(0); got != 0 {
+		t.Fatalf("nextRouteWatchRevision(0) = %d, want 0", got)
 	}
 }
 

@@ -22,6 +22,8 @@ const (
 	RouteProtocolHTTP RouteProtocol = "http"
 )
 
+const httpRouteRepublishInterval = 30 * time.Second
+
 type routeStore interface {
 	Put(ctx context.Context, key string, value any) error
 }
@@ -53,10 +55,19 @@ func RegisterHTTPRoute(app *core.Core, route *Route, routePrefix ...string) erro
 	if len(routePrefix) > 0 && routePrefix[0] != "" {
 		prefix = routePrefix[0]
 	}
-	return registerHTTPRoute(context.Background(), discoveryRouteStore{app: app}, prefix, route)
+	store := discoveryRouteStore{app: app}
+	if err := publishHTTPRoute(context.Background(), store, prefix, route); err != nil {
+		return err
+	}
+	startHTTPRouteRepublisher(app, store, prefix, route)
+	return nil
 }
 
 func registerHTTPRoute(ctx context.Context, store routeStore, prefix string, route *Route) error {
+	return publishHTTPRoute(ctx, store, prefix, route)
+}
+
+func publishHTTPRoute(ctx context.Context, store routeStore, prefix string, route *Route) error {
 	if store == nil {
 		return errors.New("gateway: route store is nil")
 	}
@@ -69,6 +80,33 @@ func registerHTTPRoute(ctx context.Context, store routeStore, prefix string, rou
 	}
 	prefix = strings.TrimSuffix(prefix, "/") + "/"
 	return store.Put(ctx, prefix+route.ID, route)
+}
+
+func startHTTPRouteRepublisher(app *core.Core, store routeStore, prefix string, route *Route) {
+	if app == nil || store == nil || route == nil {
+		return
+	}
+	routeCopy := *route
+	if route.Headers != nil {
+		routeCopy.Headers = make(map[string]string, len(route.Headers))
+		for key, value := range route.Headers {
+			routeCopy.Headers[key] = value
+		}
+	}
+	app.ErrGroup().Go(func() error {
+		ticker := time.NewTicker(httpRouteRepublishInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-app.Ctx.Done():
+				return nil
+			case <-ticker.C:
+				if err := publishHTTPRoute(app.Ctx, store, prefix, &routeCopy); err != nil {
+					core.Warn("[Gateway] republish HTTP route %s %s failed: %v", routeCopy.Method, routeCopy.Path, err)
+				}
+			}
+		}
+	})
 }
 
 func prepareRoute(route *Route) error {

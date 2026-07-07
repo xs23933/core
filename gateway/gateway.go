@@ -280,14 +280,15 @@ func NewEtcdGateway(app *core.Core, conf ...*Config) (*EtcdGateway, error) {
 	gw.storeHTTPInstances(make(map[string]httpServiceInstances))
 	gw.storeHTTPIndexes(make(map[string]*atomic.Uint64))
 
-	if err := gw.loadAllRoutes(); err != nil {
+	routeWatchRevision, err := gw.loadAllRoutes()
+	if err != nil {
 		core.D("[Gateway] load all routes failed: %v", err)
 	}
 
 	gw.discoverAndConnectServices()
 
 	app.ErrGroup().Go(func() error {
-		gw.watchRoutes()
+		gw.watchRoutes(routeWatchRevision)
 		return nil
 	})
 
@@ -682,14 +683,14 @@ func camelToKebab(s string) string {
 	return string(result)
 }
 
-func (gw *EtcdGateway) loadAllRoutes() error {
+func (gw *EtcdGateway) loadAllRoutes() (int64, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	resp, err := gw.etcdCli.Get(ctx, gw.prefix, clientv3.WithPrefix())
 	if err != nil {
 		core.Erro("[Gateway] load routes failed: %v", err)
-		return err
+		return 0, err
 	}
 
 	for _, kv := range resp.Kvs {
@@ -705,12 +706,27 @@ func (gw *EtcdGateway) loadAllRoutes() error {
 			gw.addOrUpdateRoute(&route)
 		}
 	}
-	return nil
+	return nextRouteWatchRevision(resp.Header.GetRevision()), nil
 }
 
-func (gw *EtcdGateway) watchRoutes() {
-	watchChan := gw.etcdCli.Watch(gw.watchCtx, gw.prefix, clientv3.WithPrefix())
+func nextRouteWatchRevision(loadedRevision int64) int64 {
+	if loadedRevision <= 0 {
+		return 0
+	}
+	return loadedRevision + 1
+}
+
+func (gw *EtcdGateway) watchRoutes(startRev int64) {
+	opts := []clientv3.OpOption{clientv3.WithPrefix()}
+	if startRev > 0 {
+		opts = append(opts, clientv3.WithRev(startRev))
+	}
+	watchChan := gw.etcdCli.Watch(gw.watchCtx, gw.prefix, opts...)
 	for resp := range watchChan {
+		if err := resp.Err(); err != nil {
+			core.Warn("[Gateway] route watch error at revision %d: %v", resp.Header.GetRevision(), err)
+			continue
+		}
 		for _, ev := range resp.Events {
 			switch ev.Type {
 			case clientv3.EventTypePut:
@@ -760,9 +776,31 @@ func (gw *EtcdGateway) removeRouteByID(routeID string) {
 		return
 	}
 	nextRoutes := copyRoutes(routes, 0)
-	gw.unregisterRoute(route)
 	delete(nextRoutes, routeID)
+	if replacement := findRouteReplacement(nextRoutes, route); replacement != nil {
+		gw.unregisterRoute(route)
+		gw.registerRoute(replacement)
+	} else {
+		gw.unregisterRoute(route)
+	}
 	gw.storeRoutes(nextRoutes)
+}
+
+func findRouteReplacement(routes map[string]*Route, removed *Route) *Route {
+	if removed == nil {
+		return nil
+	}
+	method := strings.ToUpper(removed.Method)
+	path := strings.TrimSuffix(removed.Path, "/")
+	for _, route := range routes {
+		if route == nil {
+			continue
+		}
+		if strings.ToUpper(route.Method) == method && strings.TrimSuffix(route.Path, "/") == path {
+			return route
+		}
+	}
+	return nil
 }
 
 func (gw *EtcdGateway) registerRoute(route *Route) {
@@ -894,19 +932,8 @@ func appendGatewayRequestMetadata(reqBody core.Map, headers http.Header, rawBody
 		reqBody["raw_body"] = base64.StdEncoding.EncodeToString(rawBody)
 	}
 	if len(headers) > 0 {
-		reqBody["headers"] = headerMap(headers)
+		reqBody["headers"] = core.HeaderMap(headers)
 	}
-}
-
-func headerMap(headers http.Header) map[string]string {
-	result := make(map[string]string, len(headers))
-	for key, values := range headers {
-		if key == "" || len(values) == 0 {
-			continue
-		}
-		result[strings.ToLower(key)] = strings.Join(values, ",")
-	}
-	return result
 }
 
 func appendHTTPHeadersToMetadata(md metadata.MD, headers http.Header) {
