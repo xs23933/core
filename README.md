@@ -1340,7 +1340,37 @@ status := res.StatusCode
 body := res.Body
 ```
 
-### 6. Cookie 开关
+只需要响应结果，不需要 decode 到 `out` 时可以省略第二个参数：
+
+```go
+res, err := api.Get("/session").Result(context.Background())
+if err != nil {
+    return err
+}
+
+token := res.Header.Get("X-Token")
+rawBody := res.Body
+```
+
+### 6. 调试请求和响应
+
+排查外部 API 问题时，可以显式开启 `Debug(true)`。每次请求结束时会打印方法、URL、最终请求 Header、请求 body、响应状态、响应 Header、响应 body 和错误信息。响应 body 如果是 `Content-Encoding: gzip` 会先解压再输出。
+
+```go
+api := fetch.New("https://api.example.com").
+    Header("X-App", "core-service").
+    Debug(true)
+
+var out UserVO
+_, err := api.Post("/users").
+    Header("X-Request-ID", "req-123").
+    JSON(map[string]any{"name": "tom"}).
+    Result(context.Background(), &out)
+```
+
+调试日志会包含请求和响应 body，生产环境只应在定位问题时短期开启。
+
+### 7. Cookie 开关
 
 默认不保存 Cookie，避免隐式状态。需要模拟浏览器会话时显式启用：
 

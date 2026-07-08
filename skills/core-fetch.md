@@ -184,7 +184,37 @@ status := res.StatusCode
 rawBody := res.Body
 ```
 
-## 8. Cookie
+只需要 `FetchResult`，不需要 decode 到 `out` 时可以省略第二个参数：
+
+```go
+res, err := api.Get("/session").Result(context.Background())
+if err != nil {
+    return err
+}
+
+token := res.Header.Get("X-Token")
+rawBody := res.Body
+```
+
+## 8. Debug 调试输出
+
+排查 API 调用时可以显式开启 `Debug(true)`。请求结束时会打印方法、URL、最终请求 Header、请求 body、响应状态、响应 Header、响应 body 和错误信息。响应 body 如果是 `Content-Encoding: gzip` 会先解压再输出。
+
+```go
+api := fetch.New("https://api.example.com").
+    Header("X-App", "core-service").
+    Debug(true)
+
+var out UserVO
+_, err := api.Post("/users").
+    Header("X-Request-ID", "req-123").
+    JSON(map[string]any{"name": "tom"}).
+    Result(context.Background(), &out)
+```
+
+调试日志会包含请求和响应 body，生产环境只应在定位问题时短期开启。
+
+## 9. Cookie
 
 默认不保存 Cookie。需要会话状态时显式开启：
 
@@ -198,7 +228,7 @@ api := fetch.New("https://api.example.com").UseCookie(true)
 api.UseCookie(false)
 ```
 
-## 9. 生成代码规则
+## 10. 生成代码规则
 
 推荐：
 
@@ -207,6 +237,7 @@ api.UseCookie(false)
 - 每次请求独有的 request id、trace id 放在单次 Header。
 - 签名逻辑放在 `Before`。
 - 统一响应解包放在 `After`。
+- 临时排查外部 API 问题时使用 `Debug(true)`，结束后关闭。
 - 需要读取 `X-Token` 时使用 `Result` 或 `DoXxx` 返回的 `FetchResult`。
 
 禁止：

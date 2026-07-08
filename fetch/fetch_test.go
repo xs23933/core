@@ -1,6 +1,8 @@
 package fetch
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -24,6 +26,19 @@ func fetchResponse(status int, body string) *http.Response {
 		Header:     make(http.Header),
 		Body:       io.NopCloser(strings.NewReader(body)),
 	}
+}
+
+func fetchGzipResponse(status int, body string) *http.Response {
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	_, _ = gz.Write([]byte(body))
+	_ = gz.Close()
+
+	resp := fetchResponse(status, "")
+	resp.Header.Set("Content-Encoding", "gzip")
+	resp.Header.Set("Content-Type", "application/json")
+	resp.Body = io.NopCloser(bytes.NewReader(buf.Bytes()))
+	return resp
 }
 
 func testSHA256(data []byte) string {
@@ -170,6 +185,121 @@ func TestFetchTransportErrorWithoutResponseDoesNotPanic(t *testing.T) {
 	}
 }
 
+func TestFetchDebugInfoIncludesRequestAndResponse(t *testing.T) {
+	var debugLog string
+	client := New("https://api.example.com").
+		Client(&http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			resp := fetchResponse(http.StatusCreated, `{"ok":true}`)
+			resp.Header.Set("X-Result", "created")
+			return resp, nil
+		})}).
+		Header("X-App", "core").
+		Before(func(ctx context.Context, req *http.Request, body []byte) error {
+			req.Header.Set("X-Sign", testSHA256(body))
+			return nil
+		}).
+		Debug(true)
+	client.debugLog = func(msg string) {
+		debugLog = msg
+	}
+
+	var out struct {
+		OK bool `json:"ok"`
+	}
+	res, err := client.Post("/debug").
+		Header("X-Trace-ID", "trace-1").
+		JSON(map[string]any{"user": "song"}).
+		Result(context.Background(), &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.StatusCode != http.StatusCreated || !out.OK {
+		t.Fatalf("result = %d/%v, want 201/ok", res.StatusCode, out.OK)
+	}
+
+	for _, want := range []string{
+		"POST https://api.example.com/debug",
+		"Request Headers:",
+		"X-App: core",
+		"X-Trace-Id: trace-1",
+		"X-Sign: " + testSHA256([]byte(`{"user":"song"}`)),
+		`Request Body: {"user":"song"}`,
+		"Response Status: 201 Created",
+		"Response Headers:",
+		"X-Result: created",
+		`Response Body: {"ok":true}`,
+	} {
+		if !strings.Contains(debugLog, want) {
+			t.Fatalf("debug log missing %q in:\n%s", want, debugLog)
+		}
+	}
+}
+
+func TestFetchDebugInfoIncludesTransportError(t *testing.T) {
+	transportErr := errors.New("dial failed")
+	var debugLog string
+	client := New("https://api.example.com").
+		Client(&http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return nil, transportErr
+		})}).
+		Debug(true)
+	client.debugLog = func(msg string) {
+		debugLog = msg
+	}
+
+	_, err := client.Get("/down").Result(context.Background(), nil)
+	if !errors.Is(err, transportErr) {
+		t.Fatalf("error = %v, want transport error", err)
+	}
+
+	for _, want := range []string{
+		"GET https://api.example.com/down",
+		"Request Headers:",
+		"Request Body:",
+		"Error:",
+		"dial failed",
+	} {
+		if !strings.Contains(debugLog, want) {
+			t.Fatalf("debug log missing %q in:\n%s", want, debugLog)
+		}
+	}
+	if strings.Contains(debugLog, "Response Status:") {
+		t.Fatalf("debug log includes response for transport error:\n%s", debugLog)
+	}
+}
+
+func TestFetchDecodesGzipResponseBeforeResultAndDebug(t *testing.T) {
+	var debugLog string
+	client := New("https://api.example.com").
+		Client(&http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return fetchGzipResponse(http.StatusOK, `{"ok":true}`), nil
+		})}).
+		Debug(true)
+	client.debugLog = func(msg string) {
+		debugLog = msg
+	}
+
+	var out struct {
+		OK bool `json:"ok"`
+	}
+	res, err := client.Get("/gzip").Result(context.Background(), &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !out.OK {
+		t.Fatalf("decoded OK = false, want true")
+	}
+	if string(res.Body) != `{"ok":true}` {
+		t.Fatalf("result body = %q, want decompressed JSON", string(res.Body))
+	}
+	if !strings.Contains(debugLog, `Response Body: {"ok":true}`) {
+		t.Fatalf("debug log missing decompressed body:\n%s", debugLog)
+	}
+	if strings.Contains(debugLog, "�") {
+		t.Fatalf("debug log contains compressed bytes:\n%s", debugLog)
+	}
+}
+
 func TestFetchResultExposesResponseHeaders(t *testing.T) {
 	client := New("https://api.example.com").
 		Client(&http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
@@ -187,6 +317,26 @@ func TestFetchResultExposesResponseHeaders(t *testing.T) {
 	}
 	if !out.OK {
 		t.Fatalf("decoded OK = false, want true")
+	}
+	if got := res.Header.Get("X-Token"); got != "token-123" {
+		t.Fatalf("x-token = %q, want token-123", got)
+	}
+	if res.StatusCode != http.StatusOK || string(res.Body) != `{"ok":true}` {
+		t.Fatalf("result status/body = %d/%q, want 200/body", res.StatusCode, string(res.Body))
+	}
+}
+
+func TestFetchResultCanReturnMetadataWithoutDecodeTarget(t *testing.T) {
+	client := New("https://api.example.com").
+		Client(&http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			resp := fetchResponse(http.StatusOK, `{"ok":true}`)
+			resp.Header.Set("X-Token", "token-123")
+			return resp, nil
+		})})
+
+	res, err := client.Get("/token").Result(context.Background())
+	if err != nil {
+		t.Fatal(err)
 	}
 	if got := res.Header.Get("X-Token"); got != "token-123" {
 		t.Fatalf("x-token = %q, want token-123", got)

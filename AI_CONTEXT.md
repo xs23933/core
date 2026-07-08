@@ -462,7 +462,9 @@ api := fetch.New("https://api.example.com").
 
 * `Do(ctx, &out)` 只关心 decode。
 * `Result(ctx, &out)` 返回 `*fetch.FetchResult`，可读取 `StatusCode/Header/Body`。
+* 只需要 `FetchResult` 不需要 decode 时，使用 `Result(ctx)`。
 * 非 2xx 返回 `*fetch.FetchError`，其中也包含 `Header/Body`，例如错误响应中的 `X-Token`。
+* `Debug(true)` 会在请求结束时打印方法、URL、最终请求 Header、请求 body、响应状态、响应 Header、响应 body 和错误信息；gzip 响应 body 会先解压再输出；只在排查问题时短期开启。
 
 禁止：
 

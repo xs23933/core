@@ -2,12 +2,14 @@ package fetch
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -32,12 +34,14 @@ const (
 // call creates an independent FetchRequest, so per-request headers, query
 // values, and body data do not leak into later requests.
 type Fetch struct {
-	baseURL string
-	mu      sync.Mutex
-	client  atomic.Value // *http.Client
-	headers atomic.Value // http.Header, copy-on-write
-	before  atomic.Value // []FetchBeforeHook, copy-on-write
-	after   atomic.Value // []FetchAfterHook, copy-on-write
+	baseURL  string
+	mu       sync.Mutex
+	client   atomic.Value // *http.Client
+	headers  atomic.Value // http.Header, copy-on-write
+	before   atomic.Value // []FetchBeforeHook, copy-on-write
+	after    atomic.Value // []FetchAfterHook, copy-on-write
+	debug    atomic.Bool
+	debugLog func(string)
 }
 
 // FetchRequest is one request built from a reusable Fetch client.
@@ -57,9 +61,9 @@ type FetchRequest struct {
 
 // FetchResult contains the response metadata and the final response body.
 //
-// Body is the body after all After hooks have run. Header is cloned from the
-// http.Response so callers can safely read values such as X-Token after Do/Result
-// returns.
+// Body is transparently gzip-decoded when needed and then passed through all
+// After hooks. Header is cloned from the http.Response so callers can safely
+// read values such as X-Token after Do/Result returns.
 type FetchResult struct {
 	StatusCode int
 	Status     string
@@ -98,6 +102,7 @@ func New(baseURL ...string) *Fetch {
 	f.storeHeaders(make(http.Header))
 	f.storeBefore([]FetchBeforeHook{})
 	f.storeAfter([]FetchAfterHook{})
+	f.debugLog = defaultFetchDebugLog
 	return f
 }
 
@@ -177,6 +182,15 @@ func (f *Fetch) UseCookie(enabled bool) *Fetch {
 		client.Jar = nil
 	}
 	f.client.Store(client)
+	return f
+}
+
+// Debug enables or disables verbose request/response logging for this Fetch client.
+//
+// When enabled, each request prints method, URL, final request headers, request
+// body, response status, response headers, response body, and any returned error.
+func (f *Fetch) Debug(enabled bool) *Fetch {
+	f.debug.Store(enabled)
 	return f
 }
 
@@ -358,14 +372,18 @@ func (r *FetchRequest) Do(ctx context.Context, out any) error {
 	return err
 }
 
-// Result sends the request, decodes the response body into out, and returns
-// response metadata.
+// Result sends the request and returns response metadata.
 //
-// Supported out values are nil, *[]byte, *string, or a JSON target such as a
-// struct/map pointer. The returned Body is the final body after all After hooks.
-func (r *FetchRequest) Result(ctx context.Context, out any) (*FetchResult, error) {
+// Passing an optional out decodes the response body into it. Supported out
+// values are nil, *[]byte, *string, or a JSON target such as a struct/map
+// pointer. Omitting out skips decode and returns only FetchResult. The returned
+// Body is the final body after all After hooks.
+func (r *FetchRequest) Result(ctx context.Context, out ...any) (*FetchResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if len(out) > 1 {
+		return nil, fmt.Errorf("fetch: Result accepts at most one decode target")
 	}
 	if r.method == "" {
 		r.method = http.MethodGet
@@ -396,6 +414,7 @@ func (r *FetchRequest) Result(ctx context.Context, out any) (*FetchResult, error
 	}
 	for _, hook := range r.fetch.loadBefore() {
 		if err := hook(ctx, req, body); err != nil {
+			r.fetch.logDebug(req, body, nil, nil, err)
 			return nil, err
 		}
 	}
@@ -407,19 +426,22 @@ func (r *FetchRequest) Result(ctx context.Context, out any) (*FetchResult, error
 		} else {
 			core.D("%s %s: %v", r.method, reqURL, err)
 		}
+		r.fetch.logDebug(req, body, resp, nil, err)
 		return nil, err
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := readResponseBody(resp)
 	if err != nil {
 		core.D("failed to read response body: %v", err)
+		r.fetch.logDebug(req, body, resp, nil, err)
 		return nil, err
 	}
 	for _, hook := range r.fetch.loadAfter() {
 		respBody, err = hook(ctx, resp, respBody)
 		if err != nil {
 			core.D("err to hook response: %v", err)
+			r.fetch.logDebug(req, body, resp, respBody, err)
 			return nil, err
 		}
 	}
@@ -430,17 +452,23 @@ func (r *FetchRequest) Result(ctx context.Context, out any) (*FetchResult, error
 		Body:       append([]byte(nil), respBody...),
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return result, &FetchError{
+		err := &FetchError{
 			StatusCode: resp.StatusCode,
 			Status:     resp.Status,
 			Header:     result.Header,
 			Body:       result.Body,
 		}
-	}
-	if err := decodeFetchBody(respBody, out); err != nil {
-		core.D("decode Fetch Body err: %v", err)
+		r.fetch.logDebug(req, body, resp, respBody, err)
 		return result, err
 	}
+	if len(out) == 1 {
+		if err := decodeFetchBody(respBody, out[0]); err != nil {
+			core.D("decode Fetch Body err: %v", err)
+			r.fetch.logDebug(req, body, resp, respBody, err)
+			return result, err
+		}
+	}
+	r.fetch.logDebug(req, body, resp, respBody, nil)
 	return result, nil
 }
 
@@ -515,6 +543,120 @@ func (f *Fetch) loadAfter() []FetchAfterHook {
 
 func (f *Fetch) storeAfter(hooks []FetchAfterHook) {
 	f.after.Store(hooks)
+}
+
+func readResponseBody(resp *http.Response) ([]byte, error) {
+	if resp == nil || resp.Body == nil {
+		return nil, nil
+	}
+	reader := io.Reader(resp.Body)
+	if !resp.Uncompressed && hasContentEncoding(resp.Header, "gzip") {
+		gz, err := gzip.NewReader(resp.Body)
+		if err != nil {
+			return nil, err
+		}
+		defer gz.Close()
+		reader = gz
+	}
+	return io.ReadAll(reader)
+}
+
+func hasContentEncoding(headers http.Header, encoding string) bool {
+	for _, value := range headers.Values("Content-Encoding") {
+		for part := range strings.SplitSeq(value, ",") {
+			if strings.EqualFold(strings.TrimSpace(part), encoding) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (f *Fetch) logDebug(req *http.Request, reqBody []byte, resp *http.Response, respBody []byte, err error) {
+	if !f.debug.Load() {
+		return
+	}
+	log := f.debugLog
+	if log == nil {
+		log = defaultFetchDebugLog
+	}
+	log(formatFetchDebug(req, reqBody, resp, respBody, err))
+}
+
+func defaultFetchDebugLog(msg string) {
+	core.Log("%s", msg)
+}
+
+func formatFetchDebug(req *http.Request, reqBody []byte, resp *http.Response, respBody []byte, err error) string {
+	var b strings.Builder
+	b.WriteString("[fetch debug]\n")
+	if req != nil {
+		b.WriteString("Request: ")
+		b.WriteString(req.Method)
+		b.WriteByte(' ')
+		b.WriteString(req.URL.String())
+		b.WriteByte('\n')
+		b.WriteString("Request Headers:\n")
+		writeHeaderDebug(&b, req.Header)
+		b.WriteString("Request Body: ")
+		b.Write(reqBody)
+		b.WriteByte('\n')
+		b.WriteByte('\n')
+	}
+	if resp != nil {
+		b.WriteString("Response Status: ")
+		b.WriteString(formatResponseStatus(resp))
+		b.WriteByte('\n')
+		b.WriteString("Response Headers:\n")
+		writeHeaderDebug(&b, resp.Header)
+		b.WriteString("Response Body: ")
+		b.Write(respBody)
+		b.WriteByte('\n')
+		b.WriteByte('\n')
+	}
+	if err != nil {
+		b.WriteString("Error: ")
+		b.WriteString(err.Error())
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+func formatResponseStatus(resp *http.Response) string {
+	if resp == nil {
+		return ""
+	}
+	statusText := strings.TrimSpace(resp.Status)
+	codeText := fmt.Sprint(resp.StatusCode)
+	if statusText == "" || statusText == codeText {
+		if text := http.StatusText(resp.StatusCode); text != "" {
+			return codeText + " " + text
+		}
+		return codeText
+	}
+	if strings.HasPrefix(statusText, codeText+" ") {
+		return statusText
+	}
+	return codeText + " " + statusText
+}
+
+func writeHeaderDebug(b *strings.Builder, headers http.Header) {
+	if len(headers) == 0 {
+		return
+	}
+	keys := make([]string, 0, len(headers))
+	for k := range headers {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		for _, v := range headers[k] {
+			b.WriteString(k)
+			b.WriteString(": ")
+			b.WriteString(v)
+			b.WriteByte('\n')
+		}
+	}
 }
 
 func cloneHeader(src http.Header) http.Header {
