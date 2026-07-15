@@ -72,6 +72,38 @@ func TestGRPCServiceExcludedFromAutoRoutes(t *testing.T) {
 	}
 }
 
+func TestUserServicePutAutoRouteUsesServiceRoot(t *testing.T) {
+	method, path := grpcToHTTP("api.v1", "api.v1.UserService", "Put")
+	if method != http.MethodPut {
+		t.Fatalf("method = %q, want %q", method, http.MethodPut)
+	}
+
+	app := core.New()
+	gw := &EtcdGateway{app: app, connPool: NewConnectionPool()}
+	gw.storeRoutes(make(map[string]*Route))
+	gw.storeHTTPInstances(make(map[string]httpServiceInstances))
+	gw.storeHTTPIndexes(make(map[string]*atomic.Uint64))
+	route := &Route{
+		Protocol:    RouteProtocolGRPC,
+		Method:      method,
+		Path:        path,
+		ServiceName: "auth",
+		GRPCMethod:  "/api.v1.UserService/Put",
+		Enabled:     true,
+	}
+	gw.registerRoute(route)
+
+	if route.Path != "/api/v1/user" {
+		t.Fatalf("registered path = %q, want %q", route.Path, "/api/v1/user")
+	}
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/user", strings.NewReader(`{}`))
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d; normalized route should match", rec.Code, http.StatusServiceUnavailable)
+	}
+}
+
 func TestAppendHTTPHeadersToMetadataIncludesCustomHeaders(t *testing.T) {
 	headers := http.Header{}
 	headers.Add("X-Sign", "sig-1")
