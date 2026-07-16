@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/bytedance/sonic"
 	"gopkg.in/yaml.v3"
@@ -169,6 +170,47 @@ func (opt *Options) GetInt64(k string, def ...int64) int64 {
 		return def[0]
 	}
 	return 0
+}
+
+func (opt *Options) GetDuration(k string, def ...time.Duration) time.Duration {
+	val, ok := opt.getValue(k)
+	if ok {
+		switch v := val.(type) {
+		case time.Duration:
+			return v
+		case string:
+			if duration, err := time.ParseDuration(v); err == nil {
+				return duration
+			}
+		}
+	}
+	if len(def) > 0 {
+		return def[0]
+	}
+	return 0
+}
+
+func (opt *Options) getValue(k string) (any, bool) {
+	keys := strings.Split(k, ".")
+	current := *opt
+	for i, key := range keys {
+		val, ok := current[key]
+		if !ok {
+			return nil, false
+		}
+		if i == len(keys)-1 {
+			return val, true
+		}
+		switch next := val.(type) {
+		case Options:
+			current = next
+		case map[string]any:
+			current = Options(next)
+		default:
+			return nil, false
+		}
+	}
+	return nil, false
 }
 
 func (opt *Options) GetBool(k string, def ...bool) bool {
