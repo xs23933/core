@@ -14,3 +14,4 @@ private/
 darwin
 corectl
 corectl*
+.worktrees/
