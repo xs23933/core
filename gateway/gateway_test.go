@@ -1,9 +1,11 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -208,6 +210,100 @@ func TestBuildGRPCRequestBodyIncludesRawBodyAndHeaders(t *testing.T) {
 	}
 	if gotHeaders["x-sign"] != "sig-1,sig-2" {
 		t.Fatalf("x-sign header = %q, want sig-1,sig-2", gotHeaders["x-sign"])
+	}
+}
+
+func TestMergeGRPCRequestBodyPathParamsOverrideQuerySpoofing(t *testing.T) {
+	got := mergeGRPCRequestBody(
+		map[string]string{"action": "get"},
+		map[string][]string{"action": {"transferinout"}},
+		nil,
+	)
+
+	if got["action"] != "get" {
+		t.Fatalf("action = %v, want authoritative path value get", got["action"])
+	}
+}
+
+func TestMergeGRPCRequestBodyPathParamsOverrideJSONBodySpoofing(t *testing.T) {
+	got := mergeGRPCRequestBody(
+		map[string]string{"action": "get"},
+		nil,
+		core.Map{"action": "transferinout"},
+	)
+
+	if got["action"] != "get" {
+		t.Fatalf("action = %v, want authoritative path value get", got["action"])
+	}
+}
+
+func TestReadAndResetBodyEnforcesLimitAndPreservesExactBytes(t *testing.T) {
+	t.Run("boundary", func(t *testing.T) {
+		raw := []byte("{ \"amount\" : 1 }")
+		req := httptest.NewRequest(http.MethodPost, "/callback", bytes.NewReader(raw))
+
+		got, err := readAndResetBody(req, int64(len(raw)))
+		if err != nil {
+			t.Fatalf("read boundary body: %v", err)
+		}
+		if !bytes.Equal(got, raw) {
+			t.Fatalf("body = %q, want exact %q", got, raw)
+		}
+		reset, err := io.ReadAll(req.Body)
+		if err != nil {
+			t.Fatalf("read reset body: %v", err)
+		}
+		if !bytes.Equal(reset, raw) {
+			t.Fatalf("reset body = %q, want exact %q", reset, raw)
+		}
+	})
+
+	t.Run("over limit", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/callback", strings.NewReader("12345"))
+		_, err := readAndResetBody(req, 4)
+		if !errors.Is(err, errRequestBodyTooLarge) {
+			t.Fatalf("error = %v, want errRequestBodyTooLarge", err)
+		}
+	})
+}
+
+func TestGRPCProxyRejectsOversizedBodyWithStatusRequestEntityTooLarge(t *testing.T) {
+	app := core.New()
+	gw := &EtcdGateway{
+		app:      app,
+		config:   &Config{MaxRequestBodyBytes: 4},
+		connPool: NewConnectionPool(),
+	}
+	gw.storeHTTPInstances(make(map[string]httpServiceInstances))
+	gw.storeHTTPIndexes(make(map[string]*atomic.Uint64))
+	gw.registerRoute(&Route{
+		Protocol:    RouteProtocolGRPC,
+		Method:      http.MethodPost,
+		Path:        "/callback/:action",
+		ServiceName: "callback",
+		GRPCMethod:  "/callback.CashService/Post",
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/callback/get", strings.NewReader("12345"))
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusRequestEntityTooLarge)
+	}
+}
+
+func TestGatewayConfigRequestBodyLimitDefaultsAndPreservesExplicitValue(t *testing.T) {
+	config := &Config{}
+	applyGatewayConfigDefaults(config)
+	if config.MaxRequestBodyBytes != defaultMaxRequestBodyBytes {
+		t.Fatalf("default max request body bytes = %d, want %d", config.MaxRequestBodyBytes, defaultMaxRequestBodyBytes)
+	}
+
+	config = &Config{MaxRequestBodyBytes: 1024}
+	applyGatewayConfigDefaults(config)
+	if config.MaxRequestBodyBytes != 1024 {
+		t.Fatalf("explicit max request body bytes = %d, want 1024", config.MaxRequestBodyBytes)
 	}
 }
 

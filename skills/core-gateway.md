@@ -156,6 +156,8 @@ gRPC 微服务不需要调用 `RegisterHTTPRoute`。它只需在 `Listen` / `Run
 
 ```yaml
 gateway:
+  # Gateway 在读取和 Base64 编码前允许的请求体上限；默认 8 MiB。
+  max_request_body_bytes: 8388608
   grpc_service_excludes:
     - payment.provider.v1.PaymentProviderService
     - game.provider.v1.GameProviderService
@@ -217,6 +219,8 @@ gateway:
 - 路径参数：`/v1/auth/user/:id`
 - query 参数：`?expand=true`
 - JSON body：POST / PUT / DELETE 的请求体
+
+合并优先级固定为 `query < JSON body < path params`，真实路径参数最后覆盖同名 query/body 字段，禁止客户端伪造路由分派字段。非 GET 请求体在解析或写入 `raw_body` 前受 `gateway.max_request_body_bytes` 限制，未配置或配置为非正数时使用 8 MiB 默认值，超限返回 `413 Request Entity Too Large`。
 
 示例：
 

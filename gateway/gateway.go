@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -112,7 +113,12 @@ type Config struct {
 	RoutePrefix         string        `yaml:"route_prefix"`
 	HTTPAddr            string        `yaml:"http_addr"`
 	GRPCServiceExcludes []string      `yaml:"grpc_service_excludes"`
+	MaxRequestBodyBytes int64         `yaml:"max_request_body_bytes"`
 }
+
+const defaultMaxRequestBodyBytes int64 = 8 << 20
+
+var errRequestBodyTooLarge = errors.New("request body too large")
 
 func gatewayServiceRoot(namespace string) string {
 	return etcd.NamespacePrefix(namespace, "services")
@@ -125,6 +131,13 @@ func defaultRoutePrefix(namespace string) string {
 func applyGatewayPrefixDefaults(config *Config) {
 	if config.RoutePrefix == "" {
 		config.RoutePrefix = defaultRoutePrefix(config.Namespace)
+	}
+}
+
+func applyGatewayConfigDefaults(config *Config) {
+	applyGatewayPrefixDefaults(config)
+	if config.MaxRequestBodyBytes <= 0 {
+		config.MaxRequestBodyBytes = defaultMaxRequestBodyBytes
 	}
 }
 
@@ -266,8 +279,9 @@ func NewEtcdGateway(app *core.Core, conf ...*Config) (*EtcdGateway, error) {
 		config.EtcdDialTimeout = time.Duration(app.Conf.GetInt64("etcd.dial_timeout", 5)) * time.Second
 		config.Namespace = app.Conf.GetString("etcd.namespace", "")
 		config.GRPCServiceExcludes = app.Conf.GetStrings("gateway.grpc_service_excludes")
+		config.MaxRequestBodyBytes = app.Conf.GetInt64("gateway.max_request_body_bytes", defaultMaxRequestBodyBytes)
 	}
-	applyGatewayPrefixDefaults(config)
+	applyGatewayConfigDefaults(config)
 	if config.EtcdDialTimeout == 0 {
 		config.EtcdDialTimeout = 5 * time.Second
 	}
@@ -845,6 +859,24 @@ func (gw *EtcdGateway) unregisterRoute(route *Route) {
 
 func (gw *EtcdGateway) createProxyHandler(route *Route) core.HandlerFunc {
 	return func(ctx core.Ctx) error {
+		var rawBody []byte
+		if ctx.Method() != "GET" {
+			var err error
+			rawBody, err = readAndResetBody(ctx.Request(), gw.maxRequestBodyBytes())
+			if errors.Is(err, errRequestBodyTooLarge) {
+				return ctx.Status(http.StatusRequestEntityTooLarge).JSON(core.Map{
+					"code": http.StatusRequestEntityTooLarge, "message": "request body too large",
+				})
+			}
+			if err != nil {
+				core.Erro("[Gateway] gRPC proxy read body failed: method=%s path=%s grpc=%s err=%v",
+					ctx.Method(), ctx.Path(), route.GRPCMethod, err)
+				return ctx.Status(http.StatusBadRequest).JSON(core.Map{
+					"code": 400, "message": "invalid request body",
+				})
+			}
+		}
+
 		proxy := gw.doGetProxy(route.ServiceName)
 		if proxy == nil {
 			core.Erro("[Gateway] proxy not available for service: %s route=%s %s grpc=%s state={%s}",
@@ -855,28 +887,14 @@ func (gw *EtcdGateway) createProxyHandler(route *Route) core.HandlerFunc {
 			})
 		}
 
-		var rawBody []byte
+		var bodyMap core.Map
 		if ctx.Method() != "GET" {
-			var err error
-			rawBody, err = readAndResetBody(ctx.Request())
-			if err != nil {
-				core.Erro("[Gateway] gRPC proxy read body failed: method=%s path=%s grpc=%s err=%v",
-					ctx.Method(), ctx.Path(), route.GRPCMethod, err)
-				return ctx.Status(http.StatusBadRequest).JSON(core.Map{
-					"code": 400, "message": "invalid request body",
-				})
-			}
-		}
-		reqBody := buildGRPCRequestBody(ctx.ParamsMaps(), ctx.Request().URL.Query())
-		if ctx.Method() != "GET" {
-			var bodyMap core.Map
-			if err := ctx.Bind(&bodyMap); err == nil {
-				maps.Copy(reqBody, bodyMap)
-			} else {
+			if err := ctx.Bind(&bodyMap); err != nil {
 				core.Erro("[Gateway] gRPC proxy bind body failed: method=%s path=%s grpc=%s err=%v",
 					ctx.Method(), ctx.Path(), route.GRPCMethod, err)
 			}
 		}
+		reqBody := mergeGRPCRequestBody(ctx.ParamsMaps(), ctx.Request().URL.Query(), bodyMap)
 		appendGatewayRequestMetadata(reqBody, ctx.Request().Header, rawBody)
 
 		jsonReq, err := sonic.Marshal(reqBody)
@@ -921,13 +939,26 @@ func gatewayOutgoingContext(parent context.Context, md metadata.MD) context.Cont
 	return metadata.NewOutgoingContext(parent, md)
 }
 
-func readAndResetBody(req *http.Request) ([]byte, error) {
+func (gw *EtcdGateway) maxRequestBodyBytes() int64 {
+	if gw != nil && gw.config != nil && gw.config.MaxRequestBodyBytes > 0 {
+		return gw.config.MaxRequestBodyBytes
+	}
+	return defaultMaxRequestBodyBytes
+}
+
+func readAndResetBody(req *http.Request, limit int64) ([]byte, error) {
 	if req == nil || req.Body == nil {
 		return nil, nil
 	}
-	body, err := io.ReadAll(req.Body)
+	if limit <= 0 {
+		limit = defaultMaxRequestBodyBytes
+	}
+	body, err := io.ReadAll(io.LimitReader(req.Body, limit+1))
 	if err != nil {
 		return nil, err
+	}
+	if int64(len(body)) > limit {
+		return nil, errRequestBodyTooLarge
 	}
 	req.Body = io.NopCloser(bytes.NewBuffer(body))
 	return body, nil
@@ -942,6 +973,15 @@ func buildGRPCRequestBody(params map[string]string, query map[string][]string) c
 		if len(v) > 0 {
 			reqBody[k] = v[0]
 		}
+	}
+	return reqBody
+}
+
+func mergeGRPCRequestBody(params map[string]string, query map[string][]string, body core.Map) core.Map {
+	reqBody := buildGRPCRequestBody(nil, query)
+	maps.Copy(reqBody, body)
+	for key, value := range params {
+		reqBody[key] = value
 	}
 	return reqBody
 }
