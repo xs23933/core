@@ -48,7 +48,7 @@ func (opt *Options) GetAs(k string, v any) error {
 	if val, ok := (*opt)[k]; ok && val != nil {
 
 		rv := reflect.ValueOf(v)
-		if rv.Kind() != reflect.Ptr || rv.IsNil() {
+		if rv.Kind() != reflect.Pointer || rv.IsNil() {
 			return &InvalidUnmarshalError{reflect.TypeOf(v)}
 		}
 		rv = rv.Elem()
