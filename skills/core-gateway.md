@@ -65,17 +65,20 @@ func main() {
 
 ```yaml
 etcd:
+  namespace: xpay
   endpoints:
     - 127.0.0.1:2379
   dial_timeout: 5
 ```
 
+共享一个 etcd 集群运行多个项目时设置 `namespace`。同一项目的业务服务、内部客户端和 Gateway 必须使用相同值；`xpay` 对应 `/xpay/services/`、`/xpay/gateway/routes/` 和 `/xpay/config/`。空值保持旧版全局前缀。
+
 ## 3. HTTP 微服务显式注册
 
 HTTP 微服务需要分别注册服务实例和 HTTP 路由：
 
-- `app.EnableEtcdRegistry(nil)`：把实例写入 `/services/<service_name>/<service_id>`，并通过租约续期。
-- `gateway.RegisterHTTPRoute(app, route)`：把路由写入 `/gateway/routes/<route_id>`。
+- `app.EnableEtcdRegistry(nil)`：把实例写入 `/<namespace>/services/<service_name>/<service_id>`，并通过租约续期；namespace 为空时仍是 `/services/...`。
+- `gateway.RegisterHTTPRoute(app, route)`：把路由写入 `/<namespace>/gateway/routes/<route_id>`；namespace 为空时仍是 `/gateway/routes/...`。
 
 必须先调用 `EnableEtcdRegistry`，因为 `RegisterHTTPRoute` 通过 `app.EtcdDiscovery` 写入 etcd。一个服务有多条公开路由时，逐条调用 `RegisterHTTPRoute`。
 
@@ -125,6 +128,7 @@ func main() {
 listen: 8081
 
 etcd:
+  namespace: xpay
   endpoints:
     - 127.0.0.1:2379
   service_name: task-service
@@ -293,7 +297,7 @@ Content-Type: application/json
 
 - `pool=missing` 或 `pool_instances=0` 表示 Gateway 当前没有该服务的可用 proxy 池。
 - `discovery=disabled` 表示 Gateway 没有 fallback 服务发现快照。
-- `discovery_instances=0` 表示 fallback discovery 也没有该服务实例，继续检查 `/services/<service_name>/` 注册。
+- `discovery_instances=0` 表示 fallback discovery 也没有该服务实例，继续检查 `/<namespace>/services/<service_name>/` 注册；未配置 namespace 时检查 `/services/<service_name>/`。
 - `circuit_state=1` 表示该服务连接连续失败后处于熔断冷却期。
 
 休眠恢复或网络抖动后，重点匹配 `etcd service watch error`、`etcd service watch stopped unexpectedly`、`watch: <service>/<id> deregistered`、`watch: <service>/<id> registered`。只看到注销没有看到重新注册，优先排查 Gateway watch 或业务服务租约续期；重新注册存在但仍不可用，继续看连接实例失败日志。

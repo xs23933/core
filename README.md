@@ -609,6 +609,8 @@ if err := app.Listen(":8080"); err != nil {
 
 ```yaml
 etcd:
+  # 可选：共享同一个 etcd 集群时按项目隔离
+  namespace: xpay
   endpoints:
     - 127.0.0.1:2379
   dial_timeout: 5
@@ -618,6 +620,8 @@ etcd:
   ttl: 10
   version: 1.0.0
 ```
+
+配置 `namespace: xpay` 后，服务实例、Gateway 路由和相对配置 key 分别写入 `/xpay/services/`、`/xpay/gateway/routes/` 和 `/xpay/config/`。同一项目的业务服务、内部 gRPC 客户端和 Gateway 必须使用相同 namespace；不配置时仍使用原有 `/services/`、`/gateway/routes/` 和 `/config/`，无需迁移现有数据。
 
 也可以直接传 `etcd.Options`，适合测试或多环境注入：
 
@@ -702,7 +706,7 @@ app.Listen(":8080")
 
 - `pool=missing` 或 `pool_instances=0`：网关当前没有可用的 gRPC proxy 连接池。
 - `discovery=disabled`：网关没有启用 `EnableEtcdDiscovery`，无法 fallback 读取服务发现快照。
-- `discovery_instances=0`：fallback discovery 中也没有该服务实例，通常需要检查业务服务是否仍在 `/services/<service_name>/` 下注册。
+- `discovery_instances=0`：fallback discovery 中也没有该服务实例，通常需要检查业务服务是否仍在 `/<namespace>/services/<service_name>/` 下注册；未配置 namespace 时检查 `/services/<service_name>/`。
 - `circuit_state=1`：该服务 proxy 连续失败后进入熔断冷却期。
 
 休眠、网络切换或 etcd 短暂不可用后，还应检查 Gateway 是否输出了 `etcd service watch error`、`etcd service watch stopped unexpectedly`、`watch: <service>/<id> deregistered` 和后续 `watch: <service>/<id> registered`。如果只看到注销没有看到重新注册，问题更接近 Gateway watch 或服务注册续约链路；如果重新注册存在但仍不可用，则继续看 `connect discovered instance` 或 `connect instance` 的连接错误。

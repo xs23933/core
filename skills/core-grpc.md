@@ -111,6 +111,8 @@ if err := app.Listen(":8080"); err != nil {
 
 ```yaml
 etcd:
+  # 同一项目的服务、客户端和 Gateway 使用相同值
+  namespace: xpay
   endpoints:
     - 127.0.0.1:2379
   service_name: user-service
@@ -119,6 +121,8 @@ etcd:
   ttl: 10
   version: 1.0.0
 ```
+
+`namespace: xpay` 会把服务注册到 `/xpay/services/<service_name>/`。不配置时继续使用 `/services/<service_name>/`，与现有部署兼容。
 
 ## 5. 封装注册函数
 

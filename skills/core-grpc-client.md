@@ -79,6 +79,7 @@ func NewOrderService(app *core.Core) *OrderService {
 
 ```yaml
 etcd:
+  namespace: xpay
   endpoints:
     - 127.0.0.1:2379
   dialTimeout: 5
@@ -88,6 +89,7 @@ etcd:
 
 ```go
 if err := app.EnableEtcdDiscovery(&etcd.Options{
+    Namespace: "xpay",
     Endpoints: []string{"127.0.0.1:2379"},
 }); err != nil {
     return err
@@ -95,6 +97,8 @@ if err := app.EnableEtcdDiscovery(&etcd.Options{
 
 conn, err := app.GrpcClient("user-service")
 ```
+
+客户端 namespace 必须与目标服务注册时一致。`xpay` 客户端只发现 `/xpay/services/` 下的实例；空值继续发现 `/services/`。
 
 ## 5. 生成代码时避免
 
