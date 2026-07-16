@@ -23,7 +23,7 @@ The following typed getters will call `lookup` before applying their existing co
 - `GetBool`
 - `GetDuration`
 
-Existing exported `GetPathString`, `GetPathInt`, `GetPathBool`, and `GetPathStrings` methods remain available for compatibility. Each delegates to its corresponding typed getter rather than maintaining a second traversal implementation.
+Existing exported `GetPathString`, `GetPathInt`, `GetPathBool`, and `GetPathStrings` methods remain available for compatibility and use the shared raw lookup rather than maintaining a second traversal implementation. Where conversion behavior already differs, it remains intact: in particular, `GetPathBool` and dotted `GetBool` calls continue accepting string `"1"` and integer values without broadening direct-key `GetBool` calls.
 
 `GetInt64` will gain dotted-path support, aligning it with the other typed getters. No other conversion rules will be broadened: existing accepted types, fallback values, and public signatures remain unchanged.
 
@@ -33,7 +33,7 @@ Regression tests will verify:
 
 - All typed getters resolve both direct and dotted YAML values through the shared lookup.
 - Nested values represented as either `Options` or `map[string]any` are supported.
-- Existing `GetPathXxx` methods return the same results as their corresponding `GetXxx` methods.
+- Existing `GetPathXxx` methods preserve their current conversion and default behavior while using the shared lookup.
 - Existing defaults and invalid-value behavior remain intact.
 - `GetDuration("test.delay")` continues returning `20 * time.Second`.
 
