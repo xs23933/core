@@ -90,12 +90,15 @@ func copyServices(services map[string]map[string]*ServiceInfo) map[string]map[st
 	return next
 }
 
-func parseServiceKey(key string) (serviceName, instanceID string, ok bool) {
-	parts := strings.Split(key, "/")
-	if len(parts) < 4 || parts[1] != "services" {
+func parseServiceKey(key, serviceRoot string) (serviceName, instanceID string, ok bool) {
+	if !strings.HasPrefix(key, serviceRoot) {
 		return "", "", false
 	}
-	return parts[2], parts[3], true
+	parts := strings.Split(strings.TrimPrefix(key, serviceRoot), "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", false
+	}
+	return parts[0], parts[1], true
 }
 
 func (d *Discovery) Watch(serviceName string) error {
@@ -115,7 +118,9 @@ func (d *Discovery) Watch(serviceName string) error {
 	d.storeServices(services)
 	d.mu.Unlock()
 
-	prefix := fmt.Sprintf("/services/%s/", serviceName)
+	serviceOpts := *d.opts
+	serviceOpts.ServiceName = serviceName
+	prefix := serviceOpts.ServicePrefix()
 
 	getCtx, getCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer getCancel()
@@ -146,7 +151,7 @@ func (d *Discovery) refreshService(ctx context.Context, serviceName string, pref
 		if err := json.Unmarshal(kv.Value, &svc); err != nil {
 			continue
 		}
-		_, instanceID, ok := parseServiceKey(string(kv.Key))
+		_, instanceID, ok := parseServiceKey(string(kv.Key), d.opts.ServiceRoot())
 		if ok && svc.ID == "" {
 			svc.ID = instanceID
 		}
@@ -252,7 +257,7 @@ func (d *Discovery) applyWatchEvents(serviceName string, events []*clientv3.Even
 			if err := json.Unmarshal(ev.Kv.Value, &svc); err != nil {
 				continue
 			}
-			_, instanceID, ok := parseServiceKey(key)
+			_, instanceID, ok := parseServiceKey(key, d.opts.ServiceRoot())
 			if ok && svc.ID == "" {
 				svc.ID = instanceID
 			}

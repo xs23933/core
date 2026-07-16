@@ -9,17 +9,21 @@ import (
 
 func TestKVKey(t *testing.T) {
 	tests := []struct {
-		name string
-		key  string
-		want string
+		name      string
+		namespace string
+		key       string
+		want      string
 	}{
 		{name: "relative config key", key: "gateway/public_routes", want: "/config/gateway/public_routes"},
 		{name: "absolute route key", key: "/gateway/routes/route-id", want: "/gateway/routes/route-id"},
+		{name: "namespaced relative config key", namespace: "xpay", key: "gateway/public_routes", want: "/xpay/config/gateway/public_routes"},
+		{name: "namespaced absolute key override", namespace: "xpay", key: "/custom/key", want: "/custom/key"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := kvKey(tt.key); got != tt.want {
+			d := &Discovery{opts: &Options{Namespace: tt.namespace}}
+			if got := d.kvKey(tt.key); got != tt.want {
 				t.Fatalf("kvKey(%q) = %q, want %q", tt.key, got, tt.want)
 			}
 		})

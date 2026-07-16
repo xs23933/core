@@ -46,16 +46,16 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
-// KVPrefix 配置中心默认前缀
+// KVPrefix 配置中心旧版默认前缀。
 const KVPrefix = "/config/"
 
 const kvTimeout = 5 * time.Second
 
-func kvKey(key string) string {
+func (d *Discovery) kvKey(key string) string {
 	if strings.HasPrefix(key, "/") {
 		return key
 	}
-	return KVPrefix + key
+	return d.opts.ConfigPrefix() + key
 }
 
 func kvContext() (context.Context, context.CancelFunc) {
@@ -70,7 +70,7 @@ func (d *Discovery) getKV(key string, opts ...clientv3.OpOption) (string, *clien
 	ctx, cancel := kvContext()
 	defer cancel()
 
-	fullKey := kvKey(key)
+	fullKey := d.kvKey(key)
 	resp, err := d.client.Get(ctx, fullKey, opts...)
 	return fullKey, resp, err
 }
@@ -79,7 +79,7 @@ func (d *Discovery) putRaw(key string, value string, opts ...clientv3.OpOption) 
 	ctx, cancel := kvContext()
 	defer cancel()
 
-	_, err := d.client.Put(ctx, kvKey(key), value, opts...)
+	_, err := d.client.Put(ctx, d.kvKey(key), value, opts...)
 	return err
 }
 
@@ -105,7 +105,7 @@ func (d *Discovery) Put(key string, value any, opts ...clientv3.OpOption) error 
 // It preserves existing order, skips duplicates, and uses an etcd transaction
 // so concurrent Add calls do not overwrite each other's additions.
 func (d *Discovery) Add(key string, value []string, opts ...clientv3.OpOption) error {
-	fullKey := kvKey(key)
+	fullKey := d.kvKey(key)
 
 	for {
 		_, resp, err := d.getKV(key)
@@ -217,20 +217,20 @@ func (d *Discovery) Delete(key string) error {
 	ctx, cancel := kvContext()
 	defer cancel()
 
-	_, err := d.client.Delete(ctx, kvKey(key))
+	_, err := d.client.Delete(ctx, d.kvKey(key))
 	return err
 }
 
 // WatchKV 监听 key 变化，返回取消函数
 // onChange 接收 key 和新值，删除时 value 为空
 func (d *Discovery) WatchKV(key string, onChange func(key, value string)) (cancel func(), err error) {
-	fullKey := kvKey(key)
-	return d.watchConfig(fullKey, KVPrefix, nil, onChange)
+	fullKey := d.kvKey(key)
+	return d.watchConfig(fullKey, d.opts.ConfigPrefix(), nil, onChange)
 }
 
 // WatchPrefix 监听前缀下所有 key 变化
 func (d *Discovery) WatchPrefix(prefix string, onChange func(key, value string)) (cancel func(), err error) {
-	fullPrefix := kvKey(prefix)
+	fullPrefix := d.kvKey(prefix)
 	return d.watchConfig(fullPrefix, fullPrefix, []clientv3.OpOption{clientv3.WithPrefix()}, onChange)
 }
 
