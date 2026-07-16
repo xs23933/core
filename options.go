@@ -21,10 +21,7 @@ func (opt *Options) Value(k string) (any, bool) {
 }
 
 func (opt *Options) GetString(k string, def ...string) string {
-	if strings.Contains(k, ".") {
-		return opt.GetPathString(k, def...)
-	}
-	if val, ok := (*opt)[k]; ok && val != nil {
+	if val, ok := (*opt).lookup(k); ok && val != nil {
 		if v, ok := val.(string); ok {
 			return v
 		}
@@ -108,10 +105,7 @@ func (d Options) As(k string, v any) error {
 }
 
 func (opt *Options) GetStrings(k string, def ...[]string) []string {
-	if strings.Contains(k, ".") {
-		return opt.GetPathStrings(k, def...)
-	}
-	if val, ok := (*opt)[k]; ok && val != nil {
+	if val, ok := (*opt).lookup(k); ok && val != nil {
 		if v, ok := val.([]string); ok {
 			return v
 		}
@@ -130,10 +124,7 @@ func (opt *Options) GetStrings(k string, def ...[]string) []string {
 }
 
 func (opt *Options) GetInt(k string, def ...int) int {
-	if strings.Contains(k, ".") {
-		return opt.GetPathInt(k, def...)
-	}
-	if val, ok := (*opt)[k]; ok && val != nil {
+	if val, ok := (*opt).lookup(k); ok && val != nil {
 		switch v := val.(type) {
 		case string:
 			i, _ := strconv.Atoi(v)
@@ -153,7 +144,7 @@ func (opt *Options) GetInt(k string, def ...int) int {
 }
 
 func (opt *Options) GetInt64(k string, def ...int64) int64 {
-	if val, ok := (*opt)[k]; ok && val != nil {
+	if val, ok := (*opt).lookup(k); ok && val != nil {
 		switch v := val.(type) {
 		case string:
 			i, _ := strconv.ParseInt(v, 10, 64)
@@ -173,7 +164,7 @@ func (opt *Options) GetInt64(k string, def ...int64) int64 {
 }
 
 func (opt *Options) GetDuration(k string, def ...time.Duration) time.Duration {
-	val, ok := opt.getValue(k)
+	val, ok := (*opt).lookup(k)
 	if ok {
 		switch v := val.(type) {
 		case time.Duration:
@@ -190,9 +181,9 @@ func (opt *Options) GetDuration(k string, def ...time.Duration) time.Duration {
 	return 0
 }
 
-func (opt *Options) getValue(k string) (any, bool) {
-	keys := strings.Split(k, ".")
-	current := *opt
+func (opt Options) lookup(path string) (any, bool) {
+	keys := strings.Split(path, ".")
+	current := opt
 	for i, key := range keys {
 		val, ok := current[key]
 		if !ok {
@@ -217,7 +208,7 @@ func (opt *Options) GetBool(k string, def ...bool) bool {
 	if strings.Contains(k, ".") {
 		return opt.GetPathBool(k, def...)
 	}
-	val, ok := (*opt)[k]
+	val, ok := (*opt).lookup(k)
 	if !ok {
 		if len(def) > 0 {
 			return def[0]
@@ -487,147 +478,25 @@ var (
 // GetPathString 支持通过点号路径获取嵌套配置
 // 例如: GetPathString("telegram.token") 会获取 cfg["telegram"].(Options)["token"]
 func (opt *Options) GetPathString(path string, def ...string) string {
-	keys := strings.Split(path, ".")
-	current := *opt
-
-	for i, key := range keys {
-		val, exists := current[key]
-		if !exists {
-			if len(def) > 0 {
-				return def[0]
-			}
-			return ""
-		}
-
-		// 如果是最后一个key，尝试转换为string
-		if i == len(keys)-1 {
-			if str, ok := val.(string); ok {
-				return str
-			}
-			if len(def) > 0 {
-				return def[0]
-			}
-			return ""
-		}
-
-		// 如果不是最后一个key，需要继续向下查找
-		next, ok := val.(Options)
-		if !ok {
-			// 尝试从 map[string]any 转换
-			if m, ok := val.(map[string]any); ok {
-				next = Options(m)
-			} else {
-				if len(def) > 0 {
-					return def[0]
-				}
-				return ""
-			}
-		}
-		current = next
-	}
-
-	if len(def) > 0 {
-		return def[0]
-	}
-	return ""
+	return opt.GetString(path, def...)
 }
 
-// 同样添加其他类型的路径访问方法
 func (opt *Options) GetPathInt(path string, def ...int) int {
-	keys := strings.Split(path, ".")
-	current := *opt
-
-	for i, key := range keys {
-		val, exists := current[key]
-		if !exists {
-			if len(def) > 0 {
-				return def[0]
-			}
-			return 0
-		}
-
-		if i == len(keys)-1 {
-			switch v := val.(type) {
-			case string:
-				if i, err := strconv.Atoi(v); err == nil {
-					return i
-				}
-			case int:
-				return v
-			case float64:
-				return int(v)
-			case int64:
-				return int(v)
-			}
-			if len(def) > 0 {
-				return def[0]
-			}
-			return 0
-		}
-
-		next, ok := val.(Options)
-		if !ok {
-			if m, ok := val.(map[string]any); ok {
-				next = Options(m)
-			} else {
-				if len(def) > 0 {
-					return def[0]
-				}
-				return 0
-			}
-		}
-		current = next
-	}
-
-	if len(def) > 0 {
-		return def[0]
-	}
-	return 0
+	return opt.GetInt(path, def...)
 }
 
 // GetPathBool 获取布尔值
 func (opt *Options) GetPathBool(path string, def ...bool) bool {
-	keys := strings.Split(path, ".")
-	current := *opt
-
-	for i, key := range keys {
-		val, exists := current[key]
-		if !exists {
-			if len(def) > 0 {
-				return def[0]
-			}
-			return false
+	if val, ok := (*opt).lookup(path); ok {
+		switch v := val.(type) {
+		case string:
+			return v == "true" || v == "1"
+		case bool:
+			return v
+		case int:
+			return v != 0
 		}
-
-		if i == len(keys)-1 {
-			switch v := val.(type) {
-			case string:
-				return v == "true" || v == "1"
-			case bool:
-				return v
-			case int:
-				return v != 0
-			}
-			if len(def) > 0 {
-				return def[0]
-			}
-			return false
-		}
-
-		next, ok := val.(Options)
-		if !ok {
-			if m, ok := val.(map[string]any); ok {
-				next = Options(m)
-			} else {
-				if len(def) > 0 {
-					return def[0]
-				}
-				return false
-			}
-		}
-		current = next
 	}
-
 	if len(def) > 0 {
 		return def[0]
 	}
@@ -636,58 +505,5 @@ func (opt *Options) GetPathBool(path string, def ...bool) bool {
 
 // GetPathStrings 获取字符串数组类型的配置值
 func (opt *Options) GetPathStrings(path string, def ...[]string) []string {
-	keys := strings.Split(path, ".")
-	return opt.getPathStringsRecursive(keys, def...)
-}
-
-func (opt *Options) getPathStringsRecursive(keys []string, def ...[]string) []string {
-	if len(keys) == 0 {
-		if len(def) > 0 {
-			return def[0]
-		}
-		return []string{}
-	}
-
-	current, exists := (*opt)[keys[0]]
-	if !exists {
-		if len(def) > 0 {
-			return def[0]
-		}
-		return []string{}
-	}
-
-	// 如果是最后一层
-	if len(keys) == 1 {
-		switch v := current.(type) {
-		case []string:
-			return v
-		case []any:
-			result := make([]string, len(v))
-			for i, item := range v {
-				result[i] = fmt.Sprintf("%v", item)
-			}
-			return result
-		default:
-			if len(def) > 0 {
-				return def[0]
-			}
-			return []string{}
-		}
-	}
-
-	// 继续向下查找
-	var nextOpt Options
-	switch v := current.(type) {
-	case Options:
-		nextOpt = v
-	case map[string]any:
-		nextOpt = Options(v)
-	default:
-		if len(def) > 0 {
-			return def[0]
-		}
-		return []string{}
-	}
-
-	return nextOpt.getPathStringsRecursive(keys[1:], def...)
+	return opt.GetStrings(path, def...)
 }
