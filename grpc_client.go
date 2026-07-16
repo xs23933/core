@@ -1,8 +1,8 @@
 package core
 
 import (
-	"fmt"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -50,6 +50,7 @@ func (app *Core) enableEtcdDiscoveryFromConf() error {
 	opts := &etcd.Options{
 		Endpoints:   etcdConf.GetStrings("endpoints", []string{"127.0.0.1:2379"}),
 		DialTimeout: time.Duration(etcdConf.GetInt64("dialTimeout", 5)) * time.Second,
+		Namespace:   etcdConf.GetString("namespace", ""),
 	}
 
 	return app.EnableEtcdDiscovery(opts)

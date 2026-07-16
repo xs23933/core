@@ -27,6 +27,50 @@ type captureRouteStore struct {
 	puts []capturedRoutePut
 }
 
+func TestGatewayNamespacePrefixes(t *testing.T) {
+	tests := []struct {
+		name, namespace, serviceRoot, routePrefix string
+	}{
+		{name: "legacy", serviceRoot: "/services/", routePrefix: "/gateway/routes/"},
+		{name: "namespaced", namespace: " /xpay//dev/ ", serviceRoot: "/xpay/dev/services/", routePrefix: "/xpay/dev/gateway/routes/"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := gatewayServiceRoot(tt.namespace); got != tt.serviceRoot {
+				t.Fatalf("gatewayServiceRoot(%q) = %q, want %q", tt.namespace, got, tt.serviceRoot)
+			}
+			if got := defaultRoutePrefix(tt.namespace); got != tt.routePrefix {
+				t.Fatalf("defaultRoutePrefix(%q) = %q, want %q", tt.namespace, got, tt.routePrefix)
+			}
+		})
+	}
+}
+
+func TestGatewayPrefixDefaultsPreserveExplicitRoutePrefix(t *testing.T) {
+	config := &Config{Namespace: "xpay"}
+	applyGatewayPrefixDefaults(config)
+	if config.RoutePrefix != "/xpay/gateway/routes/" {
+		t.Fatalf("derived RoutePrefix = %q, want /xpay/gateway/routes/", config.RoutePrefix)
+	}
+
+	config = &Config{Namespace: "xpay", RoutePrefix: "/custom/routes/"}
+	applyGatewayPrefixDefaults(config)
+	if config.RoutePrefix != "/custom/routes/" {
+		t.Fatalf("explicit RoutePrefix = %q, want /custom/routes/", config.RoutePrefix)
+	}
+}
+
+func TestGatewayParseServiceKeyUsesExpectedRoot(t *testing.T) {
+	service, id, ok := parseServiceKey("/xpay/services/auth/auth-1", "/xpay/services/")
+	if service != "auth" || id != "auth-1" || !ok {
+		t.Fatalf("parse namespaced key = (%q, %q, %v), want (auth, auth-1, true)", service, id, ok)
+	}
+	if _, _, ok := parseServiceKey("/union/services/auth/auth-1", "/xpay/services/"); ok {
+		t.Fatal("foreign namespace key should be rejected")
+	}
+}
+
 func (s *captureRouteStore) Put(_ context.Context, key string, value any) error {
 	s.puts = append(s.puts, capturedRoutePut{key: key, value: value})
 	return nil

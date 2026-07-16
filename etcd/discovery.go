@@ -67,6 +67,15 @@ func NewDiscovery(opts *Options) (*Discovery, error) {
 	return d, nil
 }
 
+// Namespace 返回当前 Discovery 使用的规范化命名空间。
+func (d *Discovery) Namespace() string {
+	if d == nil || d.opts == nil {
+		return ""
+	}
+	root := NamespacePrefix(d.opts.Namespace, "")
+	return strings.Trim(root, "/")
+}
+
 func (d *Discovery) loadServices() map[string]map[string]*ServiceInfo {
 	if services, ok := d.services.Load().(map[string]map[string]*ServiceInfo); ok && services != nil {
 		return services

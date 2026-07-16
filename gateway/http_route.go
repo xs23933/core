@@ -51,7 +51,11 @@ func RegisterHTTPRoute(app *core.Core, route *Route, routePrefix ...string) erro
 	if route.ServiceName == "" {
 		route.ServiceName = app.Conf.GetString("etcd.service_name", "")
 	}
-	prefix := "/gateway/routes/"
+	namespace := app.Conf.GetString("etcd.namespace", "")
+	if app.EtcdDiscovery != nil {
+		namespace = app.EtcdDiscovery.Namespace()
+	}
+	prefix := defaultRoutePrefix(namespace)
 	if len(routePrefix) > 0 && routePrefix[0] != "" {
 		prefix = routePrefix[0]
 	}

@@ -18,6 +18,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/xs23933/core/v3"
+	"github.com/xs23933/core/v3/etcd"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -78,10 +79,11 @@ func (s *serviceInstance) HTTPAddr() string {
 
 // EtcdGateway etcd 网关
 type EtcdGateway struct {
-	app     *core.Core
-	etcdCli *clientv3.Client
-	prefix  string
-	config  *Config
+	app         *core.Core
+	etcdCli     *clientv3.Client
+	prefix      string
+	serviceRoot string
+	config      *Config
 
 	mu     sync.Mutex
 	routes atomic.Value // map[string]*Route, copy-on-write
@@ -106,9 +108,24 @@ type EtcdGateway struct {
 type Config struct {
 	EtcdEndpoints       []string      `yaml:"etcd_endpoints"`
 	EtcdDialTimeout     time.Duration `yaml:"etcd_dial_timeout"`
+	Namespace           string        `yaml:"namespace"`
 	RoutePrefix         string        `yaml:"route_prefix"`
 	HTTPAddr            string        `yaml:"http_addr"`
 	GRPCServiceExcludes []string      `yaml:"grpc_service_excludes"`
+}
+
+func gatewayServiceRoot(namespace string) string {
+	return etcd.NamespacePrefix(namespace, "services")
+}
+
+func defaultRoutePrefix(namespace string) string {
+	return etcd.NamespacePrefix(namespace, "gateway/routes")
+}
+
+func applyGatewayPrefixDefaults(config *Config) {
+	if config.RoutePrefix == "" {
+		config.RoutePrefix = defaultRoutePrefix(config.Namespace)
+	}
 }
 
 func grpcServiceExcluded(config *Config, service string) bool {
@@ -247,11 +264,10 @@ func NewEtcdGateway(app *core.Core, conf ...*Config) (*EtcdGateway, error) {
 		config = &Config{}
 		config.EtcdEndpoints = app.Conf.GetStrings("etcd.endpoints")
 		config.EtcdDialTimeout = time.Duration(app.Conf.GetInt64("etcd.dial_timeout", 5)) * time.Second
+		config.Namespace = app.Conf.GetString("etcd.namespace", "")
 		config.GRPCServiceExcludes = app.Conf.GetStrings("gateway.grpc_service_excludes")
 	}
-	if config.RoutePrefix == "" {
-		config.RoutePrefix = "/gateway/routes/"
-	}
+	applyGatewayPrefixDefaults(config)
 	if config.EtcdDialTimeout == 0 {
 		config.EtcdDialTimeout = 5 * time.Second
 	}
@@ -270,6 +286,7 @@ func NewEtcdGateway(app *core.Core, conf ...*Config) (*EtcdGateway, error) {
 		app:               app,
 		etcdCli:           cli,
 		prefix:            config.RoutePrefix,
+		serviceRoot:       gatewayServiceRoot(config.Namespace),
 		config:            config,
 		grpcServiceRoutes: make(map[string]map[string]bool),
 		watchCtx:          ctx,
@@ -321,13 +338,15 @@ func copyRoutes(routes map[string]*Route, extra int) map[string]*Route {
 
 // parseServiceKey 解析 etcd key，提取 serviceName 和 instanceID
 // key 格式: /services/{serviceName}/{instanceID}
-func parseServiceKey(key string) (serviceName, instanceID string, ok bool) {
-	parts := strings.Split(key, "/")
-	// /services/auth-service/auth-service-1 -> ["", "services", "auth-service", "auth-service-1"]
-	if len(parts) < 4 {
+func parseServiceKey(key, serviceRoot string) (serviceName, instanceID string, ok bool) {
+	if !strings.HasPrefix(key, serviceRoot) {
 		return "", "", false
 	}
-	return parts[2], parts[3], true
+	parts := strings.Split(strings.TrimPrefix(key, serviceRoot), "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", false
+	}
+	return parts[0], parts[1], true
 }
 
 // parseServiceInstance 从 etcd value 解析服务实例信息
@@ -348,7 +367,7 @@ func (gw *EtcdGateway) discoverAndConnectServices() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	resp, err := gw.etcdCli.Get(ctx, "/services/", clientv3.WithPrefix())
+	resp, err := gw.etcdCli.Get(ctx, gw.serviceRoot, clientv3.WithPrefix())
 	if err != nil {
 		core.Erro("[Gateway] discover services failed: %v", err)
 		gw.app.ErrGroup().Go(func() error {
@@ -369,7 +388,7 @@ func (gw *EtcdGateway) discoverAndConnectServices() {
 	serviceInstances := make(map[string][]inst)
 
 	for _, kv := range resp.Kvs {
-		serviceName, instanceID, ok := parseServiceKey(string(kv.Key))
+		serviceName, instanceID, ok := parseServiceKey(string(kv.Key), gw.serviceRoot)
 		if !ok {
 			continue
 		}
@@ -505,8 +524,8 @@ func (gw *EtcdGateway) watchEtcdServices(startRev int64) {
 	if startRev > 0 {
 		opts = append(opts, clientv3.WithRev(startRev))
 	}
-	core.Info("[Gateway] watching etcd services from revision %d", startRev)
-	watchChan := gw.etcdCli.Watch(gw.watchCtx, "/services/", opts...)
+	core.Info("[Gateway] watching etcd services prefix %s from revision %d", gw.serviceRoot, startRev)
+	watchChan := gw.etcdCli.Watch(gw.watchCtx, gw.serviceRoot, opts...)
 
 	for resp := range watchChan {
 		if err := resp.Err(); err != nil {
@@ -515,7 +534,7 @@ func (gw *EtcdGateway) watchEtcdServices(startRev int64) {
 		}
 		for _, ev := range resp.Events {
 			key := string(ev.Kv.Key)
-			serviceName, instanceID, ok := parseServiceKey(key)
+			serviceName, instanceID, ok := parseServiceKey(key, gw.serviceRoot)
 			if !ok {
 				core.Warn("[Gateway] ignore invalid service key from etcd watch: %s", key)
 				continue

@@ -116,33 +116,21 @@ func (app *Core) EnableEtcdRegistry(opts *etcd.Options) error {
 	if opts == nil {
 		opts = etcd.DefaultOptions()
 	}
-
-	// 仅在用户未设置时从配置读取
-	if len(opts.Endpoints) == 0 {
-		opts.Endpoints = app.Conf.GetStrings("etcd.endpoints", []string{"127.0.0.1:2379"})
-	}
-	if opts.ServiceName == "" {
-		opts.ServiceName = app.Conf.GetString("etcd.service_name", "")
-	}
-	if opts.ServiceAddr == "" {
-		opts.ServiceAddr = app.Conf.GetString("etcd.service_addr", app.addr)
-	}
-	if opts.ServiceID == "" {
-		opts.ServiceID = app.Conf.GetString("etcd.service_id", "")
-	}
-	if opts.TTL == 0 {
-		opts.TTL = app.Conf.GetInt64("etcd.ttl", 10)
-	}
-	if opts.Version == "" {
-		opts.Version = app.Conf.GetString("etcd.version", "1.0.0")
-	}
+	app.applyEtcdRegistryDefaults(opts)
 
 	registry, err := etcd.NewRegistry(opts)
 	if err != nil {
 		return err
 	}
 
-	if err := app.EnableEtcdDiscovery(nil); err != nil {
+	discoveryOpts := &etcd.Options{
+		Namespace:   opts.Namespace,
+		Endpoints:   append([]string(nil), opts.Endpoints...),
+		Username:    opts.Username,
+		Password:    opts.Password,
+		DialTimeout: opts.DialTimeout,
+	}
+	if err := app.EnableEtcdDiscovery(discoveryOpts); err != nil {
 		return err
 	}
 
@@ -167,15 +155,38 @@ func (app *Core) EnableEtcdRegistry(opts *etcd.Options) error {
 	return nil
 }
 
+func (app *Core) applyEtcdRegistryDefaults(opts *etcd.Options) {
+	if opts.Namespace == "" {
+		opts.Namespace = app.Conf.GetString("etcd.namespace", "")
+	}
+
+	// 仅在用户未设置时从配置读取
+	if len(opts.Endpoints) == 0 {
+		opts.Endpoints = app.Conf.GetStrings("etcd.endpoints", []string{"127.0.0.1:2379"})
+	}
+	if opts.ServiceName == "" {
+		opts.ServiceName = app.Conf.GetString("etcd.service_name", "")
+	}
+	if opts.ServiceAddr == "" {
+		opts.ServiceAddr = app.Conf.GetString("etcd.service_addr", app.addr)
+	}
+	if opts.ServiceID == "" {
+		opts.ServiceID = app.Conf.GetString("etcd.service_id", "")
+	}
+	if opts.TTL == 0 {
+		opts.TTL = app.Conf.GetInt64("etcd.ttl", 10)
+	}
+	if opts.Version == "" {
+		opts.Version = app.Conf.GetString("etcd.version", "1.0.0")
+	}
+}
+
 // EnableEtcdDiscovery 启用 etcd 服务发现
 func (app *Core) EnableEtcdDiscovery(opts *etcd.Options) error {
 	if opts == nil {
 		opts = etcd.DefaultOptions()
 	}
-
-	if len(opts.Endpoints) == 0 {
-		opts.Endpoints = app.Conf.GetStrings("etcd.endpoints", []string{"127.0.0.1:2379"})
-	}
+	app.applyEtcdDiscoveryDefaults(opts)
 
 	discovery, err := etcd.NewDiscovery(opts)
 	if err != nil {
@@ -189,6 +200,15 @@ func (app *Core) EnableEtcdDiscovery(opts *etcd.Options) error {
 	})
 
 	return nil
+}
+
+func (app *Core) applyEtcdDiscoveryDefaults(opts *etcd.Options) {
+	if opts.Namespace == "" {
+		opts.Namespace = app.Conf.GetString("etcd.namespace", "")
+	}
+	if len(opts.Endpoints) == 0 {
+		opts.Endpoints = app.Conf.GetStrings("etcd.endpoints", []string{"127.0.0.1:2379"})
+	}
 }
 
 // OnShutdown 添加关闭钩子
