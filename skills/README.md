@@ -5,7 +5,7 @@ skills/
 ├── core-model.md            # 定义数据模型
 ├── core-service.md          # 编写业务逻辑层
 ├── core-middleware.md       # 开发中间件
-├── core-grpc.md             # gRPC 服务端（RegisterGRPCService / EnableGRPC / EnableEtcdRegistry）
+├── core-grpc.md             # gRPC 服务端（TLS/interceptor / RegisterGRPCService / EnableGRPC / EnableEtcdRegistry）
 ├── core-grpc-client.md      # gRPC 客户端（GrpcClient / MustGrpcClient / etcd discovery）
 ├── core-gateway.md          # HTTP -> gRPC 网关（自动路由、管理接口、metadata）
 ├── core-websocket.md        # WebSocket 处理（连接管理/按用户推送/广播）

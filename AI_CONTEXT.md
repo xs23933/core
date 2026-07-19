@@ -551,6 +551,15 @@ func AccessLog() core.HandlerFunc {
 ```go
 app := core.New(core.LoadConfigFile("config.yaml"))
 
+// 需要 transport credentials 或 interceptor 时，先调用且只调用一次。
+if err := app.ConfigureGRPCServer(core.GRPCServerConfig{
+    TransportCredentials: credentials.NewTLS(serverTLS),
+    UnaryInterceptors:     []grpc.UnaryServerInterceptor{identityUnary},
+    StreamInterceptors:    []grpc.StreamServerInterceptor{identityStream},
+}); err != nil {
+    return err
+}
+
 app.RegisterGRPCService(func(s *grpc.Server) {
     pb.RegisterUserServiceServer(s, &UserService{})
 })
@@ -567,6 +576,10 @@ return app.Listen(":8080")
 * 只需要本机 gRPC 时用 `app.EnableGRPC(":9001")`。
 * 需要网关自动发现时用 `app.EnableEtcdRegistry(nil)`；它会注册 etcd，并自动开启 gRPC reflection。
 * `RegisterGRPCService` 必须在 `Listen` / `Run` 前调用。
+* `ConfigureGRPCServer` 必须在 `GetGRPCServer`、`RegisterGRPCService` 或 `EnableEtcdRegistry` 创建 server 前调用；只允许配置一次。
+* Core 始终保留默认 unary error wrapper；调用方 interceptor 按配置顺序组成 chain。
+* 配置 gRPC transport credentials 时必须使用独立的 Core-managed gRPC 地址；HTTP/gRPC 共端口会以 `ErrGRPCTLSSharedAddress` fail closed。
+* 证书身份、URI、吊销和授权策略属于应用，不属于 Core。
 * 内部客户端用 `app.GrpcClient("user-service")` 或启动期的 `app.MustGrpcClient("user-service")`。
 * 网关启动用 `app.EnableEtcdDiscovery(nil)` + `gateway.NewEtcdGateway(app)`。
 
@@ -584,6 +597,8 @@ return app.Listen(":8080")
 * 业务代码手写重复的服务发现逻辑。
 * 网关场景只调用 `EnableGRPC` 却忘记 reflection。
 * 在请求处理函数里反复创建 gRPC client。
+
+需要有期限的 etcd KV 时，使用 `EtcdDiscovery.GrantLease`、`KeepAliveLease`、`RevokeLease`、`GetRevision` 和 `CompareAndPut`。这些 API 只接受相对 key，并放入当前 namespace 的 `/config/` 前缀；revision 0 是 create-if-absent，CAS 冲突返回 `false, nil`。调用方负责消费 keepalive channel、识别租约丢失并在关闭前主动 revoke。
 
 ### 3.9 事务规范
 
@@ -761,6 +776,7 @@ Core 的 gRPC 能力由以下入口组成：
 | 入口 | 用途 |
 | ---- | ---- |
 | `RegisterGRPCService(func(*grpc.Server))` | 注册 protobuf 生成的 service |
+| `ConfigureGRPCServer(config)` | 在 server 创建前配置 transport credentials 与 unary/stream interceptor |
 | `EnableGRPC(addr)` | 启动 gRPC server，可与 HTTP 共用端口 |
 | `EnableEtcdRegistry(opts)` | 注册 etcd、启用 discovery、开启 reflection |
 | `GrpcClient(serviceName)` | 基于 etcd resolver 创建客户端连接 |
