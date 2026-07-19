@@ -110,6 +110,11 @@ func (app *Core) startGRPCServer() error {
 	}
 
 	if app.grpcAddr == app.addr {
+		// grpc.Server 的 transport credentials 只在 Serve listener 握手路径执行。
+		// ServeHTTP 共端口无法提供等价的 gRPC peer.AuthInfo，必须拒绝伪安全配置。
+		if app.grpcConfig != nil && app.grpcConfig.TransportCredentials != nil {
+			return ErrGRPCTLSSharedAddress
+		}
 		Info("gRPC sharing port with HTTP on %s", app.addr)
 		app.setupSharedHandler()
 		return nil
