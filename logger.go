@@ -493,6 +493,10 @@ func (w *RotatingLogWriter) open() error {
 		return err
 	}
 	old := w.file
+	if w.redirectStdout && old != nil {
+		_ = file.Close()
+		return errors.New("cannot replace an active redirected stdout file descriptor")
+	}
 	w.file = file
 	w.day = logDay(w.now())
 	if st, err := file.Stat(); err == nil {
@@ -544,7 +548,9 @@ func (w *RotatingLogWriter) rotate(now time.Time) error {
 	}
 
 	rotated := nextRotatedLogPath(w.path, now)
-	if w.cfg.CopyTruncate {
+	// os.Stdout 是进程级公开指针，轮转时替换它会与并发 fmt.Print* 读取产生数据竞争。
+	// stdout 重定向后固定使用 copy-truncate，使 os.Stdout 与 w.file 始终保持同一描述符。
+	if w.cfg.CopyTruncate || w.redirectStdout {
 		if err := copyFile(w.path, rotated); err != nil {
 			if errors.Is(err, os.ErrNotExist) && w.cfg.MissingOK {
 				return w.reopenAfterMissing(now)
@@ -552,9 +558,6 @@ func (w *RotatingLogWriter) rotate(now time.Time) error {
 			return err
 		}
 		if err := w.file.Truncate(0); err != nil {
-			return err
-		}
-		if err := w.open(); err != nil {
 			return err
 		}
 	} else {

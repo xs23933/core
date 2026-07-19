@@ -117,8 +117,13 @@ func TestRotatingLogWriterSize(t *testing.T) {
 	if _, err := w.Write([]byte("12345678")); err != nil {
 		t.Fatalf("write first log: %v", err)
 	}
+	before := mustStat(t, path)
 	if _, err := w.Write([]byte("abcde")); err != nil {
 		t.Fatalf("write second log: %v", err)
+	}
+	after := mustStat(t, path)
+	if os.SameFile(before, after) {
+		t.Fatal("non-redirected rename rotation kept the active inode")
 	}
 
 	active := mustReadFile(t, path)
@@ -226,7 +231,7 @@ func TestRotatingLogWriterCopyTruncate(t *testing.T) {
 	}
 }
 
-func TestRotatingLogWriterCopyTruncateRefreshesStdout(t *testing.T) {
+func TestRotatingLogWriterCopyTruncateKeepsStdoutStable(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "app.log")
 	w, err := NewRotatingLogWriter(path, "size: 4", "copytruncate")
@@ -249,14 +254,53 @@ func TestRotatingLogWriterCopyTruncateRefreshesStdout(t *testing.T) {
 	if _, err := w.Write([]byte("next")); err != nil {
 		t.Fatalf("write through rotating writer: %v", err)
 	}
-	if os.Stdout == before {
-		t.Fatal("copytruncate did not refresh os.Stdout file handle")
+	if os.Stdout != before {
+		t.Fatal("copytruncate replaced os.Stdout and introduced a concurrent global pointer race")
 	}
 	if _, err := fmt.Fprint(os.Stdout, "!"); err != nil {
 		t.Fatalf("direct stdout write after copytruncate: %v", err)
 	}
 	if got := mustReadFile(t, path); got != "next!" {
 		t.Fatalf("active copytruncate stdout log = %q, want next!", got)
+	}
+}
+
+func TestRotatingLogWriterRedirectStdoutUsesStableCopyTruncate(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "app.log")
+	w, err := NewRotatingLogWriter(path, "size: 4")
+	if err != nil {
+		t.Fatalf("new rotating writer: %v", err)
+	}
+	defer w.Close()
+	w.nowFunc = fixedTime(time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC))
+
+	oldStdout := os.Stdout
+	defer func() { os.Stdout = oldStdout }()
+	if err := w.RedirectStdout(); err != nil {
+		t.Fatalf("redirect stdout: %v", err)
+	}
+	stdout := os.Stdout
+	before := mustStat(t, path)
+	if _, err := fmt.Fprint(stdout, "old"); err != nil {
+		t.Fatalf("direct stdout write: %v", err)
+	}
+	if _, err := w.Write([]byte("next")); err != nil {
+		t.Fatalf("write through rotating writer: %v", err)
+	}
+	after := mustStat(t, path)
+	if os.Stdout != stdout {
+		t.Fatal("stdout pointer changed during rotation")
+	}
+	if !os.SameFile(before, after) {
+		t.Fatal("stdout rotation replaced the active file instead of preserving its descriptor")
+	}
+	if got := mustReadFile(t, path); got != "next" {
+		t.Fatalf("active stdout log = %q, want next", got)
+	}
+	rotated := listRotatedLogs(t, path)
+	if len(rotated) != 1 || mustReadFile(t, rotated[0]) != "old" {
+		t.Fatalf("rotated stdout logs = %v", rotated)
 	}
 }
 

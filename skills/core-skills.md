@@ -340,7 +340,7 @@ Take(ctx, key, &out, loader) → Redis Hit? → 返回
 
 #### core-logger — 日志系统
 
-**功能概述**：内置分级日志系统，支持终端彩色输出、HTTP 请求日志、Panic Recovery、LogMonitor 实时广播和 EventHub SSE 事件推送。
+**功能概述**：内置分级日志系统，支持终端彩色输出、并发安全的 stdout copy-truncate 轮转、HTTP 请求日志、Panic Recovery、LogMonitor 实时广播和 EventHub SSE 事件推送。
 
 **核心特性**：
 - 分级日志：D（Debug）/ Info / Warn / Erro / Log / Dump

@@ -1836,6 +1836,8 @@ log_rotate:
 | `notifempty` | 当前日志文件为空时不切割、不压缩、不生成空的轮转文件 |
 | `copytruncate` | 切割时复制当前日志再截断原文件，适合不希望替换文件句柄的部署方式 |
 
+调用 `RotatingLogWriter.RedirectStdout` 后，框架会强制使用 copy-truncate 语义，即使配置中没有显式写 `copytruncate`。这是为了在并发 `fmt.Print*` 时保持 `os.Stdout` 指针和文件描述符稳定，避免轮转过程替换进程级全局指针产生数据竞争；未重定向 stdout 的 writer 仍按配置选择 rename 或 copy-truncate。
+
 代码方式：
 
 ```go

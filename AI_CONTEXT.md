@@ -690,6 +690,7 @@ log.Println(...)
 * 必须包含错误上下文
 * 不记录敏感信息
 * 不打印密码/token
+* `RotatingLogWriter.RedirectStdout` 后轮转固定使用 copy-truncate，保持 `os.Stdout` 指针/文件描述符稳定；不要在业务代码中自行替换全局 `os.Stdout`
 
 推荐：
 
