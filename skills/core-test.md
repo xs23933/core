@@ -272,7 +272,7 @@ func TestValidate(t *testing.T) {
 ```go
 func TestCORSMiddleware(t *testing.T) {
     app := core.New()
-    app.Use(cors.New(app))
+    app.Use(cors.New())
 
     app.GET("/api/data", func(c core.Ctx) error {
         return c.SendString("ok")

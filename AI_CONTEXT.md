@@ -512,7 +512,7 @@ func GetUser(ctx context.Context, id string) (UserVO, error) {
 ```go
 // 使用内置中间件
 app.Use(requestid.New())
-app.Use(cors.New(app))
+app.Use(cors.New())
 
 m, mw := metrics.New()
 app.Use(mw)

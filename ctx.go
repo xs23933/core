@@ -144,7 +144,7 @@ type BaseCtx struct {
 	detectionPath string // Route detection path                                  -> string copy from detectionPathBuffer
 	path          string // HTTP path with the modifications by the configuration -> string copy from pathBuffer
 	pathOriginal  string // Original HTTP path
-	matched       bool   // Non use route matched
+	matched       bool   // Whether the request matched an explicit route
 	theme         string
 	W             ResponseWriter
 	R             *http.Request
@@ -155,6 +155,13 @@ type BaseCtx struct {
 	respJsonKeys  *RestfulDefine
 	mu            sync.RWMutex
 	params        map[string]string
+}
+
+// IsRouteFallback reports whether the current handler chain is running because
+// an OPTIONS request did not match an explicit route.
+func IsRouteFallback(c Ctx) bool {
+	ctx, ok := c.(*BaseCtx)
+	return ok && !ctx.matched
 }
 
 func (c *BaseCtx) Ctx() context.Context {

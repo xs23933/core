@@ -112,7 +112,7 @@ func main() {
 	app := core.New(core.LoadConfigFile("config.yaml"))
 
 	app.Use(requestid.New())
-	app.Use(cors.New(app))
+	app.Use(cors.New())
 
 	if err := app.Run(); err != nil {
 		log.Fatalf("server startup failed: %v", err)

@@ -12,7 +12,7 @@ func main() {
 
 	app.Use(html.NewHtmlView("views", ".html"))
 
-	app.Use(cors.New(app))
+	app.Use(cors.New())
 
 	app.Use(requestid.New())
 

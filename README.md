@@ -386,7 +386,7 @@ import (
 )
 
 app.Use(requestid.New())  // 请求ID
-app.Use(cors.New(app))    // CORS 支持
+app.Use(cors.New())       // CORS 支持
 app.Use(logger.New())     // 请求日志
 app.Use(recover.New())    // 异常恢复
 ```
@@ -1579,13 +1579,17 @@ CMD ["./app"]
 ```go
 import "github.com/xs23933/core/v3/middleware/cors"
 
-app.Use(cors.New(app, cors.Config{
+app.Use(cors.New(cors.Config{
     AllowOrigins:     "http://localhost:3000",
     AllowMethods:     "GET,POST,PUT,DELETE,OPTIONS",
     AllowHeaders:     "Content-Type,Authorization",
     AllowCredentials: true,
 }))
 ```
+
+`cors.New` 只构造中间件；框架会让未匹配到显式路由的 OPTIONS 请求经过全局中间件，因此无需另外注册预检路由。精确 Origin 包含 scheme 和显式端口；`*.example.com` 只匹配真实子域，`https://*.example.com:8443` 还会限制 scheme 与端口。`AllowHeaders` 为空时会回显浏览器请求的 headers。安全起见，`AllowOrigins: "*"` 不能与 `AllowCredentials: true` 同时使用。
+
+旧调用 `cors.New(app, config...)` 应迁移为 `cors.New(config...)`；过渡期可使用已废弃的 `cors.NewWithApp(app, config...)`。
 
 ### 4. 文件上传大小限制
 

@@ -767,7 +767,7 @@ func main() {
     app := core.New(core.LoadConfigFile("config.yaml"))
 
     app.Use(requestid.New())
-    app.Use(cors.New(app))
+    app.Use(cors.New())
 
     app.RegisterGRPCService(func(s *grpc.Server) {
         grpc.NewUserGRPCService(app)
@@ -877,7 +877,7 @@ func main() {
 
 - **中间件鉴权**：在 `Preload()` 或全局中间件中统一处理身份认证
 - **限流保护**：使用 `ratelimit` 中间件防止恶意请求，多实例部署使用 Redis 后端
-- **CORS 配置**：通过 `cors.New(app)` 控制跨域访问白名单
+- **CORS 配置**：通过纯中间件 `cors.New(config...)` 控制跨域白名单与预检策略
 - **管理接口保护**：网关管理接口仅允许 loopback 访问（`127.0.0.1`）
 
 #### 数据安全

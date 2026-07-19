@@ -152,8 +152,17 @@ func (app *Core) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	handlers, ok := root.match(c.Path(), c)
 	if !ok {
-		c.SendStatus(StatusNotFound, ErrNotFound.Error())
-		return
+		if method != MethodOptions || len(root.middlewares) == 0 {
+			c.SendStatus(StatusNotFound, ErrNotFound.Error())
+			return
+		}
+		handlers = make(HandlerFuncs, 0, len(root.middlewares)+1)
+		handlers = append(handlers, root.middlewares...)
+		handlers = append(handlers, func(c Ctx) error {
+			return c.SendStatus(StatusNotFound, ErrNotFound.Error())
+		})
+	} else {
+		c.matched = true
 	}
 
 	c.handlers = handlers
