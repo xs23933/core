@@ -1030,9 +1030,9 @@ type IModel struct {
 
 type SModels struct {
 	ID        sid.ID          `json:"id,omitzero" gorm:"primaryKey;autoIncrement:false;comment:主键"`
-	CreatedAt *time.Time      `json:"created_at,omitempty" gorm:"<-:create;comment:创建时间"`
-	UpdatedAt *time.Time      `json:"updated_at,omitempty" gorm:"autoUpdateTime;comment:更新时间"`
-	DeletedAt *gorm.DeletedAt `json:"deleted_at,omitempty" gorm:"index;comment:删除时间"`
+	CreatedAt *time.Time      `json:"created_at,omitempty" gorm:"type:timestamp(6);<-:create;comment:创建时间"`
+	UpdatedAt *time.Time      `json:"updated_at,omitempty" gorm:"type:timestamp(6);autoUpdateTime;comment:更新时间"`
+	DeletedAt *gorm.DeletedAt `json:"deleted_at,omitempty" gorm:"type:timestamp(6);index;comment:删除时间"`
 }
 
 func (m *SModels) BeforeCreate(tx *DB) error {
