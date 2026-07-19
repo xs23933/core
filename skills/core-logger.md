@@ -82,6 +82,23 @@ var w core.Writers
 w.Printf("formatted message %s", arg)
 ```
 
+### RotatingLogWriter 与 stdout 重定向
+
+`RotatingLogWriter.RedirectStdout()` 会把进程 stdout 指向当前日志文件。重定向后轮转固定采用 copy-truncate，即使配置没有显式启用 `copytruncate`，从而在并发 `fmt.Print*` 时保持 `os.Stdout` 指针和文件描述符稳定。
+
+```go
+w, err := core.NewRotatingLogWriter("/var/log/app.log", "size: 300M", "daily")
+if err != nil {
+    return err
+}
+defer w.Close()
+if err := w.RedirectStdout(); err != nil {
+    return err
+}
+```
+
+未调用 `RedirectStdout` 的 writer 仍按配置选择 rename 或 copy-truncate。业务代码不要在 writer 运行期间自行替换全局 `os.Stdout`。
+
 ## 格式规则
 
 - 所有日志函数自动追加 `\n`（无需手动加换行）

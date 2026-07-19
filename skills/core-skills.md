@@ -49,7 +49,7 @@ skills/
 ├── core-model.md            # 数据模型定义、GORM 类型、分页查询、事务
 ├── core-service.md          # 业务逻辑层编写（兼容 HTTP/gRPC）
 ├── core-middleware.md       # 中间件开发（CORS/限流/Metrics/RequestID）
-├── core-grpc.md             # gRPC 服务端（注册/启动/etcd 注册/共用端口）
+├── core-grpc.md             # gRPC 服务端（TLS/interceptor/注册/启动/etcd 注册/共用端口约束）
 ├── core-grpc-client.md      # gRPC 客户端（服务发现/连接复用/MustGrpcClient）
 ├── core-gateway.md          # HTTP→gRPC 网关（自动路由/管理接口/metadata）
 ├── core-websocket.md        # WebSocket 连接管理/按用户推送/广播/心跳
@@ -223,19 +223,20 @@ HTTP 请求 → Middleware1 → Middleware2 → ... → Handler → Response
 
 #### core-grpc — gRPC 服务端
 
-**功能概述**：Core Framework 的 gRPC 服务端支持，包括 proto service 注册、独立端口/共用端口部署、etcd 服务注册与发现、gRPC reflection。
+**功能概述**：Core Framework 的 gRPC 服务端支持，包括启动前 TLS/interceptor 配置、proto service 注册、独立端口/共用端口部署、etcd 服务注册与发现、gRPC reflection。
 
 **核心特性**：
 - `RegisterGRPCService()` 注册 proto service
+- `ConfigureGRPCServer()` 在 server 创建前配置 transport credentials 与 unary/stream interceptor
 - HTTP/gRPC 同端口分流（基于 HTTP/2 + Content-Type）
 - `EnableEtcdRegistry()` 一站式 etcd 注册 + discovery + reflection
 - `errorWrapInterceptor` 自动将非 status.Error 包装为 Internal
 
 **模块调用流程**：
 ```
-app.New() → RegisterGRPCService() → EnableEtcdRegistry() → app.Run()
-                    │                       │
-            proto service 注册          etcd 注册 + discovery + reflection
+app.New() → [ConfigureGRPCServer()] → RegisterGRPCService() → EnableEtcdRegistry() → app.Run()
+                   │                          │                       │
+          TLS/interceptor（可选）       proto service 注册          etcd 注册 + discovery + reflection
 ```
 
 ---
@@ -339,7 +340,7 @@ Take(ctx, key, &out, loader) → Redis Hit? → 返回
 
 #### core-logger — 日志系统
 
-**功能概述**：内置分级日志系统，支持终端彩色输出、HTTP 请求日志、Panic Recovery、LogMonitor 实时广播和 EventHub SSE 事件推送。
+**功能概述**：内置分级日志系统，支持终端彩色输出、并发安全的 stdout copy-truncate 轮转、HTTP 请求日志、Panic Recovery、LogMonitor 实时广播和 EventHub SSE 事件推送。
 
 **核心特性**：
 - 分级日志：D（Debug）/ Info / Warn / Erro / Log / Dump

@@ -1,7 +1,7 @@
 ---
 name: core-grpc
-description: 使用 Core Framework 开发 gRPC 服务端，覆盖 service 注册、EnableGRPC、EnableEtcdRegistry、同端口分流和 reflection 规则
-tags: [go, core-framework, grpc, protobuf, etcd, reflection]
+description: 使用 Core Framework 开发 gRPC 服务端，覆盖 service 注册、TLS/拦截器配置、EnableGRPC、EnableEtcdRegistry、同端口分流和 reflection 规则
+tags: [go, core-framework, grpc, protobuf, tls, interceptor, etcd, reflection]
 ---
 
 # Core gRPC 服务端技能
@@ -11,6 +11,7 @@ tags: [go, core-framework, grpc, protobuf, etcd, reflection]
 当用户请求以下内容时激活此 Skill：
 
 - "添加 gRPC 服务"
+- "配置 gRPC mTLS 或 interceptor"
 - "注册 proto service"
 - "EnableGRPC 怎么用"
 - "gRPC 和 HTTP 共用端口"
@@ -25,15 +26,17 @@ Core 的 gRPC 服务端入口：
 | --- | --- |
 | `app.RegisterGRPCService(func(*grpc.Server))` | 注册 protobuf 生成的 service |
 | `app.GetGRPCServer()` | 获取底层 `*grpc.Server`，适合封装到构造函数里 |
+| `app.ConfigureGRPCServer(core.GRPCServerConfig)` | server 创建前配置 transport credentials 与 unary/stream interceptor |
 | `app.EnableGRPC(addr)` | 启动 gRPC server |
 | `app.EnableEtcdRegistry(opts)` | 注册 etcd、启用 discovery、开启 reflection |
 
 顺序要求：
 
 1. 创建 `app`。
-2. 注册 gRPC service。
-3. 调用 `EnableGRPC` 或 `EnableEtcdRegistry`。
-4. 调用 `Listen` 或 `Run`。
+2. 需要 TLS/interceptor 时调用一次 `ConfigureGRPCServer`。
+3. 注册 gRPC service。
+4. 调用 `EnableGRPC` 或 `EnableEtcdRegistry`。
+5. 调用 `Listen` 或 `Run`。
 
 ## 2. 独立 gRPC 端口
 
@@ -74,7 +77,31 @@ func main() {
 }
 ```
 
-## 3. HTTP 和 gRPC 共用端口
+## 3. TLS、mTLS 与 interceptor
+
+调用方构造标准 gRPC transport credentials，并在任何 service 注册或 server 获取之前配置。Core 保留默认 unary error wrapper，调用方 unary/stream interceptor 按声明顺序执行。
+
+```go
+serverTLS := &tls.Config{
+    MinVersion:   tls.VersionTLS13,
+    Certificates: []tls.Certificate{serverCertificate},
+    ClientAuth:   tls.RequireAndVerifyClientCert,
+    ClientCAs:    clientCAPool,
+}
+if err := app.ConfigureGRPCServer(core.GRPCServerConfig{
+    TransportCredentials: credentials.NewTLS(serverTLS),
+    UnaryInterceptors:     []grpc.UnaryServerInterceptor{identityUnary},
+    StreamInterceptors:    []grpc.StreamServerInterceptor{identityStream},
+}); err != nil {
+    return err
+}
+app.EnableGRPC(":9001")
+app.RegisterGRPCService(registerServices)
+```
+
+配置只能成功一次，且必须早于 `GetGRPCServer`、`RegisterGRPCService` 和 `EnableEtcdRegistry`。证书身份、URI、吊销和授权策略由应用实现；Core 不推断业务身份。
+
+## 4. HTTP 和 gRPC 共用端口
 
 共用端口时，`EnableGRPC` 和 `Listen` 使用同一个地址。框架会按 HTTP/2 与 `Content-Type: application/grpc` 分流。
 
@@ -87,7 +114,9 @@ app.EnableGRPC(":8080")
 app.Listen(":8080")
 ```
 
-## 4. 注册到 etcd 并支持网关
+配置 transport credentials 后禁止共端口；Core 会返回 `ErrGRPCTLSSharedAddress`。需要 mTLS 时使用独立但仍由 Core 托管的 gRPC 地址。
+
+## 5. 注册到 etcd 并支持网关
 
 需要被网关自动发现时，优先使用 `EnableEtcdRegistry`。它会创建/复用 gRPC server、注册服务实例、开启 discovery，并自动注册 gRPC reflection。
 
@@ -124,7 +153,7 @@ etcd:
 
 `namespace: xpay` 会把服务注册到 `/xpay/services/<service_name>/`。不配置时继续使用 `/services/<service_name>/`，与现有部署兼容。
 
-## 5. 封装注册函数
+## 6. 封装注册函数
 
 项目中通常把注册逻辑封装到 handler 或 module 初始化函数里。
 
@@ -143,9 +172,10 @@ func NewAuthHandler(app *core.Core, userService *service.UserService) {
 
 注意：封装函数内部可以调用 `app.GetGRPCServer()`，但必须保证封装函数在 `Listen` / `Run` 前执行。
 
-## 6. 生成代码时避免
+## 7. 生成代码时避免
 
 - 不要在 `Listen` 之后再注册 gRPC service。
+- 不要在 server 已创建后配置 TLS/interceptor，也不要把 gRPC transport credentials 用于 HTTP 共端口 handler。
 - 不要手动维护重复的 reflection 注册；网关场景使用 `EnableEtcdRegistry`。
 - 不要把 proto service 实现直接写进 HTTP handler；建议 service 层复用业务逻辑，HTTP handler 和 gRPC handler 只做协议适配。
 - 不要把 `service_addr` 写成其它进程无法访问的地址。

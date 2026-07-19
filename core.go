@@ -73,6 +73,7 @@ type Core struct {
 
 	// 添加 gRPC 支持
 	grpcServer  *grpc.Server
+	grpcConfig  *GRPCServerConfig
 	grpcAddr    string
 	grpcEnabled bool
 

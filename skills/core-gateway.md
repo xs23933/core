@@ -73,6 +73,8 @@ etcd:
 
 共享一个 etcd 集群运行多个项目时设置 `namespace`。同一项目的业务服务、内部客户端和 Gateway 必须使用相同值；`xpay` 对应 `/xpay/services/`、`/xpay/gateway/routes/` 和 `/xpay/config/`。空值保持旧版全局前缀。
 
+`EtcdDiscovery` 还提供通用的 `GrantLease`、`KeepAliveLease`、`RevokeLease`、`GetRevision` 和 `CompareAndPut`。它们只接受相对逻辑 key，并固定写入当前 namespace 的 `/config/`；revision 0 表示 create-if-absent，CAS 冲突返回 `false, nil`。这些方法适合短期在线事实，不替代业务数据库权威状态；调用方必须消费 keepalive channel、处理关闭/租约丢失并在退出前主动 revoke。
+
 ## 3. HTTP 微服务显式注册
 
 HTTP 微服务需要分别注册服务实例和 HTTP 路由：

@@ -12,9 +12,45 @@ import (
 	"github.com/xs23933/core/v3/reuseport"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/reflection"
 	"google.golang.org/grpc/status"
 )
+
+var (
+	// ErrGRPCServerAlreadyInitialized 表示 gRPC server 已创建，不能再改变 transport 或 interceptor。
+	ErrGRPCServerAlreadyInitialized = errors.New("grpc server already initialized")
+	// ErrGRPCServerAlreadyConfigured 表示同一个 Core 实例已经完成一次 gRPC server 配置。
+	ErrGRPCServerAlreadyConfigured = errors.New("grpc server already configured")
+	// ErrGRPCTLSSharedAddress 表示 transport credentials 不能在 HTTP 共端口 ServeHTTP 路径上生效。
+	ErrGRPCTLSSharedAddress = errors.New("grpc transport credentials require a dedicated grpc address")
+)
+
+// GRPCServerConfig 定义 Core 创建 gRPC server 前可注入的通用 transport 与 interceptor。
+// 调用方拥有证书身份和授权策略；Core 只负责 server 生命周期和 interceptor chain。
+type GRPCServerConfig struct {
+	TransportCredentials credentials.TransportCredentials
+	UnaryInterceptors    []grpc.UnaryServerInterceptor
+	StreamInterceptors   []grpc.StreamServerInterceptor
+}
+
+// ConfigureGRPCServer 在 gRPC server 初始化前配置 transport 和 interceptor。
+// 每个 Core 实例只允许配置一次，避免后续调用静默覆盖安全策略。
+func (app *Core) ConfigureGRPCServer(config GRPCServerConfig) error {
+	app.mutex.Lock()
+	defer app.mutex.Unlock()
+
+	if app.grpcServer != nil {
+		return ErrGRPCServerAlreadyInitialized
+	}
+	if app.grpcConfig != nil {
+		return ErrGRPCServerAlreadyConfigured
+	}
+	config.UnaryInterceptors = append([]grpc.UnaryServerInterceptor(nil), config.UnaryInterceptors...)
+	config.StreamInterceptors = append([]grpc.StreamServerInterceptor(nil), config.StreamInterceptors...)
+	app.grpcConfig = &config
+	return nil
+}
 
 // EnableGRPC 启用 gRPC 支持
 func (app *Core) EnableGRPC(addr ...string) *Core {
@@ -30,14 +66,36 @@ func (app *Core) EnableGRPC(addr ...string) *Core {
 
 // GetGRPCServer 获取 gRPC 服务器实例（用于注册服务）
 func (app *Core) GetGRPCServer() *grpc.Server {
+	app.mutex.Lock()
+	defer app.mutex.Unlock()
+	return app.getOrCreateGRPCServer()
+}
+
+func (app *Core) getOrCreateGRPCServer() *grpc.Server {
 	if app.grpcServer == nil {
-		app.grpcServer = grpc.NewServer(grpc.UnaryInterceptor(errorWrapInterceptor))
+		app.grpcServer = app.newGRPCServer()
 		app.grpcEnabled = true
 	}
 	if app.grpcAddr == "" {
 		app.grpcAddr = app.addr
 	}
 	return app.grpcServer
+}
+
+func (app *Core) newGRPCServer() *grpc.Server {
+	unaryInterceptors := []grpc.UnaryServerInterceptor{errorWrapInterceptor}
+	serverOptions := make([]grpc.ServerOption, 0, 3)
+	if app.grpcConfig != nil {
+		unaryInterceptors = append(unaryInterceptors, app.grpcConfig.UnaryInterceptors...)
+		if len(app.grpcConfig.StreamInterceptors) > 0 {
+			serverOptions = append(serverOptions, grpc.ChainStreamInterceptor(app.grpcConfig.StreamInterceptors...))
+		}
+		if app.grpcConfig.TransportCredentials != nil {
+			serverOptions = append(serverOptions, grpc.Creds(app.grpcConfig.TransportCredentials))
+		}
+	}
+	serverOptions = append(serverOptions, grpc.ChainUnaryInterceptor(unaryInterceptors...))
+	return grpc.NewServer(serverOptions...)
 }
 
 // RegisterGRPCService 注册 gRPC 服务
@@ -52,6 +110,11 @@ func (app *Core) startGRPCServer() error {
 	}
 
 	if app.grpcAddr == app.addr {
+		// grpc.Server 的 transport credentials 只在 Serve listener 握手路径执行。
+		// ServeHTTP 共端口无法提供等价的 gRPC peer.AuthInfo，必须拒绝伪安全配置。
+		if app.grpcConfig != nil && app.grpcConfig.TransportCredentials != nil {
+			return ErrGRPCTLSSharedAddress
+		}
 		Info("gRPC sharing port with HTTP on %s", app.addr)
 		app.setupSharedHandler()
 		return nil
@@ -143,14 +206,7 @@ func (app *Core) EnableEtcdRegistry(opts *etcd.Options) error {
 	app.OnShutdown(func() {
 		registry.Deregister()
 	})
-	if app.grpcServer == nil {
-		app.grpcServer = grpc.NewServer(grpc.UnaryInterceptor(errorWrapInterceptor))
-		app.grpcEnabled = true
-	}
-	if app.grpcAddr == "" {
-		app.grpcAddr = app.addr
-	}
-	reflection.Register(app.grpcServer)
+	reflection.Register(app.GetGRPCServer())
 
 	return nil
 }

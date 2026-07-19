@@ -575,6 +575,28 @@ func main() {
 
 HTTP 和 gRPC 使用不同端口时，`Listen(":8080")` 负责 HTTP，`EnableGRPC(":9001")` 负责 gRPC。
 
+需要服务端 TLS、mTLS 或自定义 unary/stream interceptor 时，必须在第一次注册或获取 gRPC server 前调用 `ConfigureGRPCServer`。证书身份和授权策略由应用负责，Core 只托管 server 生命周期和 interceptor chain：
+
+```go
+serverTLS := &tls.Config{
+    MinVersion:   tls.VersionTLS13,
+    Certificates: []tls.Certificate{serverCertificate},
+    ClientAuth:   tls.RequireAndVerifyClientCert,
+    ClientCAs:    clientCAPool,
+}
+if err := app.ConfigureGRPCServer(core.GRPCServerConfig{
+    TransportCredentials: credentials.NewTLS(serverTLS),
+    UnaryInterceptors:     []grpc.UnaryServerInterceptor{identityUnary},
+    StreamInterceptors:    []grpc.StreamServerInterceptor{identityStream},
+}); err != nil {
+    panic(err)
+}
+app.EnableGRPC(":9001")
+app.RegisterGRPCService(registerServices)
+```
+
+配置只能执行一次；`GetGRPCServer`、`RegisterGRPCService` 或 `EnableEtcdRegistry` 已经创建 server 后再配置会返回错误。Core 的默认 unary error wrapper 始终保留，并位于调用方 unary interceptor chain 外层。
+
 如果希望 HTTP/1 和 gRPC 共用端口，可以让 `EnableGRPC` 使用和 `Listen` 相同的地址。框架会根据 HTTP/2 与 `Content-Type: application/grpc` 自动分流。
 
 ```go
@@ -584,6 +606,8 @@ app.RegisterGRPCService(func(s *grpc.Server) {
 app.EnableGRPC(":8080")
 app.Listen(":8080")
 ```
+
+共端口模式只适用于未配置 gRPC transport credentials 的兼容路径。配置 credentials 后必须使用独立的 Core-managed gRPC 地址；否则启动返回 `ErrGRPCTLSSharedAddress`，不会把 `ServeHTTP` 错误描述为已执行 gRPC TLS 握手。
 
 需要注册到 etcd 并提供给网关时：
 
@@ -641,11 +665,53 @@ if err := app.EnableEtcdRegistry(&etcd.Options{
 }
 ```
 
+短期在线记录等场景可以复用 `EtcdDiscovery` 的租约与 revision CAS。这里只提供通用原语，业务所有权和重试策略仍由调用方决定：
+
+```go
+ctx, cancel := context.WithCancel(context.Background())
+defer cancel()
+
+leaseID, err := app.EtcdDiscovery.GrantLease(ctx, 10)
+if err != nil {
+    return err
+}
+defer app.EtcdDiscovery.RevokeLease(context.Background(), leaseID)
+
+keepAlive, err := app.EtcdDiscovery.KeepAliveLease(ctx, leaseID)
+if err != nil {
+    return err
+}
+go func() {
+    for range keepAlive {
+        // channel 关闭表示 context 取消、租约丢失或 Discovery 已关闭。
+    }
+}()
+
+current, found, err := app.EtcdDiscovery.GetRevision(ctx, "online/worker-a")
+if err != nil {
+    return err
+}
+expectedRevision := int64(0)
+if found {
+    expectedRevision = current.ModRevision
+}
+succeeded, err := app.EtcdDiscovery.CompareAndPut(ctx, "online/worker-a", expectedRevision, `{"addr":"127.0.0.1:9001"}`, leaseID)
+if err != nil {
+    return err
+}
+if !succeeded {
+    return errors.New("online record changed concurrently")
+}
+```
+
+租约 API 只接受非空相对 key，并始终写入当前 namespace 的 `/config/` 前缀。`expectedModRevision=0` 表示仅当 key 不存在时创建；CAS 冲突返回 `false, nil`。调用方应在关闭前主动 revoke 自己创建的租约，再关闭 Discovery。
+
 注意：
 
 - `service_addr` 必须是客户端和网关能访问到的地址，不一定等于本机监听地址。
 - 使用网关自动注册路由时，优先用 `EnableEtcdRegistry`，因为它会自动开启 reflection。
 - `RegisterGRPCService` 要在 `Listen` 或 `Run` 前调用。
+- `ConfigureGRPCServer` 必须在 `RegisterGRPCService`、`GetGRPCServer` 和 `EnableEtcdRegistry` 之前调用。
 
 ### 3. gRPC 客户端
 
@@ -1769,6 +1835,8 @@ log_rotate:
 | `missingok` | 日志文件不存在时继续运行并重新创建，不返回错误 |
 | `notifempty` | 当前日志文件为空时不切割、不压缩、不生成空的轮转文件 |
 | `copytruncate` | 切割时复制当前日志再截断原文件，适合不希望替换文件句柄的部署方式 |
+
+调用 `RotatingLogWriter.RedirectStdout` 后，框架会强制使用 copy-truncate 语义，即使配置中没有显式写 `copytruncate`。这是为了在并发 `fmt.Print*` 时保持 `os.Stdout` 指针和文件描述符稳定，避免轮转过程替换进程级全局指针产生数据竞争；未重定向 stdout 的 writer 仍按配置选择 rename 或 copy-truncate。
 
 代码方式：
 
