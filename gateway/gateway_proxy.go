@@ -49,11 +49,22 @@ func NewReflectionProxy(app *core.Core, addr string) (*ReflectionProxy, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create client conn failed: %w", err)
 	}
+	return newReflectionProxyFromConn(app, addr, conn)
+}
 
+func newReflectionProxyForService(app *core.Core, serviceName, addr string) (*ReflectionProxy, error) {
+	conn, err := app.GrpcClientAt(serviceName, addr)
+	if err != nil {
+		return nil, fmt.Errorf("create client conn failed: %w", err)
+	}
+	return newReflectionProxyFromConn(app, addr, conn)
+}
+
+func newReflectionProxyFromConn(app *core.Core, addr string, conn *grpc.ClientConn) (*ReflectionProxy, error) {
 	p := &ReflectionProxy{conn: conn, addr: addr, app: app}
 
 	if err := p.discoverAndRegister(); err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, fmt.Errorf("discover and register failed: %w", err)
 	}
 	return p, nil

@@ -66,7 +66,7 @@ func (p *ServicePool) AddOrUpdateInstance(instanceID, addr string) (*ReflectionP
 	}
 
 	// 慢路径：先创建新 proxy（不持锁，避免阻塞 Get）
-	proxy, err := NewReflectionProxy(p.app, addr)
+	proxy, err := newReflectionProxyForService(p.app, p.name, addr)
 	if err != nil {
 		return nil, false, err
 	}
