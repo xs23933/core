@@ -179,6 +179,23 @@ gateway:
 ## 4. 自动路由命名
 
 网关会把 proto package、service 和 method 合成 HTTP 路由。
+如果前缀未包含 Post/Get/Put/Delete，HTTP method 默认为 POST。
+服务名去除 `Service` 后缀，转为全小写。会自动映射为路径前缀, 例如 `UserService` → `/user`。
+方法中尽量就别包含服务名前缀,否则会出现路径名多余重复: 
+
+```proto
+正确示例
+service UserService {
+    rpc GetInfo(GetUserInfoRequest) returns (GetUserInfoResponse); // GET /user/info
+}
+
+错误示例
+service UserService {
+    rpc GetUserInfo(GetUserInfoRequest) returns (GetUserInfoResponse); // GET /user/user/info
+}
+```
+
+
 
 | gRPC 方法名 | HTTP 方法 | HTTP 路径示例 |
 | ----------- | --------- | ------------- |
