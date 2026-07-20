@@ -275,16 +275,73 @@ func LoadConfigFile(file string, opts ...Options) Options {
 		conf = opts[0]
 	}
 
-	// 检查 --generate 标志
-	// if checkGenerate(file) {
-	// 	os.Exit(0)
-	// }
-
 	if strings.HasSuffix(file, ".dat") {
 		return loadEncryptedConfig(file, conf)
 	}
 
-	return loadYamlConfig(file, conf)
+	conf = loadYamlConfig(file, conf)
+	conf.ExpandEnv()
+	return conf
+}
+
+// ExpandEnv 递归替换所有配置值中的 ${ENV:VAR} 为环境变量值。
+// 支持格式:
+//   - ${ENV:VAR}     → os.Getenv("VAR")
+//   - ${ENV:VAR:def} → os.Getenv("VAR") 或默认值 "def"
+//
+// 零开销 — 仅在 LoadConfigFile 启动时调用一次。
+func (opt Options) ExpandEnv() {
+	for k, v := range opt {
+		switch val := v.(type) {
+		case string:
+			opt[k] = expandEnvString(val)
+		case Options:
+			val.ExpandEnv()
+		case map[string]any:
+			Options(val).ExpandEnv()
+		case []any:
+			for i, item := range val {
+				if s, ok := item.(string); ok {
+					val[i] = expandEnvString(s)
+				}
+			}
+		}
+	}
+}
+
+func expandEnvString(s string) string {
+	if !strings.Contains(s, "${ENV:") {
+		return s
+	}
+
+	for {
+		start := strings.Index(s, "${ENV:")
+		if start == -1 {
+			break
+		}
+		end := strings.IndexByte(s[start:], '}')
+		if end == -1 {
+			break
+		}
+		end += start
+
+		expr := s[start+6 : end] // 去掉 ${ENV: 前缀和 } 后缀
+		varName := expr
+		defaultVal := ""
+
+		if idx := strings.IndexByte(expr, ':'); idx > 0 {
+			varName = expr[:idx]
+			defaultVal = expr[idx+1:]
+		}
+
+		val := os.Getenv(varName)
+		if val == "" {
+			val = defaultVal
+		}
+
+		s = s[:start] + val + s[end+1:]
+	}
+	return s
 }
 
 // checkGenerate 检查命令行是否带 --generate 标志

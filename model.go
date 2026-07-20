@@ -13,6 +13,7 @@ import (
 	"runtime/debug"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -33,7 +34,11 @@ import (
 func NewModel(conf Options, debug, colorful bool) (map[string]*DB, error) {
 
 	nodeID := Conf.GetInt64("node_id", 1)
-	SnID, _ = sid.New(nodeID)
+	var err error
+	SnID, err = sid.New(nodeID)
+	if err != nil {
+		return nil, fmt.Errorf("SnID init failed: %w", err)
+	}
 	XID = xid.New(&xid.Config{
 		NodeID:      nodeID,
 		CounterBits: 16,
@@ -45,12 +50,16 @@ func NewModel(conf Options, debug, colorful bool) (map[string]*DB, error) {
 		if err != nil {
 			return nil, err
 		}
+		dbMu.Lock()
 		conns["default"] = db
 		dbsType["default"] = conf.GetString("type")
+		dbMu.Unlock()
 		return conns, nil
 	}
 
 	confs := Conf.GetMap("database")
+	dbMu.Lock()
+	defer dbMu.Unlock()
 	for name, cfg := range confs {
 		c := cfg.(Options)
 		db, err := openDB(c, debug, colorful, name)
@@ -1314,7 +1323,10 @@ func Conn(name ...string) *DB {
 	if len(name) > 0 {
 		key = name[0]
 	}
-	if db, ok := conns[key]; ok {
+	dbMu.RLock()
+	db, ok := conns[key]
+	dbMu.RUnlock()
+	if ok {
 		return db
 	}
 	Erro("Database connect failed: %s", key)
@@ -1322,17 +1334,21 @@ func Conn(name ...string) *DB {
 }
 
 func DBType(name ...string) string {
-	key := "default"
+	lookupKey := "default"
 	if len(name) > 0 {
-		key = name[0]
+		lookupKey = name[0]
 	}
-	if key, ok := dbsType[key]; ok {
-		return key
+	dbMu.RLock()
+	result, ok := dbsType[lookupKey]
+	dbMu.RUnlock()
+	if ok {
+		return result
 	}
 	return ""
 }
 
 var (
+	dbMu    sync.RWMutex
 	conns   = make(map[string]*DB)
 	dbsType = make(map[string]string)
 	SnID    *sid.SnowflakeID

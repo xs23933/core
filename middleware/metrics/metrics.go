@@ -14,20 +14,41 @@ import (
 
 type Config struct {
 	NormalizePath bool
+	MaxAge        time.Duration // 超过此时间的记录将被清理，0 表示不清理
+	MaxSize       int           // 最大记录数，超出时清空旧记录，0 表示不限制
 }
 
 var DefaultConfig = Config{
 	NormalizePath: true,
+	MaxAge:        5 * time.Minute,
+	MaxSize:       10000,
 }
 
 type Metrics struct {
 	cfg     Config
-	records sync.Map // map[string]*record
+	records sync.Map // map[string]*recordEntry
+}
+
+type recordEntry struct {
+	rec       record
+	createdAt atomic.Int64 // time.Time.UnixNano()
 }
 
 type record struct {
 	count     atomic.Uint64
 	latencyNs atomic.Uint64
+}
+
+func (r *recordEntry) createdAtTime() time.Time {
+	ns := r.createdAt.Load()
+	if ns == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, ns)
+}
+
+func (r *recordEntry) storeCreatedAt(t time.Time) {
+	r.createdAt.Store(t.UnixNano())
 }
 
 func New(conf ...Config) (*Metrics, core.HandlerFunc) {
@@ -36,6 +57,9 @@ func New(conf ...Config) (*Metrics, core.HandlerFunc) {
 		cfg = conf[0]
 	}
 	m := &Metrics{cfg: cfg}
+	if cfg.MaxAge > 0 || cfg.MaxSize > 0 {
+		go m.startGC()
+	}
 	return m, m.Middleware()
 }
 
@@ -52,10 +76,16 @@ func (m *Metrics) Middleware() core.HandlerFunc {
 		status := c.GetStatus()
 
 		key := metricKey(method, path, status)
-		val, _ := m.records.LoadOrStore(key, &record{})
-		rec := val.(*record)
-		rec.count.Add(1)
-		rec.latencyNs.Add(uint64(time.Since(start).Nanoseconds()))
+		now := time.Now()
+		entryVal := &recordEntry{}
+		entryVal.storeCreatedAt(now)
+		val, loaded := m.records.LoadOrStore(key, entryVal)
+		entry := val.(*recordEntry)
+		if loaded {
+			entry.storeCreatedAt(now)
+		}
+		entry.rec.count.Add(1)
+		entry.rec.latencyNs.Add(uint64(time.Since(start).Nanoseconds()))
 		return err
 	}
 }
@@ -82,13 +112,13 @@ func (m *Metrics) RenderPrometheus() string {
 		if !ok {
 			return true
 		}
-		rec := v.(*record)
+		entry := v.(*recordEntry)
 		rows = append(rows, row{
 			method: method,
 			path:   path,
 			status: status,
-			count:  rec.count.Load(),
-			sumNs:  rec.latencyNs.Load(),
+			count:  entry.rec.count.Load(),
+			sumNs:  entry.rec.latencyNs.Load(),
 		})
 		return true
 	})
@@ -199,4 +229,43 @@ func escapeLabel(v string) string {
 	v = strings.ReplaceAll(v, "\"", "\\\"")
 	v = strings.ReplaceAll(v, "\n", "\\n")
 	return v
+}
+
+func (m *Metrics) startGC() {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		cutoff := time.Now().Add(-m.cfg.MaxAge)
+		var count int
+
+		m.records.Range(func(k, v any) bool {
+			count++
+			entry := v.(*recordEntry)
+			// 如果 MaxSize > 0 且数量超限，或者 MaxAge > 0 且记录过期
+			if m.cfg.MaxAge > 0 && entry.createdAtTime().Before(cutoff) {
+				m.records.Delete(k)
+				count--
+			}
+			return true
+		})
+
+		// MaxSize 清理：如果超出限制，删除最老的记录直到满足限制
+		if m.cfg.MaxSize > 0 && count > m.cfg.MaxSize {
+			type item struct {
+				key string
+				t   time.Time
+			}
+			items := make([]item, 0, count)
+			m.records.Range(func(k, v any) bool {
+				entry := v.(*recordEntry)
+				items = append(items, item{key: k.(string), t: entry.createdAtTime()})
+				return true
+			})
+			sort.Slice(items, func(i, j int) bool { return items[i].t.Before(items[j].t) })
+			for _, it := range items[:count-m.cfg.MaxSize] {
+				m.records.Delete(it.key)
+			}
+		}
+	}
 }

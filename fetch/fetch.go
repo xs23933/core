@@ -423,6 +423,7 @@ func (r *FetchRequest) Result(ctx context.Context, out ...any) (*FetchResult, er
 	if err != nil {
 		if resp != nil {
 			core.D("%s %s(%d): %v", r.method, reqURL, resp.StatusCode, err)
+			resp.Body.Close()
 		} else {
 			core.D("%s %s: %v", r.method, reqURL, err)
 		}

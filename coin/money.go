@@ -348,6 +348,9 @@ func (m Money) MulInt(n int64) Money {
 }
 
 func (m Money) DivInt(n int64) Money {
+	if n == 0 {
+		return Zero()
+	}
 	return Money{v: new(big.Int).Div(m.norm(), big.NewInt(n))}
 }
 

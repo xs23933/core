@@ -433,7 +433,7 @@ func (m Money) Ge(x Money) bool { // >=
 	return m.Cmp(x) >= 0
 }
 
-// Le 居于 Cmp 实现的 <=
+// Le 基于 Cmp 实现的 <=
 func (m Money) Le(x Money) bool { // <=
 	return m.Cmp(x) <= 0
 }

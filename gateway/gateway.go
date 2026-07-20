@@ -532,59 +532,78 @@ func (gw *EtcdGateway) removeInstance(serviceName, instanceID string) {
 	}
 }
 
-// watchEtcdServices 监听 etcd 中的服务变化
+// watchEtcdServices 监听 etcd 中的服务变化，watch channel 意外关闭时自动重试
 func (gw *EtcdGateway) watchEtcdServices(startRev int64) {
-	opts := []clientv3.OpOption{clientv3.WithPrefix()}
-	if startRev > 0 {
-		opts = append(opts, clientv3.WithRev(startRev))
-	}
-	core.Info("[Gateway] watching etcd services prefix %s from revision %d", gw.serviceRoot, startRev)
-	watchChan := gw.etcdCli.Watch(gw.watchCtx, gw.serviceRoot, opts...)
+	baseDelay := time.Second
+	maxDelay := 30 * time.Second
+	rev := startRev
 
-	for resp := range watchChan {
-		if err := resp.Err(); err != nil {
-			core.Warn("[Gateway] etcd service watch error at revision %d: %v", resp.Header.GetRevision(), err)
-			continue
+	for {
+		core.Info("[Gateway] watching etcd services prefix %s from revision %d", gw.serviceRoot, rev)
+		opts := []clientv3.OpOption{clientv3.WithPrefix()}
+		if rev > 0 {
+			opts = append(opts, clientv3.WithRev(rev))
 		}
-		for _, ev := range resp.Events {
-			key := string(ev.Kv.Key)
-			serviceName, instanceID, ok := parseServiceKey(key, gw.serviceRoot)
-			if !ok {
-				core.Warn("[Gateway] ignore invalid service key from etcd watch: %s", key)
+		watchChan := gw.etcdCli.Watch(gw.watchCtx, gw.serviceRoot, opts...)
+
+		for resp := range watchChan {
+			if err := resp.Err(); err != nil {
+				core.Warn("[Gateway] etcd service watch error at revision %d: %v", resp.Header.GetRevision(), err)
 				continue
 			}
-
-			switch ev.Type {
-			case clientv3.EventTypePut:
-				info, err := parseServiceInstance(ev.Kv.Value)
-				if err != nil {
-					core.Warn("[Gateway] ignore invalid service instance %s: %v", key, err)
+			rev = resp.Header.GetRevision() + 1
+			for _, ev := range resp.Events {
+				key := string(ev.Kv.Key)
+				serviceName, instanceID, ok := parseServiceKey(key, gw.serviceRoot)
+				if !ok {
+					core.Warn("[Gateway] ignore invalid service key from etcd watch: %s", key)
 					continue
 				}
-				if info.ID == "" {
-					info.ID = instanceID
-				}
-				gw.addHTTPInstance(serviceName, info.ID, info.HTTPAddr())
-				core.Info("[Gateway] watch: %s/%s registered at %s", serviceName, info.ID, info.Addr)
 
-				if key, ok := gw.beginConnectInstance(serviceName, info.ID); ok {
-					go func() {
-						defer gw.finishConnectInstance(key)
-						gw.connectInstance(serviceName, info.ID, info.Addr)
-					}()
-				}
+				switch ev.Type {
+				case clientv3.EventTypePut:
+					info, err := parseServiceInstance(ev.Kv.Value)
+					if err != nil {
+						core.Warn("[Gateway] ignore invalid service instance %s: %v", key, err)
+						continue
+					}
+					if info.ID == "" {
+						info.ID = instanceID
+					}
+					gw.addHTTPInstance(serviceName, info.ID, info.HTTPAddr())
+					core.Info("[Gateway] watch: %s/%s registered at %s", serviceName, info.ID, info.Addr)
 
-			case clientv3.EventTypeDelete:
-				core.D("[Gateway] watch: %s/%s deregistered", serviceName, instanceID)
-				go gw.removeInstance(serviceName, instanceID)
+					if key, ok := gw.beginConnectInstance(serviceName, info.ID); ok {
+						go func() {
+							defer gw.finishConnectInstance(key)
+							gw.connectInstance(serviceName, info.ID, info.Addr)
+						}()
+					}
+
+				case clientv3.EventTypeDelete:
+					core.D("[Gateway] watch: %s/%s deregistered", serviceName, instanceID)
+					go gw.removeInstance(serviceName, instanceID)
+				}
 			}
 		}
+
+		// watch channel 关闭，检查是否因为 context 取消
+		if gw.watchCtx.Err() != nil {
+			core.D("[Gateway] etcd service watch stopped: %v", gw.watchCtx.Err())
+			return
+		}
+
+		core.Warn("[Gateway] etcd service watch stopped unexpectedly at revision %d, retrying...", rev)
+		select {
+		case <-gw.watchCtx.Done():
+			return
+		case <-time.After(baseDelay):
+		}
+		baseDelay *= 2
+		if baseDelay > maxDelay {
+			baseDelay = maxDelay
+		}
 	}
-	if gw.watchCtx.Err() != nil {
-		core.D("[Gateway] etcd service watch stopped: %v", gw.watchCtx.Err())
-		return
-	}
-	core.Warn("[Gateway] etcd service watch stopped unexpectedly at revision %d", startRev)
 }
 
 // autoRegisterRoutes 自动为 gRPC 方法注册 HTTP 路由，同时清理已删除方法的旧路由
@@ -750,32 +769,55 @@ func nextRouteWatchRevision(loadedRevision int64) int64 {
 }
 
 func (gw *EtcdGateway) watchRoutes(startRev int64) {
-	opts := []clientv3.OpOption{clientv3.WithPrefix()}
-	if startRev > 0 {
-		opts = append(opts, clientv3.WithRev(startRev))
-	}
-	watchChan := gw.etcdCli.Watch(gw.watchCtx, gw.prefix, opts...)
-	for resp := range watchChan {
-		if err := resp.Err(); err != nil {
-			core.Warn("[Gateway] route watch error at revision %d: %v", resp.Header.GetRevision(), err)
-			continue
+	baseDelay := time.Second
+	maxDelay := 30 * time.Second
+	rev := startRev
+
+	for {
+		opts := []clientv3.OpOption{clientv3.WithPrefix()}
+		if rev > 0 {
+			opts = append(opts, clientv3.WithRev(rev))
 		}
-		for _, ev := range resp.Events {
-			switch ev.Type {
-			case clientv3.EventTypePut:
-				var route Route
-				if err := json.Unmarshal(ev.Kv.Value, &route); err != nil {
-					continue
-				}
-				if route.Enabled {
-					gw.addOrUpdateRoute(&route)
-				} else {
-					gw.removeRouteByID(route.ID)
-				}
-			case clientv3.EventTypeDelete:
-				routeID := strings.TrimPrefix(string(ev.Kv.Key), gw.prefix)
-				gw.removeRouteByID(routeID)
+		watchChan := gw.etcdCli.Watch(gw.watchCtx, gw.prefix, opts...)
+		for resp := range watchChan {
+			if err := resp.Err(); err != nil {
+				core.Warn("[Gateway] route watch error at revision %d: %v", resp.Header.GetRevision(), err)
+				continue
 			}
+			rev = resp.Header.GetRevision() + 1
+			for _, ev := range resp.Events {
+				switch ev.Type {
+				case clientv3.EventTypePut:
+					var route Route
+					if err := json.Unmarshal(ev.Kv.Value, &route); err != nil {
+						continue
+					}
+					if route.Enabled {
+						gw.addOrUpdateRoute(&route)
+					} else {
+						gw.removeRouteByID(route.ID)
+					}
+				case clientv3.EventTypeDelete:
+					routeID := strings.TrimPrefix(string(ev.Kv.Key), gw.prefix)
+					gw.removeRouteByID(routeID)
+				}
+			}
+		}
+
+		// watch channel 关闭，检查是否因为 context 取消
+		if gw.watchCtx.Err() != nil {
+			return
+		}
+
+		core.Warn("[Gateway] route watch stopped unexpectedly at revision %d, retrying...", rev)
+		select {
+		case <-gw.watchCtx.Done():
+			return
+		case <-time.After(baseDelay):
+		}
+		baseDelay *= 2
+		if baseDelay > maxDelay {
+			baseDelay = maxDelay
 		}
 	}
 }
@@ -888,8 +930,8 @@ func (gw *EtcdGateway) createProxyHandler(route *Route) core.HandlerFunc {
 		}
 
 		var bodyMap core.Map
-		if ctx.Method() != "GET" {
-			if err := ctx.Bind(&bodyMap); err != nil {
+		if ctx.Method() != "GET" && len(rawBody) > 0 {
+			if err := sonic.Unmarshal(rawBody, &bodyMap); err != nil {
 				core.Erro("[Gateway] gRPC proxy bind body failed: method=%s path=%s grpc=%s err=%v",
 					ctx.Method(), ctx.Path(), route.GRPCMethod, err)
 			}

@@ -30,6 +30,9 @@ const (
 	SlidingWindow Algorithm = "sliding_window"
 )
 
+// numShards 分片数 — 每个 shard 持有独立的 mutex，减少锁竞争
+const numShards = 16
+
 var DefaultConfig = Config{
 	Max:        100,
 	Window:     time.Minute,
@@ -39,18 +42,35 @@ var DefaultConfig = Config{
 	Message:    "rate limit exceeded",
 }
 
-type Limiter struct {
-	cfg     Config
-	now     func() time.Time
-	seq     atomic.Uint64
+// shard 速率限制分片，持有独立锁和状态
+type shard struct {
 	mu      sync.Mutex
 	fixed   map[string]*entry
 	sliding map[string][]time.Time
+	lastGC  time.Time
+}
+
+type Limiter struct {
+	cfg    Config
+	now    func() time.Time
+	seq    atomic.Uint64
+	shards [numShards]*shard
 }
 
 type entry struct {
 	count   int64
 	expires time.Time
+}
+
+// shardKey 对 key 进行哈希，返回对应的 shard 索引
+func shardKey(key string) int {
+	// FNV-1a 风格哈希，快速且分布均匀
+	h := uint32(2166136261)
+	for i := 0; i < len(key); i++ {
+		h ^= uint32(key[i])
+		h *= 16777619
+	}
+	return int(h % numShards)
 }
 
 func New(conf ...Config) core.HandlerFunc {
@@ -81,10 +101,14 @@ func New(conf ...Config) core.HandlerFunc {
 		cfg.Redis = merged.Redis
 	}
 	limiter := &Limiter{
-		cfg:     cfg,
-		now:     time.Now,
-		fixed:   make(map[string]*entry),
-		sliding: make(map[string][]time.Time),
+		cfg: cfg,
+		now: time.Now,
+	}
+	for i := 0; i < numShards; i++ {
+		limiter.shards[i] = &shard{
+			fixed:   make(map[string]*entry),
+			sliding: make(map[string][]time.Time),
+		}
 	}
 	return limiter.Middleware()
 }
@@ -134,18 +158,19 @@ func (l *Limiter) buildKey(c core.Ctx) string {
 
 func (l *Limiter) allowMemoryFixed(key string) (current int64, resetIn time.Duration) {
 	now := l.now()
+	sh := l.shards[shardKey(key)]
 
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
 
-	e, ok := l.fixed[key]
+	e, ok := sh.fixed[key]
 	if !ok || now.After(e.expires) {
 		e = &entry{
 			count:   1,
 			expires: now.Add(l.cfg.Window),
 		}
-		l.fixed[key] = e
-		l.gcLocked(now)
+		sh.fixed[key] = e
+		l.gcShardLocked(sh, now)
 		return e.count, l.cfg.Window
 	}
 
@@ -160,11 +185,12 @@ func (l *Limiter) allowMemoryFixed(key string) (current int64, resetIn time.Dura
 func (l *Limiter) allowMemorySliding(key string) (current int64, resetIn time.Duration) {
 	now := l.now()
 	cutoff := now.Add(-l.cfg.Window)
+	sh := l.shards[shardKey(key)]
 
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
 
-	hits := l.sliding[key]
+	hits := sh.sliding[key]
 	firstValid := 0
 	for firstValid < len(hits) && !hits[firstValid].After(cutoff) {
 		firstValid++
@@ -176,13 +202,13 @@ func (l *Limiter) allowMemorySliding(key string) (current int64, resetIn time.Du
 
 	if int64(len(hits)) >= l.cfg.Max {
 		resetIn = max(hits[0].Add(l.cfg.Window).Sub(now), 0)
-		l.sliding[key] = hits
+		sh.sliding[key] = hits
 		return int64(len(hits)) + 1, resetIn
 	}
 
 	hits = append(hits, now)
-	l.sliding[key] = hits
-	l.gcLocked(now)
+	sh.sliding[key] = hits
+	l.gcShardLocked(sh, now)
 	if len(hits) == 0 {
 		return 0, l.cfg.Window
 	}
@@ -190,19 +216,32 @@ func (l *Limiter) allowMemorySliding(key string) (current int64, resetIn time.Du
 	return int64(len(hits)), resetIn
 }
 
-func (l *Limiter) gcLocked(now time.Time) {
-	if len(l.fixed) >= 1024 {
-		for k, v := range l.fixed {
-			if now.After(v.expires) {
-				delete(l.fixed, k)
-			}
+// gcShardLocked 清理 shard 中已过期的条目。调用者必须持有 sh.mu。
+// 与原始版本不同：1) 仅清理当前 shard（1/16 条目） 2) 有 GC 间隔限流（>= 30s）
+func (l *Limiter) gcShardLocked(sh *shard, now time.Time) {
+	const gcInterval = 30 * time.Second
+	const gcThreshold = 64
+
+	if len(sh.fixed) < gcThreshold && len(sh.sliding) < gcThreshold {
+		return
+	}
+	if now.Before(sh.lastGC.Add(gcInterval)) {
+		return
+	}
+	sh.lastGC = now
+
+	// 批量清理 fixed 过期条目
+	for k, v := range sh.fixed {
+		if now.After(v.expires) {
+			delete(sh.fixed, k)
 		}
 	}
-	if len(l.sliding) >= 1024 {
+	// 批量清理 sliding 过期条目
+	if len(sh.sliding) > 0 {
 		cutoff := now.Add(-l.cfg.Window)
-		for k, hits := range l.sliding {
+		for k, hits := range sh.sliding {
 			if len(hits) == 0 || !hits[len(hits)-1].After(cutoff) {
-				delete(l.sliding, k)
+				delete(sh.sliding, k)
 			}
 		}
 	}

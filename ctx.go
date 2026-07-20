@@ -587,6 +587,33 @@ func (c *BaseCtx) Validate(out any) error {
 	return nil
 }
 
+// ReadBodyAndValidate 读取请求体并验证，返回统一的错误响应格式。
+// 先调用 c.ReadBody(out) 解析，再调用 c.Validate(out) 验证。
+// 解析失败返回 400，验证失败返回 422。
+// 使用方式:
+//
+//	var req CreateUserReq
+//	if err := c.ReadBodyAndValidate(&req); err != nil {
+//	    return err
+//	}
+func (c *BaseCtx) ReadBodyAndValidate(out any) error {
+	if err := c.ReadBody(out); err != nil {
+		return err
+	}
+	if err := c.Validate(out); err != nil {
+		// validator.ValidationErrors 转换为可读消息
+		if errs, ok := err.(validator.ValidationErrors); ok {
+			msg := make([]string, 0, len(errs))
+			for _, fe := range errs {
+				msg = append(msg, fmt.Sprintf("%s: %s", fe.Field(), fe.Tag()))
+			}
+			return NewError(422, strings.Join(msg, "; "))
+		}
+		return NewError(422, err.Error())
+	}
+	return nil
+}
+
 // Cookie
 
 // SetCookie adds a Set-Cookie header to the ResponseWriter's headers.

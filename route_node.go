@@ -174,50 +174,57 @@ func (n *RouteNode) matchPath(path string, forceEmptySegment bool, ctx Ctx, chai
 
 	if n.paramChild != nil && seg != "" {
 		paramName := n.paramChild.path[1:]
-		oldParams := cloneParams(ctx)
+		oldVal, hadParam := saveParam(ctx, paramName)
 		ctx.SetParams(paramName, seg)
 		if matched, ok := n.paramChild.matchPath(rest, false, ctx, append(chain, n.paramChild.middlewares...)); ok {
 			return matched, true
 		}
-		restoreParams(ctx, oldParams)
+		restoreParam(ctx, paramName, oldVal, hadParam)
 	}
 
 	if n.catchChild != nil {
-		oldParams := cloneParams(ctx)
 		catchValue := path
 		if forceEmptySegment {
 			catchValue = ""
 		}
-		ctx.SetParams(n.catchChild.path[1:], catchValue)
+		paramName := n.catchChild.path[1:]
+		oldVal, hadParam := saveParam(ctx, paramName)
+		ctx.SetParams(paramName, catchValue)
 		chain = append(chain, n.catchChild.middlewares...)
 		chain = append(chain, n.catchChild.handlers...)
 		if len(n.catchChild.handlers) > 0 {
 			return chain, true
 		}
-		restoreParams(ctx, oldParams)
+		restoreParam(ctx, paramName, oldVal, hadParam)
 	}
 
 	return nil, false
 }
 
-func cloneParams(ctx Ctx) map[string]string {
+// saveParam 保存参数当前值用于回溯，返回旧值和是否存在
+func saveParam(ctx Ctx, key string) (string, bool) {
 	baseCtx, ok := ctx.(*BaseCtx)
-	if !ok || len(baseCtx.params) == 0 {
-		return nil
+	if !ok {
+		return "", false
 	}
-	params := make(map[string]string, len(baseCtx.params))
-	for k, v := range baseCtx.params {
-		params[k] = v
+	if baseCtx.params == nil {
+		return "", false
 	}
-	return params
+	old, ok := baseCtx.params[key]
+	return old, ok
 }
 
-func restoreParams(ctx Ctx, params map[string]string) {
+// restoreParam 恢复参数值或删除参数
+func restoreParam(ctx Ctx, key, oldVal string, hadParam bool) {
 	baseCtx, ok := ctx.(*BaseCtx)
 	if !ok {
 		return
 	}
-	baseCtx.params = params
+	if hadParam {
+		baseCtx.params[key] = oldVal
+	} else {
+		delete(baseCtx.params, key)
+	}
 }
 
 func (n *RouteNode) addRouteNode(path string) *RouteNode {

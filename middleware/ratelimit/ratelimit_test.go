@@ -1,6 +1,7 @@
 package ratelimit
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -50,18 +51,27 @@ func TestMemoryRateLimit(t *testing.T) {
 	}
 }
 
+func newTestLimiter(cfg Config, now func() time.Time) *Limiter {
+	l := &Limiter{
+		cfg: cfg,
+		now: now,
+	}
+	for i := 0; i < numShards; i++ {
+		l.shards[i] = &shard{
+			fixed:   make(map[string]*entry),
+			sliding: make(map[string][]time.Time),
+		}
+	}
+	return l
+}
+
 func TestMemorySlidingWindow(t *testing.T) {
 	now := time.Date(2026, 5, 17, 8, 0, 0, 0, time.UTC)
-	limiter := &Limiter{
-		cfg: Config{
-			Max:       2,
-			Window:    time.Second,
-			Algorithm: SlidingWindow,
-		},
-		now:     func() time.Time { return now },
-		fixed:   make(map[string]*entry),
-		sliding: make(map[string][]time.Time),
-	}
+	limiter := newTestLimiter(Config{
+		Max:       2,
+		Window:    time.Second,
+		Algorithm: SlidingWindow,
+	}, func() time.Time { return now })
 
 	current, _ := limiter.allowMemorySliding("user:1")
 	if current != 1 {
@@ -131,28 +141,27 @@ func BenchmarkMemorySlidingWindow(b *testing.B) {
 }
 
 func benchmarkLimiterMemory(b *testing.B, algorithm Algorithm) {
-	limiter := &Limiter{
-		cfg: Config{
-			Max:       int64(b.N) + 1,
-			Window:    time.Minute,
-			Algorithm: algorithm,
-		},
-		now:     time.Now,
-		fixed:   make(map[string]*entry),
-		sliding: make(map[string][]time.Time),
-	}
+	limiter := newTestLimiter(Config{
+		Max:       int64(b.N) + 1,
+		Window:    time.Minute,
+		Algorithm: algorithm,
+	}, time.Now)
+	var seq atomic.Uint64
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		var current int64
-		if algorithm == SlidingWindow {
-			current, _ = limiter.allowMemorySliding("bench")
-		} else {
-			current, _ = limiter.allowMemoryFixed("bench")
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			key := fmt.Sprintf("bench:%d", seq.Add(1)%1024)
+			var current int64
+			if algorithm == SlidingWindow {
+				current, _ = limiter.allowMemorySliding(key)
+			} else {
+				current, _ = limiter.allowMemoryFixed(key)
+			}
+			if current > int64(b.N)+1 {
+				b.Fatalf("current = %d, want <= %d", current, b.N+1)
+			}
 		}
-		if current > int64(b.N)+1 {
-			b.Fatalf("current = %d, want <= %d", current, b.N+1)
-		}
-	}
+	})
 }

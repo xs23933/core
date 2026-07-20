@@ -256,14 +256,16 @@ func New(options ...Options) *Core {
 	if conf := Conf.GetMap("redis"); len(conf) > 0 {
 		if _, err := NewRedis(conf, app.Debug); err != nil {
 			Erro("redis connect failed: %v", err)
+		} else {
+			app.OnShutdown(func() { CloseRedis() })
 		}
-		app.OnShutdown(func() { CloseRedis() })
 	}
 	if conf := Conf.GetMap("nsq"); len(conf) > 0 {
 		if err := InitNSQ(conf, app.Debug); err != nil {
 			Erro("nsq init failed: %v", err)
+		} else {
+			app.OnShutdown(func() { CloseNSQ() })
 		}
-		app.OnShutdown(func() { CloseNSQ() })
 	}
 	if !IsChild() {
 		Log(CoreHeader, VERSION)
@@ -271,7 +273,12 @@ func New(options ...Options) *Core {
 
 	for k, v := range app.assets {
 		prefix := fmt.Sprintf("/%s", k)
-		app.Static(prefix, v.(string))
+		path, ok := v.(string)
+		if !ok {
+			Erro("asset %s value is not a string, skipping", k)
+			continue
+		}
+		app.Static(prefix, path)
 	}
 
 	// 初始化 gRPC 配置
@@ -505,6 +512,50 @@ func (app *Core) registerHealthRoute() {
 		c.Response().DoWriteHeader()
 		return nil
 	})
+}
+
+// HealthProbe 健康探针函数，返回 nil 表示健康，否则返回错误信息。
+type HealthProbe func() error
+
+// healthProbes 全局健康探针列表
+var healthProbes []HealthProbe
+
+// AddHealthProbe 注册健康探针。用于检查 DB/Redis/等依赖健康状态。
+// 在启动时调用 NewModel/NewRedis 后注册对应的 ping 探针。
+func AddHealthProbe(probe HealthProbe) {
+	healthProbes = append(healthProbes, probe)
+}
+
+// CheckHealth 执行所有注册的健康探针，返回失败列表。
+func CheckHealth() map[string]string {
+	result := make(map[string]string)
+	for i, probe := range healthProbes {
+		if err := probe(); err != nil {
+			result[fmt.Sprintf("probe-%d", i)] = err.Error()
+		}
+	}
+	return result
+}
+
+// ShutdownWithTimeout 带超时时间的优雅关闭。
+// 调用 app.shutdown() 后等待所有连接排空，超时则强制退出。
+func (app *Core) ShutdownWithTimeout(timeout time.Duration) error {
+	app.shutdown()
+
+	ctx, cancel := context.WithTimeout(app.Ctx, timeout)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- app.Server.Shutdown(ctx)
+	}()
+
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		return app.Server.Close()
+	}
 }
 
 func (app *Core) Use(fn ...any) Router {

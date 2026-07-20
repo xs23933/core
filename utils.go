@@ -131,9 +131,17 @@ type Error struct {
 func NewError(code int, args ...any) *Error {
 	msg := StatusMessage(code)
 	if len(args) > 1 {
-		msg = fmt.Sprintf(args[0].(string), args[1:]...)
+		if format, ok := args[0].(string); ok {
+			msg = fmt.Sprintf(format, args[1:]...)
+		} else {
+			msg = fmt.Sprint(args...)
+		}
 	} else if len(args) == 1 {
-		msg = args[0].(string)
+		if s, ok := args[0].(string); ok {
+			msg = s
+		} else {
+			msg = fmt.Sprint(args[0])
+		}
 	}
 
 	return &Error{
@@ -820,7 +828,7 @@ func ContainsAny(elems Array, v any) bool {
 				return true
 			}
 		case time.Time:
-			if num, ok := v.(time.Time); ok && val == num {
+			if num, ok := v.(time.Time); ok && val.Equal(num) {
 				return true
 			}
 		case []byte:

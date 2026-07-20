@@ -51,8 +51,9 @@ type BatchConfig struct {
 type Conn struct {
 	conn   *websocket.Conn
 	send   chan *message
+	done   chan struct{}
 	shard  *Shard
-	meta   any
+	meta   atomic.Value // any
 	closed atomic.Bool
 
 	// 批量发送相关
@@ -66,6 +67,7 @@ func newConn(c *websocket.Conn) *Conn {
 	return &Conn{
 		conn: c,
 		send: make(chan *message, 32),
+		done: make(chan struct{}),
 
 		batchMsgs: make([]*message, 0, 10), // 预分配容量
 		batchConfig: BatchConfig{
@@ -82,7 +84,7 @@ func (c *Conn) EnableBatch(config BatchConfig) {
 	defer c.batchMu.Unlock()
 
 	c.batchConfig = config
-
+	c.batchConfig.Enabled = true
 	if config.InitialCap > 0 {
 		c.batchMsgs = make([]*message, 0, config.InitialCap)
 	}
@@ -92,16 +94,16 @@ func (c *Conn) SendBatchWithType(messageType MessageType, data []byte) {
 	if c.closed.Load() {
 		return
 	}
+
+	c.batchMu.Lock()
 	if !c.batchConfig.Enabled {
+		c.batchMu.Unlock()
 		c.SendWithType(messageType, data)
 		return
 	}
 
 	buf := bufferPool.Get().(*[]byte)
 	*buf = append((*buf)[:0], data...)
-
-	c.batchMu.Lock()
-	defer c.batchMu.Unlock()
 
 	c.batchMsgs = append(c.batchMsgs, &message{
 		typ:  messageType,
@@ -111,6 +113,7 @@ func (c *Conn) SendBatchWithType(messageType MessageType, data []byte) {
 	// 如果达到批量大小或延迟时间，发送批量消息
 	if len(c.batchMsgs) >= c.batchConfig.MaxSize {
 		c.flushBatch()
+		c.batchMu.Unlock()
 		return
 	}
 
@@ -122,6 +125,7 @@ func (c *Conn) SendBatchWithType(messageType MessageType, data []byte) {
 			c.flushBatch()
 		})
 	}
+	c.batchMu.Unlock()
 }
 
 func (c *Conn) flushBatch() {
@@ -298,6 +302,8 @@ func (c *Conn) writeLoop() {
 			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 				return
 			}
+		case <-c.done:
+			return
 		}
 	}
 }
@@ -330,11 +336,11 @@ e.g:
 	})
 */
 func (c *Conn) SetMeta(meta any) {
-	c.meta = meta
+	c.meta.Store(meta)
 }
 
 func (c *Conn) GetMeta() any {
-	return c.meta
+	return c.meta.Load()
 }
 
 /*
@@ -356,10 +362,11 @@ e.g:
 */
 func GetMeta[T any](c *Conn) (T, bool) {
 	var zero T
-	if c.meta == nil {
+	v := c.meta.Load()
+	if v == nil {
 		return zero, false
 	}
-	if meta, ok := c.meta.(T); ok {
+	if meta, ok := v.(T); ok {
 		return meta, true
 	}
 	return zero, false
@@ -370,10 +377,10 @@ func (c *Conn) Close() {
 		return
 	}
 
-	// 清理批量缓冲区
-	c.batchMu.Lock()
+	// 清理批量缓冲区 — 不用锁，CAS 保证了 Close 只执行一次
 	if c.batchTimer != nil {
 		c.batchTimer.Stop()
+		c.batchTimer = nil
 	}
 	for _, msg := range c.batchMsgs {
 		if msg != nil {
@@ -381,11 +388,13 @@ func (c *Conn) Close() {
 		}
 	}
 	c.batchMsgs = nil
-	c.batchMu.Unlock()
 
 	DefaultManager.Remove(c)
 	DefaultUserManager.Remove(c)
 	if c.conn != nil {
 		c.conn.Close()
+	}
+	if c.done != nil {
+		close(c.done)
 	}
 }
