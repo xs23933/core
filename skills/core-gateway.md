@@ -44,6 +44,13 @@ import (
 func main() {
     app := core.New(core.LoadConfigFile("config.yaml"))
 
+    // 只为需要 TLS 的逻辑服务配置 credentials。
+    if err := app.ConfigureGRPCClient("secure-service", core.GRPCClientConfig{
+        TransportCredentials: credentials.NewTLS(secureServiceTLS),
+    }); err != nil {
+        log.Fatal(err)
+    }
+
     if err := app.EnableEtcdDiscovery(nil); err != nil {
         log.Fatal("启用 etcd 服务发现失败:", err)
     }
@@ -72,6 +79,8 @@ etcd:
 ```
 
 共享一个 etcd 集群运行多个项目时设置 `namespace`。同一项目的业务服务、内部客户端和 Gateway 必须使用相同值；`xpay` 对应 `/xpay/services/`、`/xpay/gateway/routes/` 和 `/xpay/config/`。空值保持旧版全局前缀。
+
+Gateway 的 gRPC `ServicePool` 使用 etcd 实例所属的逻辑服务名调用 Core 客户端配置。因此可以只为部分服务调用 `ConfigureGRPCClient`，其他未配置服务保持旧的 plaintext transport。配置必须早于 `NewEtcdGateway`；错误 CA/server name 只使对应服务实例连接失败，不应改变其它服务的 transport。
 
 `EtcdDiscovery` 还提供通用的 `GrantLease`、`KeepAliveLease`、`RevokeLease`、`GetRevision` 和 `CompareAndPut`。它们只接受相对逻辑 key，并固定写入当前 namespace 的 `/config/`；revision 0 表示 create-if-absent，CAS 冲突返回 `false, nil`。这些方法适合短期在线事实，不替代业务数据库权威状态；调用方必须消费 keepalive channel、处理关闭/租约丢失并在退出前主动 revoke。
 

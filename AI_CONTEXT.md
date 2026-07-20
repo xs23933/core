@@ -580,8 +580,10 @@ return app.Listen(":8080")
 * Core 始终保留默认 unary error wrapper；调用方 interceptor 按配置顺序组成 chain。
 * 配置 gRPC transport credentials 时必须使用独立的 Core-managed gRPC 地址；HTTP/gRPC 共端口会以 `ErrGRPCTLSSharedAddress` fail closed。
 * 证书身份、URI、吊销和授权策略属于应用，不属于 Core。
-* 内部客户端用 `app.GrpcClient("user-service")` 或启动期的 `app.MustGrpcClient("user-service")`。
+* 内部客户端用 `app.GrpcClient("user-service")` 或启动期的 `app.MustGrpcClient("user-service")`；已有明确地址时用 `app.GrpcClientAt("user-service", target)`。
+* 某服务需要 TLS 时，在首次 dial 前调用一次 `ConfigureGRPCClient(serviceName, GRPCClientConfig{TransportCredentials: ...})`。Core 按服务隔离并克隆 credentials；配置服务禁止再传不透明旧 dial options。
 * 网关启动用 `app.EnableEtcdDiscovery(nil)` + `gateway.NewEtcdGateway(app)`。
+* Gateway 按发现到的逻辑服务名选择 `ConfigureGRPCClient` 配置；必须在 `NewEtcdGateway` 前配置。
 
 网关路由命名：
 
@@ -778,9 +780,11 @@ Core 的 gRPC 能力由以下入口组成：
 | ---- | ---- |
 | `RegisterGRPCService(func(*grpc.Server))` | 注册 protobuf 生成的 service |
 | `ConfigureGRPCServer(config)` | 在 server 创建前配置 transport credentials 与 unary/stream interceptor |
+| `ConfigureGRPCClient(serviceName, config)` | 在指定服务首次 dial 前配置 transport credentials |
 | `EnableGRPC(addr)` | 启动 gRPC server，可与 HTTP 共用端口 |
 | `EnableEtcdRegistry(opts)` | 注册 etcd、启用 discovery、开启 reflection |
 | `GrpcClient(serviceName)` | 基于 etcd resolver 创建客户端连接 |
+| `GrpcClientAt(serviceName, target)` | 使用同一每服务 transport 配置连接明确 target |
 | `gateway.NewEtcdGateway(app)` | 自动发现服务并生成 HTTP -> gRPC 路由 |
 
 服务端模板：
@@ -803,6 +807,17 @@ if err != nil {
     return err
 }
 client := pb.NewOrderServiceClient(conn)
+```
+
+TLS 客户端模板：
+
+```go
+if err := app.ConfigureGRPCClient("order-service", core.GRPCClientConfig{
+    TransportCredentials: credentials.NewTLS(clientTLS),
+}); err != nil {
+    return err
+}
+conn, err := app.GrpcClientAt("order-service", "127.0.0.1:9001")
 ```
 
 方法命名必须使用 `Post/Get/Put/Delete` 前缀。缩写写成 `Id`，不要写成 `ID`，否则会被拆成 `/i/d`。
