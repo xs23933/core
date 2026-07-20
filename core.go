@@ -76,6 +76,9 @@ type Core struct {
 	grpcConfig  *GRPCServerConfig
 	grpcAddr    string
 	grpcEnabled bool
+	// gRPC 客户端安全配置按逻辑服务名隔离，首次建立连接后不得替换。
+	grpcClientConfigs     map[string]GRPCClientConfig
+	grpcClientInitialized map[string]struct{}
 
 	// etcd 相关
 	etcdRegistry  *etcd.Registry
