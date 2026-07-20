@@ -247,11 +247,7 @@ func TestRootCatchAllDoesNotShadowStaticRoute(t *testing.T) {
 }
 
 func TestStaticRouteMatchDoesNotAllocate(t *testing.T) {
-	root := &RouteNode{
-		path:        "/",
-		nType:       root,
-		staticChild: make(map[string]*RouteNode),
-	}
+	root := &RouteNode{nType: root}
 	root.addRoute("/api/users/list", HandlerFuncs{func(Ctx) error { return nil }})
 	ctx := &BaseCtx{handlers: make(HandlerFuncs, 0, 4)}
 

@@ -6,7 +6,7 @@
 
 - 模块：`github.com/xs23933/core/v3`
 - 语言版本：以 `go.mod` 为准（当前为 Go 1.25.0）。
-- 定位：轻量级 Go Web 框架，包含自动路由、Ctx、GORM、Redis、NSQ、WebSocket、Fetch、gRPC、etcd 和 Gateway 等能力。
+- 定位：轻量级 Go Web 框架，包含自动路由、Ctx、GORM、Redis、NSQ、WebSocket、SSE、Fetch、gRPC、etcd 和 Gateway 等能力。
 - 设计原则：简洁、约定优于配置、可读性优先、低依赖；避免过度抽象、过度 interface 化和 Java 风格分层。
 
 ## 2. 开始工作前
@@ -38,6 +38,7 @@
 | gRPC 服务端/客户端 | `core-grpc.md`、`core-grpc-client.md` |
 | etcd Gateway | `core-gateway.md` |
 | WebSocket | `core-websocket.md` |
+| SSE | `core-sse.md` |
 | 文件上传 | `core-fileupload.md` |
 | 日志 | `core-logger.md` |
 | 测试 | `core-test.md` |

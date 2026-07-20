@@ -35,7 +35,8 @@ Core Framework v3 是一个轻量级企业级 Go Web 框架，模块路径为 `g
 - **缓存体系**：Redis 封装 + Cache 包装器（singleflight 防击穿、空值缓存）
 - **消息队列**：NSQ Producer/Consumer 完整封装
 - **文件处理**：单文件/多文件上传、自动校验、路径管理
-- **日志系统**：分级日志 + LogMonitor + SSE EventHub 实时推送
+- **SSE 推送**：SSEWrite/SSESend/SSEComment 核心方法 + EventHub 连接管理/广播/定向推送
+- **日志系统**：分级日志 + LogMonitor 实时推送
 
 ---
 
@@ -53,6 +54,7 @@ skills/
 ├── core-grpc-client.md      # gRPC 客户端（服务发现/明确 target/每服务 TLS/MustGrpcClient）
 ├── core-gateway.md          # HTTP→gRPC 网关（自动路由/管理接口/metadata）
 ├── core-websocket.md        # WebSocket 连接管理/按用户推送/广播/心跳
+├── core-sse.md              # SSE 服务端推送（SSEWrite/SSESend/EventHub）
 ├── core-page.md             # 分页查询（经典分页/滚动分页/条件构建）
 ├── core-utils.md            # 工具函数（Map/Array/加密/密码/切片）
 ├── core-redis.md            # Redis 封装（String/JSON/Hash/Set/ZSet/Pipeline/Lua）
@@ -277,6 +279,32 @@ conn := app.MustGrpcClient("user-service")       // 失败 panic，适合 main �
 
 ---
 
+#### core-sse — SSE 服务端推送
+
+**功能概述**：基于 HTTP 的 Server-Sent Events 轻量级推送方案，Ctx 层提供 SSEWrite/SSESend/SSEComment 三个核心方法，EventHub 封装连接管理和广播能力。
+
+**核心特性**：
+- SSEWrite：底层 SSE 事件写入，支持 id/event/data 字段和多行数据
+- SSESend：结构化事件发送，自动 JSON 序列化
+- SSEComment：SSE 心跳注释
+- EventHub：连接注册/注销（copy-on-write）、广播、定向推送、心跳保持、批量聚合
+
+**模块调用流程**：
+```
+Browser → GET /events → hub.Get → SSE connected
+POST /events/push → hub.PostData → Broadcast/SendTo → hub.Get → SSESend → Browser
+```
+
+**EventHub 快速示例**：
+```go
+hub := core.NewEventHub()
+defer hub.Close()
+app.GET("/events", hub.Get)
+app.POST("/events/push", hub.PostData)
+```
+
+---
+
 #### core-page — 分页查询
 
 **功能概述**：提供经典分页（FindPageBy，含总数）和滚动分页（FindNextBy，无 Count）两种分页方式，通过 `core.Map` 构建灵活的筛选条件。
@@ -343,14 +371,13 @@ Take(ctx, key, &out, loader) → Redis Hit? → 返回
 
 #### core-logger — 日志系统
 
-**功能概述**：内置分级日志系统，支持终端彩色输出、并发安全的 stdout copy-truncate 轮转、HTTP 请求日志、Panic Recovery、LogMonitor 实时广播和 EventHub SSE 事件推送。
+**功能概述**：内置分级日志系统，支持终端彩色输出、并发安全的 stdout copy-truncate 轮转、HTTP 请求日志、Panic Recovery、LogMonitor 实时广播。EventHub SSE 推送请参见 [core-sse](#core-sse--sse-服务端推送)。
 
 **核心特性**：
 - 分级日志：D（Debug）/ Info / Warn / Erro / Log / Dump
 - 终端彩色输出（TTY 自动检测）
 - Recovery 中间件：自动捕获 panic → 500 响应 + 堆栈记录
 - LogMonitor：日志实时广播给 Web 控制台
-- EventHub：SSE 事件推送（支持批量聚合）
 
 ---
 

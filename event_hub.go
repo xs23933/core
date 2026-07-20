@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -18,10 +19,30 @@ type EventData struct {
 }
 
 func (h EventData) String() string {
-	if h.Event == "" {
-		return fmt.Sprintf("data: %v\n\n", h.ToString())
+	var buf strings.Builder
+
+	if h.ID != "" {
+		buf.WriteString("id: ")
+		buf.WriteString(h.ID)
+		buf.WriteByte('\n')
 	}
-	return fmt.Sprintf("event: %s\ndata: %v\n\n", h.Event, h.ToString())
+	if h.Event != "" {
+		buf.WriteString("event: ")
+		buf.WriteString(h.Event)
+		buf.WriteByte('\n')
+	}
+	data := h.ToString()
+	if data != "" {
+		for _, line := range splitLines(data) {
+			buf.WriteString("data: ")
+			buf.WriteString(line)
+			buf.WriteByte('\n')
+		}
+	} else {
+		buf.WriteString("data: \n")
+	}
+	buf.WriteByte('\n')
+	return buf.String()
 }
 
 func (h *EventData) ToString() string {
@@ -272,6 +293,7 @@ func (h *EventHub) Get(c Ctx) {
 	c.SetHeader("Content-Type", "text/event-stream;charset=utf-8")
 	c.SetHeader("Cache-Control", "no-cache")
 	c.SetHeader("Connection", "keep-alive")
+	c.SetHeader("X-Accel-Buffering", "no") // 禁用 nginx 缓冲
 
 	ch := make(chan EventData, 100)
 	id := c.Param("param")
@@ -281,13 +303,11 @@ func (h *EventHub) Get(c Ctx) {
 	h.Register(ch, id)
 	defer h.UnRegister(ch, id)
 
-	ticker := time.NewTicker(10 * time.Second)
-	defer ticker.Stop()
+	// 发送连接成功事件
+	c.SSEWrite("connected", "{}")
 
-	c.Stream(func(w io.Writer) bool {
-		_, _ = fmt.Fprint(w, "event: touch\ndata: hi\n\n")
-		return false
-	})
+	heartbeat := time.NewTicker(15 * time.Second)
+	defer heartbeat.Stop()
 
 	c.Stream(func(w io.Writer) bool {
 		select {
@@ -295,11 +315,11 @@ func (h *EventHub) Get(c Ctx) {
 			if !ok {
 				return false
 			}
-			if _, err := fmt.Fprint(w, msg.String()); err != nil {
+			if err := c.SSESend(msg.Event, msg.Data, msg.ID); err != nil {
 				return false
 			}
-		case <-ticker.C:
-			if _, err := fmt.Fprintf(w, ":\n\n"); err != nil { // SSE 心跳标识 ping
+		case <-heartbeat.C:
+			if err := c.SSEComment("ping"); err != nil {
 				return false
 			}
 		}

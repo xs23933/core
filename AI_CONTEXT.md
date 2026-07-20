@@ -228,6 +228,11 @@ c.JSON(map[string]any{})// 原生 JSON
 c.SendString("text")
 c.SendStatus(http.StatusOK, "OK")
 
+// SSE 推送
+c.SSEWrite(event, data, id...)      // 写入 SSE 事件（纯文本）
+c.SSESend(event, data, id...)       // 发送结构化 SSE 事件（自动 JSON 序列化）
+c.SSEComment(comment)               // 发送 SSE 注释（心跳）
+
 // 文件操作
 file, _ := c.FormFile("file")
 relPath, absPath, _ := c.SaveFile("file", "./uploads")
@@ -736,6 +741,7 @@ go func(id string) {
 
 Core 支持：
 
+* SSE（Server-Sent Events）
 * WebSocket
 * HTTP/2
 * HTTP/3

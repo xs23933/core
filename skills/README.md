@@ -9,12 +9,13 @@ skills/
 ├── core-grpc-client.md      # gRPC 客户端（GrpcClient / GrpcClientAt / 每服务 TLS / etcd discovery）
 ├── core-gateway.md          # HTTP -> gRPC 网关（自动路由、管理接口、metadata）
 ├── core-websocket.md        # WebSocket 处理（连接管理/按用户推送/广播）
+├── core-sse.md              # SSE 服务端推送（SSEWrite/SSESend/EventHub）
 ├── core-page.md             # 分页查询实现
 ├── core-utils.md            # 工具函数、Map/Array、加密与密码
 ├── core-redis.md            # Redis 封装（String/JSON/Hash/Set/ZSet/List/BitMap/Pipeline/Lua/PubSub/Stream）
 ├── core-cache.md            # Redis Cache 包装器（DB fallback、自动回填、singleflight、空值缓存）
 ├── core-nsq.md              # NSQ 消息队列封装（Producer/Consumer/Builder/JSON/超时处理）
-├── core-logger.md           # 日志系统（D/Info/Warn/Erro/Recovery/LogMonitor/EventHub SSE）
+├── core-logger.md           # 日志系统（D/Info/Warn/Erro/Recovery/LogMonitor）
 ├── core-fetch.md            # Fetch API 客户端（外部 API 调用、Header、Cookie、Hook、响应 Header）
 ├── core-fileupload.md       # 文件上传处理
 ├── core-test.md             # 测试编写

@@ -205,14 +205,7 @@ func New(options ...Options) *Core {
 	// methods: [POST] 会让 POST 的固定下标 1 越界，表现为注册日志存在但请求 404。
 	app.trees = make([]*RouteNode, len(Methods)-1)
 	for i := range app.trees {
-		app.trees[i] = &RouteNode{
-			path:        "/",
-			nType:       root,
-			staticChild: make(map[string]*RouteNode),
-			paramChild:  nil,
-			catchChild:  nil,
-			handlers:    nil,
-		}
+		app.trees[i] = &RouteNode{nType: root}
 	}
 	app.registerHealthRoute()
 

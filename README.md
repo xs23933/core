@@ -14,6 +14,7 @@ Core 是一个用于快速开发企业级 Go 应用程序的 Web 框架，包括
 - **JSON/XML 支持** - 内置 JSON 和 XML 响应处理
 - **文件上传** - 支持单文件和多文件上传
 - **WebSocket 支持** - 内置 WebSocket 处理
+- **SSE 推送** - SSE 服务端推送 + EventHub 连接管理
 - **模板引擎** - 支持 HTML 模板渲染
 - **Fetch 客户端** - 独立 `fetch` 包，支持 API 调用、公共/单次 Header、Cookie、请求/响应 Hook
 - **Redis Cache** - 独立 `cache` 包，支持 DB fallback、自动回填、singleflight 防击穿、空值缓存
@@ -504,7 +505,73 @@ app.GET("/ws", func(c core.Ctx) error {
 websocket.DefaultUserManager.SendToUser("1001", []byte(`{"type":"notice","data":"hello"}`))
 ```
 
-### 10. 模板渲染
+### 10. SSE 支持
+
+Core 在 Ctx 层提供了 SSE（Server-Sent Events）核心方法，并通过 EventHub 封装连接管理和广播能力，适用于服务端实时推送通知、日志流、状态更新等场景。
+
+**SSE 核心方法**
+
+```go
+// 写入 SSE 事件（底层方法，支持 id/event/data 字段和多行数据）
+c.SSEWrite("message", "hello world")
+c.SSEWrite("update", `{"status":"ok"}`, "evt-001")
+
+// 发送结构化事件（自动 JSON 序列化）
+c.SSESend("notify", map[string]any{"title": "Alert", "message": "Server down"})
+
+// 发送 SSE 注释（心跳保活）
+c.SSEComment("ping")
+```
+
+**EventHub 快速使用**
+
+```go
+import "github.com/xs23933/core/v3"
+
+func main() {
+    app := core.New()
+
+    hub := core.NewEventHub()       // 创建 EventHub，支持广播聚合
+    defer hub.Close()
+
+    // SSE 连接端点（浏览器 EventSource 连接目标）
+    app.GET("/events", hub.Get)
+
+    // 推送接口（其他服务调用此接口推送数据）
+    app.POST("/events/push", hub.PostData)
+
+    app.Run()
+}
+```
+
+**前端连接示例**
+
+```javascript
+const es = new EventSource("/events")
+es.addEventListener("connected", () => console.log("SSE 已连接"))
+es.addEventListener("message", (e) => console.log("收到:", e.data))
+es.onerror = () => console.log("连接中断（将自动重连）")
+```
+
+**编程式推送**
+
+```go
+// 广播到所有客户端
+hub.Broadcast(core.EventData{
+    Event: "alert",
+    Data:  "server maintenance in 5 minutes",
+})
+
+// 定向推送到指定 ID
+hub.SendTo("admin-01", core.EventData{
+    Event: "private",
+    Data:  map[string]any{"action": "reload"},
+})
+```
+
+> 详细 API 参数和注意事项参见 [skills/core-sse.md](skills/core-sse.md)
+
+### 11. 模板渲染
 
 ```go
 import (

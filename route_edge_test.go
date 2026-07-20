@@ -282,11 +282,7 @@ func TestRoutePartialMatchFails(t *testing.T) {
 // ── Benchmark: 验证修复后 param 路由分配次数 ──
 
 func TestRouteParamAllocations(t *testing.T) {
-	root := &RouteNode{
-		path:        "/",
-		nType:       root,
-		staticChild: make(map[string]*RouteNode),
-	}
+	root := &RouteNode{nType: root}
 	root.addRoute("/users/:id/profile", HandlerFuncs{func(Ctx) error { return nil }})
 	ctx := &BaseCtx{handlers: make(HandlerFuncs, 0, 4)}
 
@@ -300,11 +296,7 @@ func TestRouteParamAllocations(t *testing.T) {
 }
 
 func TestRouteDeepParamsAllocations(t *testing.T) {
-	root := &RouteNode{
-		path:        "/",
-		nType:       root,
-		staticChild: make(map[string]*RouteNode),
-	}
+	root := &RouteNode{nType: root}
 	root.addRoute("/a/:p1/b/:p2/c/:p3", HandlerFuncs{func(Ctx) error { return nil }})
 	ctx := &BaseCtx{handlers: make(HandlerFuncs, 0, 4)}
 
@@ -315,4 +307,192 @@ func TestRouteDeepParamsAllocations(t *testing.T) {
 		}
 	})
 	t.Logf("deep param route /a/:p1/b/:p2/c/:p3 → %v allocs per match", allocs)
+}
+
+// ── 纯 match() 基准测试（排除中间件/context/logger 开销）──
+
+func newMockCtx() *BaseCtx {
+	return &BaseCtx{handlers: make(HandlerFuncs, 0, 4)}
+}
+
+// buildRouter 用 n 条静态路由填充基数树
+func buildRouter(n int) *RouteNode {
+	root := &RouteNode{nType: root}
+	for i := 0; i < n; i++ {
+		path := "/api/v1/users/list" + string(rune('a'+i%26))
+		root.addRoute(path, HandlerFuncs{func(Ctx) error { return nil }})
+	}
+	return root
+}
+
+// buildDeepStaticRouter 构建深度嵌套静态路由（验证路径压缩收益）
+func buildDeepStaticRouter(depth int) *RouteNode {
+	root := &RouteNode{nType: root}
+	var path string
+	for i := 0; i < depth; i++ {
+		path += "/level" + string(rune('a'+i))
+	}
+	root.addRoute(path, HandlerFuncs{func(Ctx) error { return nil }})
+	return root
+}
+
+// ── 纯静态路由 Benchmarks ──
+
+// BenchmarkRouteMatchStaticSmall 小路由表静态匹配
+func BenchmarkRouteMatchStaticSmall(b *testing.B) {
+	root := buildRouter(5)
+	ctx := newMockCtx()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		root.match("/api/v1/users/listc", ctx)
+	}
+}
+
+// BenchmarkRouteMatchStaticLarge 100 条静态路由匹配（验证基数树大表优势）
+func BenchmarkRouteMatchStaticLarge(b *testing.B) {
+	root := buildRouter(100)
+	ctx := newMockCtx()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		root.match("/api/v1/users/listz", ctx)
+	}
+}
+
+// BenchmarkRouteMatchStaticDeep 5 层嵌套静态路由（验证路径压缩收益）
+func BenchmarkRouteMatchStaticDeep(b *testing.B) {
+	root := buildDeepStaticRouter(5)
+	ctx := newMockCtx()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		root.match("/levela/levelb/levelc/leveld/levele", ctx)
+	}
+}
+
+// BenchmarkRouteMatchStaticDeep10 10 层嵌套静态路由（深度路径压缩）
+func BenchmarkRouteMatchStaticDeep10(b *testing.B) {
+	root := buildDeepStaticRouter(10)
+	path := "/levela/levelb/levelc/leveld/levele/levelf/levelg/levelh/leveli/levelj"
+	ctx := newMockCtx()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		root.match(path, ctx)
+	}
+}
+
+// ── 参数路由 Benchmarks ──
+
+// BenchmarkRawMatchOneParam 纯单参数匹配
+func BenchmarkRawMatchOneParam(b *testing.B) {
+	root := &RouteNode{nType: root}
+	root.addRoute("/users/:id", HandlerFuncs{func(Ctx) error { return nil }})
+	ctx := newMockCtx()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		root.match("/users/42", ctx)
+		ctx.params = nil
+	}
+}
+
+// BenchmarkRawMatchMultiParam 纯多参数混合匹配
+func BenchmarkRawMatchMultiParam(b *testing.B) {
+	root := &RouteNode{nType: root}
+	root.addRoute("/orgs/:orgId/teams/:teamId/users/:userId", HandlerFuncs{func(Ctx) error { return nil }})
+	ctx := newMockCtx()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		root.match("/orgs/acme/teams/eng/users/alice", ctx)
+		ctx.params = nil
+	}
+}
+
+// BenchmarkRouteMatchCatchAll 通配符匹配
+func BenchmarkRouteMatchCatchAll(b *testing.B) {
+	root := &RouteNode{nType: root}
+	root.addRoute("/static/*filepath", HandlerFuncs{func(Ctx) error { return nil }})
+	ctx := newMockCtx()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		root.match("/static/css/app.css", ctx)
+		ctx.params = nil
+	}
+}
+
+// BenchmarkRouteMatchCatchAllRoot 根通配符匹配
+func BenchmarkRouteMatchCatchAllRoot(b *testing.B) {
+	root := &RouteNode{nType: root}
+	root.addRoute("/*", HandlerFuncs{func(Ctx) error { return nil }})
+	ctx := newMockCtx()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		root.match("/anything/goes/here", ctx)
+		ctx.params = nil
+	}
+}
+
+// ── 混合路由表 Benchmark（模拟真实场景）──
+
+// BenchmarkRouteMatchMixed 30 条混合路由匹配
+func BenchmarkRouteMatchMixed(b *testing.B) {
+	root := &RouteNode{nType: root}
+	handler := HandlerFuncs{func(Ctx) error { return nil }}
+	routes := []string{
+		"/health",
+		"/api/v1/users",
+		"/api/v1/users/:id",
+		"/api/v1/users/:id/profile",
+		"/api/v1/users/:id/orders",
+		"/api/v1/users/:id/orders/:orderId",
+		"/api/v1/products",
+		"/api/v1/products/:id",
+		"/api/v1/products/:id/reviews",
+		"/api/v1/categories",
+		"/api/v1/categories/:slug",
+		"/api/v1/categories/:slug/products",
+		"/api/v1/orders",
+		"/api/v1/orders/:id",
+		"/api/v1/orders/:id/items",
+		"/api/v1/orders/:id/cancel",
+		"/api/v1/orders/:id/refund",
+		"/api/v1/auth/login",
+		"/api/v1/auth/logout",
+		"/api/v1/auth/refresh",
+		"/api/v1/notifications",
+		"/api/v1/notifications/:id",
+		"/api/v1/notifications/:id/read",
+		"/api/v1/payments",
+		"/api/v1/payments/:id",
+		"/api/v1/payments/:id/capture",
+		"/api/v1/shipping/addresses",
+		"/api/v1/shipping/addresses/:id",
+		"/api/v1/coupons",
+		"/api/v1/coupons/:code/validate",
+	}
+	for _, r := range routes {
+		root.addRoute(r, handler)
+	}
+	ctx := newMockCtx()
+	b.ResetTimer()
+	b.Run("static", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			root.match("/api/v1/products", ctx)
+		}
+	})
+	b.Run("param-end", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			root.match("/api/v1/users/42", ctx)
+			ctx.params = nil
+		}
+	})
+	b.Run("param-mid", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			root.match("/api/v1/categories/electronics/products", ctx)
+			ctx.params = nil
+		}
+	})
+	b.Run("multi-param", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			root.match("/api/v1/users/42/orders/15", ctx)
+			ctx.params = nil
+		}
+	})
 }

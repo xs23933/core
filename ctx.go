@@ -125,6 +125,11 @@ type Ctx interface {
 	Vars() Map
 	Stream(step func(w io.Writer) bool) bool
 	ViewReload() // set view reload
+	// SSE 相关
+	SSEWrite(event, data string, id ...string) error    // 写入单条 SSE 事件
+	SSESend(event string, data any, id ...string) error // 发送结构化 SSE 事件（自动序列化 data）
+	SSEComment(comment string) error                    // 发送 SSE 注释（心跳）
+	// SSE 相关结束
 	Render(f string, bind ...any) error
 	TextBytes(out io.Writer, f string, bind ...any) error
 	TextRender(f string, bind ...any) error
@@ -303,6 +308,92 @@ func (c *BaseCtx) Stream(step func(w io.Writer) bool) bool {
 			}
 		}
 	}
+}
+
+// SSEWrite writes a single Server-Sent Event to the response.
+// Handles proper formatting of id, event, and data fields.
+// Multi-line data is automatically prefixed with "data: " on each line.
+func (c *BaseCtx) SSEWrite(event, data string, id ...string) error {
+	w := c.W
+	buf := make([]byte, 0, 256)
+
+	if len(id) > 0 && id[0] != "" {
+		buf = append(buf, "id: "...)
+		buf = append(buf, id[0]...)
+		buf = append(buf, '\n')
+	}
+	if event != "" {
+		buf = append(buf, "event: "...)
+		buf = append(buf, event...)
+		buf = append(buf, '\n')
+	}
+	if data != "" {
+		// support multi-line data
+		lines := splitLines(data)
+		for _, line := range lines {
+			buf = append(buf, "data: "...)
+			buf = append(buf, line...)
+			buf = append(buf, '\n')
+		}
+	} else {
+		buf = append(buf, "data: \n"...)
+	}
+	buf = append(buf, '\n')
+
+	_, err := w.Write(buf)
+	w.Flush()
+	return err
+}
+
+// SSESend sends a structured SSE event, auto-serializing data to JSON.
+func (c *BaseCtx) SSESend(event string, data any, id ...string) error {
+	var dataStr string
+	switch v := data.(type) {
+	case string:
+		dataStr = v
+	case []byte:
+		dataStr = string(v)
+	case nil:
+		dataStr = ""
+	default:
+		b, err := sonic.MarshalString(v)
+		if err != nil {
+			return err
+		}
+		dataStr = b
+	}
+	return c.SSEWrite(event, dataStr, id...)
+}
+
+// SSEComment sends an SSE comment line (used for heartbeat/keepalive).
+// The SSE spec says lines starting with ":" are comments and ignored by clients.
+func (c *BaseCtx) SSEComment(comment string) error {
+	w := c.W
+	if comment == "" {
+		comment = "ping"
+	}
+	_, err := w.WriteString(": " + comment + "\n\n")
+	w.Flush()
+	return err
+}
+
+// splitLines splits a string by \n, preserving empty lines.
+func splitLines(s string) []string {
+	var lines []string
+	start := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\n' {
+			lines = append(lines, s[start:i])
+			start = i + 1
+		}
+	}
+	if start < len(s) {
+		lines = append(lines, s[start:])
+	} else if len(lines) > 0 && start == len(s) {
+		// trailing newline: add empty line
+		lines = append(lines, "")
+	}
+	return lines
 }
 
 func (c *BaseCtx) Bind(out any, debug ...bool) error {
