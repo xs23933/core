@@ -729,6 +729,26 @@ defer conn.Close()
 client := pb.NewUserServiceClient(conn)
 ```
 
+当某个逻辑服务要求 TLS 时，在该服务首次 dial 前配置 transport credentials。Core 在配置时保存 credentials 快照，每次新建连接再使用副本；证书、CA 和 server name 语义仍由应用负责。
+
+```go
+clientTLS := &tls.Config{
+    MinVersion: tls.VersionTLS13,
+    RootCAs:    rootPool,
+    ServerName: "wallet.internal",
+}
+if err := app.ConfigureGRPCClient("wallet-service", core.GRPCClientConfig{
+    TransportCredentials: credentials.NewTLS(clientTLS),
+}); err != nil {
+    return err
+}
+
+// 已有明确地址时不经过 etcd resolver。
+conn, err := app.GrpcClientAt("wallet-service", "127.0.0.1:9001")
+```
+
+`ConfigureGRPCClient` 按逻辑服务名隔离，同一服务只允许配置一次，且必须早于 `GrpcClient`、`MustGrpcClient` 或 `GrpcClientAt` 的第一次调用。配置过 transport credentials 的服务不接受 `GrpcClient(serviceName, opts...)` 的额外不透明 dial options，以免同一连接出现两份 transport credentials；请把 transport 配置放入 `GRPCClientConfig`。未配置的服务继续使用原有 insecure 兼容路径。
+
 如果依赖 `GrpcClient` 自动初始化 discovery，客户端读取 `etcd.endpoints` 和 `etcd.dialTimeout`；网关配置读取 `etcd.dial_timeout`。
 
 如果启动阶段必须拿到连接，可以用 `MustGrpcClient`；它失败会 panic，适合 main 函数初始化，不适合请求处理链路。
@@ -755,6 +775,12 @@ import (
 func main() {
     app := core.New(core.LoadConfigFile("config.yaml"))
 
+    if err := app.ConfigureGRPCClient("wallet-service", core.GRPCClientConfig{
+        TransportCredentials: credentials.NewTLS(walletClientTLS),
+    }); err != nil {
+        log.Fatal(err)
+    }
+
     if err := app.EnableEtcdDiscovery(nil); err != nil {
         log.Fatal("启用 etcd 服务发现失败:", err)
     }
@@ -767,6 +793,8 @@ func main() {
 app.Listen(":8080")
 }
 ```
+
+Gateway 的每个 `ServicePool` 使用 etcd 中的逻辑服务名选择 Core 客户端配置，因此可以只为一个 TLS 服务配置 credentials，而其他未迁移服务保持现有明文连接。配置必须早于 `gateway.NewEtcdGateway(app)`。
 
 当请求返回 `service <name> unavailable` 时，优先看 Gateway 日志中的 `state={...}` 诊断字段：
 

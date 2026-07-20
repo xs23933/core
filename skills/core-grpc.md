@@ -116,6 +116,8 @@ app.Listen(":8080")
 
 配置 transport credentials 后禁止共端口；Core 会返回 `ErrGRPCTLSSharedAddress`。需要 mTLS 时使用独立但仍由 Core 托管的 gRPC 地址。
 
+对应客户端需要 TLS 时，在首次 dial 前使用 `ConfigureGRPCClient(serviceName, GRPCClientConfig{TransportCredentials: ...})`；服务发现与明确 target 分别使用 `GrpcClient` 和 `GrpcClientAt`。Core 只托管 transport，证书信任与身份策略仍属于应用。
+
 ## 5. 注册到 etcd 并支持网关
 
 需要被网关自动发现时，优先使用 `EnableEtcdRegistry`。它会创建/复用 gRPC server、注册服务实例、开启 discovery，并自动注册 gRPC reflection。

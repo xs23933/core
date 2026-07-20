@@ -50,7 +50,7 @@ skills/
 ├── core-service.md          # 业务逻辑层编写（兼容 HTTP/gRPC）
 ├── core-middleware.md       # 中间件开发（CORS/限流/Metrics/RequestID）
 ├── core-grpc.md             # gRPC 服务端（TLS/interceptor/注册/启动/etcd 注册/共用端口约束）
-├── core-grpc-client.md      # gRPC 客户端（服务发现/连接复用/MustGrpcClient）
+├── core-grpc-client.md      # gRPC 客户端（服务发现/明确 target/每服务 TLS/MustGrpcClient）
 ├── core-gateway.md          # HTTP→gRPC 网关（自动路由/管理接口/metadata）
 ├── core-websocket.md        # WebSocket 连接管理/按用户推送/广播/心跳
 ├── core-page.md             # 分页查询（经典分页/滚动分页/条件构建）
@@ -243,16 +243,19 @@ app.New() → [ConfigureGRPCServer()] → RegisterGRPCService() → EnableEtcdRe
 
 #### core-grpc-client — gRPC 客户端
 
-**功能概述**：基于 etcd 服务发现的 gRPC 客户端，支持 `GrpcClient`（返回 error）和 `MustGrpcClient`（启动期硬依赖）两种调用方式。
+**功能概述**：基于 etcd 服务发现或明确 target 的 gRPC 客户端，支持按逻辑服务预配置 transport credentials，并提供 `GrpcClient`、`GrpcClientAt` 和 `MustGrpcClient`。
 
 **核心特性**：
 - 按服务名自动发现（etcd resolver）
+- 按服务隔离 TLS credentials，Gateway 可同时连接 TLS 与 plaintext 服务
+- `GrpcClientAt` 连接明确 target，复用同一每服务配置
 - 连接复用，禁止每次请求创建新连接
 - 推荐启动期创建 client 并注入 Service
 
 **参数说明**：
 ```go
 conn, err := app.GrpcClient("user-service")     // 返回 (*grpc.ClientConn, error)
+conn, err := app.GrpcClientAt("user-service", "127.0.0.1:9001")
 conn := app.MustGrpcClient("user-service")       // 失败 panic，适合 main 启动期
 ```
 
