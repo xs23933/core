@@ -24,6 +24,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/schema"
 	"github.com/xs23933/core/v3/sid"
+	"github.com/xs23933/core/v3/utils"
 	"github.com/xs23933/core/v3/xid"
 	"github.com/xs23933/uid"
 )
@@ -189,7 +190,7 @@ func (c *BaseCtx) SetParams(key, val string) {
 }
 
 // decoderPool helps to improve ReadBody's and QueryParser's performance
-var decoderPool = &sync.Pool{New: func() any {
+var decoderPool = utils.NewPool(func() *schema.Decoder {
 	var decoder = schema.NewDecoder()
 	decoder.IgnoreUnknownKeys(true)
 	decoder.ZeroEmpty(true)
@@ -205,7 +206,7 @@ var decoderPool = &sync.Pool{New: func() any {
 		return reflect.ValueOf(t)
 	})
 	return decoder
-}}
+})
 
 // ViewTheme 使用模版风格
 func (c *BaseCtx) ViewTheme(theme string) {
@@ -311,20 +312,15 @@ func (c *BaseCtx) Stream(step func(w io.Writer) bool) bool {
 }
 
 // sseBufPool 复用 SSE 事件写入缓冲，避免每次 SSEWrite 分配 256B
-var sseBufPool = sync.Pool{
-	New: func() any {
-		buf := make([]byte, 0, 256)
-		return &buf
-	},
-}
+var sseBufPool = utils.NewBytePool(256)
 
 // SSEWrite writes a single Server-Sent Event to the response.
 // Handles proper formatting of id, event, and data fields.
 // Multi-line data is automatically prefixed with "data: " on each line.
 func (c *BaseCtx) SSEWrite(event, data string, id ...string) error {
 	w := c.W
-	bufp := sseBufPool.Get().(*[]byte)
-	buf := (*bufp)[:0]
+	bufp := sseBufPool.Get()
+	buf := *bufp
 	defer sseBufPool.Put(bufp)
 
 	if len(id) > 0 && id[0] != "" {
@@ -442,7 +438,7 @@ func (c *BaseCtx) Bind(out any, debug ...bool) error {
 //	}
 func (c *BaseCtx) ReadBody(out any, debug ...bool) error {
 	// Get decoder from pool
-	schemaDecoder := decoderPool.Get().(*schema.Decoder)
+	schemaDecoder := decoderPool.Get()
 	defer decoderPool.Put(schemaDecoder)
 
 	schemaDecoder.ZeroEmpty(true)
@@ -1519,7 +1515,6 @@ func (c *BaseCtx) init(app *Core, w http.ResponseWriter, r *http.Request) {
 	c.respJsonKeys = &app.defaultRestful
 	c.querys = nil
 	c.vars = nil
-	c.params = nil
 	if !app.Conf.GetBool("case-sensitive", true) {
 		c.detectionPath = strings.ToLower(c.detectionPath)
 	}
@@ -1537,10 +1532,7 @@ func (c *BaseCtx) release() {
 	c.ctx = nil
 	c.querys = nil
 	c.vars = nil
-	// 复用 params map：清空而非置 nil，避免每请求重新 make
-	for k := range c.params {
-		delete(c.params, k)
-	}
+	utils.ClearMap(c.params)
 }
 
 func (c *BaseCtx) Method() string {
@@ -1693,17 +1685,14 @@ func (c *BaseCtx) Response() ResponseWriter {
 }
 
 func (app *Core) AcquireCtx(w http.ResponseWriter, r *http.Request) *BaseCtx {
-	ctx, ok := app.pool.Get().(*BaseCtx)
-	if !ok {
-		panic(fmt.Errorf("failed to type-assert to Ctx"))
-	}
+	ctx := app.pool.Get()
 	ctx.init(app, w, r)
 	return ctx
 }
 
 func (app *Core) ReleaseCtx(c Ctx) {
 	c.release()
-	app.pool.Put(c)
+	app.pool.Put(c.(*BaseCtx))
 }
 
 func (c *BaseCtx) Next() error {
