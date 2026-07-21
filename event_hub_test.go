@@ -648,3 +648,55 @@ func TestEventDataToStringTypes(t *testing.T) {
 		})
 	}
 }
+
+// ── SSEWrite 基准测试 ──
+
+func BenchmarkSSEWriteSimple(b *testing.B) {
+	ctx, _ := newSSETestCtx()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = ctx.SSEWrite("message", "hello world")
+	}
+}
+
+func BenchmarkSSEWriteWithID(b *testing.B) {
+	ctx, _ := newSSETestCtx()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = ctx.SSEWrite("update", `{"status":"ok"}`, "evt-001")
+	}
+}
+
+func BenchmarkSSEWriteMultiLine(b *testing.B) {
+	ctx, _ := newSSETestCtx()
+	data := "line1\nline2\nline3\nline4\nline5"
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = ctx.SSEWrite("report", data)
+	}
+}
+
+func BenchmarkSSESendStruct(b *testing.B) {
+	ctx, _ := newSSETestCtx()
+	type payload struct {
+		Name string `json:"name"`
+		Age  int    `json:"age"`
+	}
+	p := payload{Name: "alice", Age: 30}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = ctx.SSESend("user", p)
+	}
+}
+
+func BenchmarkEventDataString(b *testing.B) {
+	ed := EventData{
+		ID:    "evt-42",
+		Event: "update",
+		Data:  map[string]any{"key": "value", "num": 42},
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = ed.String()
+	}
+}

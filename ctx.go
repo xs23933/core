@@ -310,12 +310,22 @@ func (c *BaseCtx) Stream(step func(w io.Writer) bool) bool {
 	}
 }
 
+// sseBufPool 复用 SSE 事件写入缓冲，避免每次 SSEWrite 分配 256B
+var sseBufPool = sync.Pool{
+	New: func() any {
+		buf := make([]byte, 0, 256)
+		return &buf
+	},
+}
+
 // SSEWrite writes a single Server-Sent Event to the response.
 // Handles proper formatting of id, event, and data fields.
 // Multi-line data is automatically prefixed with "data: " on each line.
 func (c *BaseCtx) SSEWrite(event, data string, id ...string) error {
 	w := c.W
-	buf := make([]byte, 0, 256)
+	bufp := sseBufPool.Get().(*[]byte)
+	buf := (*bufp)[:0]
+	defer sseBufPool.Put(bufp)
 
 	if len(id) > 0 && id[0] != "" {
 		buf = append(buf, "id: "...)
@@ -328,12 +338,23 @@ func (c *BaseCtx) SSEWrite(event, data string, id ...string) error {
 		buf = append(buf, '\n')
 	}
 	if data != "" {
-		// support multi-line data
-		lines := splitLines(data)
-		for _, line := range lines {
+		// support multi-line data: 直接扫描换行符，避免 splitLines 产生 []string 分配
+		start := 0
+		for i := 0; i < len(data); i++ {
+			if data[i] == '\n' {
+				buf = append(buf, "data: "...)
+				buf = append(buf, data[start:i]...)
+				buf = append(buf, '\n')
+				start = i + 1
+			}
+		}
+		if start < len(data) {
 			buf = append(buf, "data: "...)
-			buf = append(buf, line...)
+			buf = append(buf, data[start:]...)
 			buf = append(buf, '\n')
+		} else if start == len(data) && len(data) > 0 && data[len(data)-1] == '\n' {
+			// trailing newline: 最后一个空行补一个空 data
+			buf = append(buf, "data: \n"...)
 		}
 	} else {
 		buf = append(buf, "data: \n"...)
@@ -1516,7 +1537,10 @@ func (c *BaseCtx) release() {
 	c.ctx = nil
 	c.querys = nil
 	c.vars = nil
-	c.params = nil
+	// 复用 params map：清空而非置 nil，避免每请求重新 make
+	for k := range c.params {
+		delete(c.params, k)
+	}
 }
 
 func (c *BaseCtx) Method() string {

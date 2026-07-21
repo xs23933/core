@@ -429,6 +429,39 @@ func BenchmarkRouteMatchCatchAllRoot(b *testing.B) {
 	}
 }
 
+// ── Buffer 池化优化对比 Benchmark ──
+
+// BenchmarkRawMatchOneParamPooled 参数路由 + params map 复用（模拟 AcquireCtx/ReleaseCtx 真实行为）
+func BenchmarkRawMatchOneParamPooled(b *testing.B) {
+	root := &RouteNode{nType: root}
+	root.addRoute("/users/:id", HandlerFuncs{func(Ctx) error { return nil }})
+	ctx := newMockCtx()
+	ctx.params = make(map[string]string, 4)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		root.match("/users/42", ctx)
+		// 模拟 release(): 清空 map 而非置 nil
+		for k := range ctx.params {
+			delete(ctx.params, k)
+		}
+	}
+}
+
+// BenchmarkRawMatchMultiParamPooled 多参数路由 + params map 复用
+func BenchmarkRawMatchMultiParamPooled(b *testing.B) {
+	root := &RouteNode{nType: root}
+	root.addRoute("/orgs/:orgId/teams/:teamId/users/:userId", HandlerFuncs{func(Ctx) error { return nil }})
+	ctx := newMockCtx()
+	ctx.params = make(map[string]string, 4)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		root.match("/orgs/acme/teams/eng/users/alice", ctx)
+		for k := range ctx.params {
+			delete(ctx.params, k)
+		}
+	}
+}
+
 // ── 混合路由表 Benchmark（模拟真实场景）──
 
 // BenchmarkRouteMatchMixed 30 条混合路由匹配
