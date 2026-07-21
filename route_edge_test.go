@@ -254,6 +254,69 @@ func TestRouteManyParamRoutesCoexist(t *testing.T) {
 	assertRoute(t, app, "GET", "/api/v3/items/i1", 200, "version=v3,itemId=i1")
 }
 
+// ── 前缀冲突路由共存 (app/save、apps/:param?、apis/:param?) ──
+// 验证修复后，在 radix tree 中共享前缀 "ap" 的多个路由可以正确共存。
+// 插入顺序: apis/:param? → app/save → apps/:param?，触发前缀拆分与级联合并。
+
+func TestRoutePrefixConflictCoexist(t *testing.T) {
+	app := New()
+
+	app.POST("/api/v1/apis/:param?", func(c Ctx) error {
+		return c.SendString("apis:" + c.Params("param"))
+	})
+	app.POST("/api/v1/app/save", func(c Ctx) error {
+		return c.SendString("app-save")
+	})
+	app.POST("/api/v1/apps/:param?", func(c Ctx) error {
+		return c.SendString("apps:" + c.Params("param"))
+	})
+
+	// apis/:param? — param=1231
+	assertRoute(t, app, "POST", "/api/v1/apis/1231", 200, "apis:1231")
+	// apis/:param? — param 为空（可选参数）
+	assertRoute(t, app, "POST", "/api/v1/apis", 200, "apis:")
+	// app/save — 精确匹配静态路由
+	assertRoute(t, app, "POST", "/api/v1/app/save", 200, "app-save")
+	// apps/:param? — param=1231
+	assertRoute(t, app, "POST", "/api/v1/apps/1231", 200, "apps:1231")
+	// apps/:param? — param 为空（可选参数）
+	assertRoute(t, app, "POST", "/api/v1/apps", 200, "apps:")
+	// /api/v1/app 不应匹配 apps/:param?（app ≠ apps）
+	assertRoute(t, app, "POST", "/api/v1/app", 404, "")
+}
+
+// ── 前缀冲突路由共存 channel 场景 ──
+// channel/save、channels/:param?、channel/group/save、channel/groups/:param?
+func TestRoutePrefixConflictCoexistChannel(t *testing.T) {
+	app := New()
+
+	app.POST("/api/v1/channel/save", func(c Ctx) error {
+		return c.SendString("channel-save")
+	})
+	app.POST("/api/v1/channels/:param?", func(c Ctx) error {
+		return c.SendString("channels:" + c.Params("param"))
+	})
+	app.POST("/api/v1/channel/group/save", func(c Ctx) error {
+		return c.SendString("channel-group-save")
+	})
+	app.POST("/api/v1/channel/groups/:param?", func(c Ctx) error {
+		return c.SendString("channel-groups:" + c.Params("param"))
+	})
+
+	// channel/save 静态
+	assertRoute(t, app, "POST", "/api/v1/channel/save", 200, "channel-save")
+	// channels/:param? — param=1231
+	assertRoute(t, app, "POST", "/api/v1/channels/1231", 200, "channels:1231")
+	// channels/:param? — param 为空（可选参数）
+	assertRoute(t, app, "POST", "/api/v1/channels", 200, "channels:")
+	// channel/group/save 静态
+	assertRoute(t, app, "POST", "/api/v1/channel/group/save", 200, "channel-group-save")
+	// channel/groups/:param? — param=1231
+	assertRoute(t, app, "POST", "/api/v1/channel/groups/1231", 200, "channel-groups:1231")
+	// channel/groups/:param? — param 为空（可选参数）
+	assertRoute(t, app, "POST", "/api/v1/channel/groups", 200, "channel-groups:")
+}
+
 // ── Unicode / 中文字符 ──
 
 func TestRouteParamUnicode(t *testing.T) {

@@ -195,7 +195,77 @@ func (n *RouteNode) addRouteSegments(segments []string, idx int, fullPath string
 			}
 			return child.addRouteSegments(segments, idx+1, fullPath, handlers)
 		}
-		// 拆分当前 segment，将剩余部分作为 child 的静态子节点
+		// 检查剩余部分是否与 child 已有子节点的路径前缀冲突
+		// 例如: child="channel", remaining="s", child 已有子节点 "save"
+		// 此时需要将 "s" 和 "save" 合并为 "s" → {"ave", 新节点}
+		if existingChild := child.findChild(remaining[0]); existingChild != nil {
+			mergeLen := lcp(remaining, existingChild.path)
+			merged := &RouteNode{
+				path:  remaining[:mergeLen],
+				nType: static,
+			}
+			child.replaceChild(remaining[0], merged)
+
+			if mergeLen == len(existingChild.path) {
+				// existingChild 的 path 被完全消化，将其属性迁移到 merged
+				merged.indices = existingChild.indices
+				merged.children = existingChild.children
+				merged.handlers = existingChild.handlers
+				merged.middlewares = existingChild.middlewares
+				merged.paramChild = existingChild.paramChild
+				merged.catchChild = existingChild.catchChild
+			} else {
+				existingChild.path = existingChild.path[mergeLen:]
+				merged.addChild(existingChild)
+			}
+
+			if mergeLen == len(remaining) {
+				return merged.addRouteSegments(segments, idx+1, fullPath, handlers)
+			}
+
+			// 处理 leftover，可能与 merged 已迁移的子节点再次冲突（级联合并）
+			currentRemaining := remaining[mergeLen:]
+			currentNode := merged
+			for {
+				if confChild := currentNode.findChild(currentRemaining[0]); confChild != nil {
+					mergeLen2 := lcp(currentRemaining, confChild.path)
+					merged2 := &RouteNode{
+						path:  currentRemaining[:mergeLen2],
+						nType: static,
+					}
+					currentNode.replaceChild(currentRemaining[0], merged2)
+
+					if mergeLen2 == len(confChild.path) {
+						merged2.indices = confChild.indices
+						merged2.children = confChild.children
+						merged2.handlers = confChild.handlers
+						merged2.middlewares = confChild.middlewares
+						merged2.paramChild = confChild.paramChild
+						merged2.catchChild = confChild.catchChild
+					} else {
+						confChild.path = confChild.path[mergeLen2:]
+						merged2.addChild(confChild)
+					}
+
+					if mergeLen2 == len(currentRemaining) {
+						return merged2.addRouteSegments(segments, idx+1, fullPath, handlers)
+					}
+					currentRemaining = currentRemaining[mergeLen2:]
+					currentNode = merged2
+					continue
+				}
+
+				newChild := &RouteNode{path: currentRemaining, nType: static}
+				currentNode.addChild(newChild)
+				if idx == len(segments)-1 && handlers != nil {
+					newChild.handlers = handlers
+					return newChild
+				}
+				return newChild.addRouteSegments(segments, idx+1, fullPath, handlers)
+			}
+		}
+
+		// 无冲突，将剩余部分作为 child 的静态子节点
 		newChild := &RouteNode{path: remaining, nType: static}
 		child.addChild(newChild)
 		if idx == len(segments)-1 && handlers != nil {
