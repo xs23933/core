@@ -138,29 +138,27 @@ type Ctx interface {
 }
 
 type BaseCtx struct {
-	wm            resp
-	app           *Core        // Reference to *App
-	handlers      HandlerFuncs // Reference to *Route
-	indexRoute    int          // Index of the current route
-	indexHandler  int          // Index of the current handler
-	method        string       // HTTP method
-	methodInt     MethodType
-	baseURI       string
-	treePath      string // Path for the search in the tree
-	detectionPath string // Route detection path                                  -> string copy from detectionPathBuffer
-	path          string // HTTP path with the modifications by the configuration -> string copy from pathBuffer
-	pathOriginal  string // Original HTTP path
-	matched       bool   // Whether the request matched an explicit route
-	theme         string
-	W             ResponseWriter
-	R             *http.Request
-	ctx           context.Context
-	vars          Map
-	querys        url.Values
-	startAt       time.Time
-	respJsonKeys  *RestfulDefine
-	mu            sync.RWMutex
-	params        map[string]string
+	wm           resp
+	app          *Core        // Reference to *App
+	handlers     HandlerFuncs // Reference to *Route
+	indexRoute   int          // Index of the current route
+	indexHandler int          // Index of the current handler
+	method       string       // HTTP method
+	methodInt    MethodType
+	baseURI      string
+	path         string // HTTP path with the modifications by the configuration -> string copy from pathBuffer
+	pathOriginal string // Original HTTP path
+	matched      bool   // Whether the request matched an explicit route
+	theme        string
+	W            ResponseWriter
+	R            *http.Request
+	ctx          context.Context
+	vars         Map
+	querys       url.Values
+	startAt      time.Time
+	respJsonKeys *RestfulDefine
+	mu           sync.RWMutex
+	params       map[string]string
 }
 
 // IsRouteFallback reports whether the current handler chain is running because
@@ -1511,20 +1509,9 @@ func (c *BaseCtx) init(app *Core, w http.ResponseWriter, r *http.Request) {
 	c.method = c.R.Method
 	c.pathOriginal = r.URL.RawPath
 	c.methodInt = MethodType(methodPos(c.method))
-	c.detectionPath = c.path
 	c.respJsonKeys = &app.defaultRestful
 	c.querys = nil
 	c.vars = nil
-	if !app.Conf.GetBool("case-sensitive", true) {
-		c.detectionPath = strings.ToLower(c.detectionPath)
-	}
-	if !app.Conf.GetBool("strict-routing", true) && len(c.detectionPath) > 1 && c.detectionPath[len(c.detectionPath)-1] == '/' {
-		c.detectionPath = strings.TrimRight(c.detectionPath, "/")
-	}
-	c.treePath = c.treePath[0:0]
-	if len(c.detectionPath) >= 3 {
-		c.treePath = c.detectionPath[:3]
-	}
 }
 func (c *BaseCtx) release() {
 
