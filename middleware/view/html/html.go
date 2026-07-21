@@ -12,13 +12,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/bytedance/sonic"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/xs23933/core/v3"
 	view "github.com/xs23933/core/v3/middleware/view"
+	"github.com/xs23933/core/v3/utils"
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/extension"
 	"github.com/yuin/goldmark/parser"
@@ -80,9 +80,8 @@ func NewHtmlView(directory any, extension string, args ...any) *HtmlEngine {
 		var (
 			binding = engine.Binding
 		)
-		buf := bufPool.Get().(*bytes.Buffer)
+		buf := bufPool.Get()
 		defer bufPool.Put(buf)
-		buf.Reset()
 		if len(bind) > 0 {
 			binding = bind[0]
 		}
@@ -95,9 +94,8 @@ func NewHtmlView(directory any, extension string, args ...any) *HtmlEngine {
 		var (
 			binding = engine.Binding
 		)
-		buf := bufPool.Get().(*bytes.Buffer)
+		buf := bufPool.Get()
 		defer bufPool.Put(buf)
-		buf.Reset()
 		if len(bind) > 0 {
 			binding = bind[0]
 		}
@@ -377,8 +375,4 @@ var templateHelpers = template.FuncMap{
 	},
 }
 
-var bufPool = sync.Pool{
-	New: func() any {
-		return new(bytes.Buffer)
-	},
-}
+var bufPool = utils.NewBufferPool()

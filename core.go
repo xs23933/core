@@ -25,6 +25,7 @@ import (
 	"github.com/xs23933/core/v3/etcd"
 	"github.com/xs23933/core/v3/middleware/view"
 	"github.com/xs23933/core/v3/reuseport"
+	"github.com/xs23933/core/v3/utils"
 	"golang.org/x/crypto/acme"
 	"golang.org/x/crypto/acme/autocert"
 	"golang.org/x/net/http2"
@@ -52,7 +53,7 @@ type Core struct {
 	addr           string
 	RequestMethods []string
 
-	pool               sync.Pool
+	pool               *utils.Pool[*BaseCtx]
 	ErrorHandler       ErrorHandler
 	eg                 *errgroup.Group
 	Ctx                context.Context
@@ -215,13 +216,11 @@ func New(options ...Options) *Core {
 	app.eg, app.Ctx = errgroup.WithContext(ctx)
 	app.stop = cancel
 
-	app.pool = sync.Pool{
-		New: func() any {
-			return &BaseCtx{
-				wm: resp{},
-			}
-		},
-	}
+	app.pool = utils.NewPool(func() *BaseCtx {
+		return &BaseCtx{
+			wm: resp{},
+		}
+	})
 
 	c := make(chan os.Signal, 1)
 	const SIGUSR2 = syscall.Signal(0x1f)

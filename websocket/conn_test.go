@@ -23,7 +23,7 @@ func TestPutBufferDropsOversizedBuffers(t *testing.T) {
 
 	putBuffer(&oversized)
 
-	got := bufferPool.Get().(*[]byte)
+	got := bufferPool.Get()
 	defer putBuffer(got)
 	if cap(*got) > maxPooledBufferCap {
 		t.Fatalf("pooled buffer cap = %d, want <= %d", cap(*got), maxPooledBufferCap)

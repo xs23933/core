@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/xs23933/core/v3/utils"
 )
 
 type MessageType int
@@ -21,23 +22,13 @@ type message struct {
 	data *[]byte
 }
 
-var bufferPool = sync.Pool{
-	New: func() any {
-		b := make([]byte, 4096)
-		return &b
-	},
-}
-
 const maxPooledBufferCap = 64 << 10
 
+// bufferPool 复用 *[]byte，归还时若容量超过 maxPooledBufferCap 则丢弃，
+// 避免偶发大消息常驻池中导致内存膨胀。
+var bufferPool = utils.NewBytePoolWithMax(4096, maxPooledBufferCap)
+
 func putBuffer(buf *[]byte) {
-	if buf == nil {
-		return
-	}
-	if cap(*buf) > maxPooledBufferCap {
-		return
-	}
-	*buf = (*buf)[:0]
 	bufferPool.Put(buf)
 }
 
@@ -102,8 +93,8 @@ func (c *Conn) SendBatchWithType(messageType MessageType, data []byte) {
 		return
 	}
 
-	buf := bufferPool.Get().(*[]byte)
-	*buf = append((*buf)[:0], data...)
+	buf := bufferPool.Get()
+	*buf = append(*buf, data...)
 
 	c.batchMsgs = append(c.batchMsgs, &message{
 		typ:  messageType,
@@ -155,8 +146,7 @@ func (c *Conn) flushBatch() {
 	}
 
 	// 从池中获取合并缓冲区
-	mergedBuf := bufferPool.Get().(*[]byte)
-	*mergedBuf = (*mergedBuf)[:0]
+	mergedBuf := bufferPool.Get()
 
 	// 确保容量足够
 	if cap(*mergedBuf) < totalSize {
@@ -216,8 +206,8 @@ func (c *Conn) SendWithType(messageType MessageType, data []byte) {
 	if c.closed.Load() {
 		return
 	}
-	buf := bufferPool.Get().(*[]byte)
-	*buf = append((*buf)[:0], data...)
+	buf := bufferPool.Get()
+	*buf = append(*buf, data...)
 
 	msg := &message{
 		typ:  messageType,
@@ -241,8 +231,7 @@ func (c *Conn) readLoop(onMessage func(*Conn, MessageType, []byte)) {
 			return
 		}
 
-		buf := bufferPool.Get().(*[]byte)
-		*buf = (*buf)[:0]
+		buf := bufferPool.Get()
 
 		tmp := make([]byte, 512)
 

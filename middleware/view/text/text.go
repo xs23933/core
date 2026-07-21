@@ -1,7 +1,6 @@
 package text
 
 import (
-	"bytes"
 	"embed"
 	"fmt"
 	"io"
@@ -11,7 +10,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"sync"
 	"text/template"
 	"time"
 
@@ -19,6 +17,7 @@ import (
 	"github.com/davecgh/go-spew/spew"
 	"github.com/xs23933/core/v3"
 	"github.com/xs23933/core/v3/middleware/view"
+	"github.com/xs23933/core/v3/utils"
 )
 
 type TextEngine struct {
@@ -70,9 +69,8 @@ func NewTextEngine(directory any, extension string, args ...any) *TextEngine {
 		var (
 			binding = engine.Binding
 		)
-		buf := bufPool.Get().(*bytes.Buffer)
+		buf := bufPool.Get()
 		defer bufPool.Put(buf)
-		buf.Reset()
 		if len(bind) > 0 {
 			binding = bind[0]
 		}
@@ -85,9 +83,8 @@ func NewTextEngine(directory any, extension string, args ...any) *TextEngine {
 		var (
 			binding = engine.Binding
 		)
-		buf := bufPool.Get().(*bytes.Buffer)
+		buf := bufPool.Get()
 		defer bufPool.Put(buf)
-		buf.Reset()
 		if len(bind) > 0 {
 			binding = bind[0]
 		}
@@ -259,8 +256,4 @@ var textHelpers = template.FuncMap{
 	},
 }
 
-var bufPool = sync.Pool{
-	New: func() any {
-		return new(bytes.Buffer)
-	},
-}
+var bufPool = utils.NewBufferPool()

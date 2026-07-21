@@ -17,6 +17,7 @@ tags: [go, core-framework, utils, crypto, map, array]
 - "获取真实 IP"
 - "文件上传路径"
 - "数组去重/过滤"
+- "对象池 / sync.Pool / 复用 buffer"
 - "工具函数说明"
 
 ## 1. Map / Array
@@ -233,9 +234,68 @@ m := core.ParseMoney(anyValue)     // any → Money
 im := core.ParseIntMoney(anyValue) // any → IntMoney
 ```
 
+## 11. 对象池（utils 包）
+
+`utils` 包提供三类对象池，封装 `sync.Pool` 并提供类型安全的 API。不要在业务代码中直接使用 `sync.Pool` 重复造轮子。
+
+### 11.1 通用泛型池 `utils.Pool[T]`
+
+适用于任意需要复用的对象（`*struct`、`*Decoder` 等）。
+
+```go
+import "github.com/xs23933/core/v3/utils"
+
+var decoderPool = utils.NewPool(func() *schema.Decoder {
+    d := schema.NewDecoder()
+    d.IgnoreUnknownKeys(true)
+    return d
+})
+
+decoder := decoderPool.Get()        // 返回 *schema.Decoder，无需类型断言
+defer decoderPool.Put(decoder)
+```
+
+### 11.2 Buffer 池 `utils.BufferPool`
+
+复用 `*bytes.Buffer`，`Get` 时自动 `Reset`。
+
+```go
+var pool = utils.NewBufferPool()
+
+buf := pool.Get()                   // 已 Reset，可直接使用
+defer pool.Put(buf)
+buf.WriteString("hello")
+result := buf.String()
+```
+
+### 11.3 字节切片池 `utils.BytePool`
+
+复用 `*[]byte`，支持归还时的容量上限保护，避免偶发大缓冲区常驻池中导致内存膨胀。
+
+```go
+// 不限制归还上限
+var pool = utils.NewBytePool(256)
+
+// 归还时若 cap > 64KB 则丢弃（不归还）
+var pool = utils.NewBytePoolWithMax(4096, 64*1024)
+
+buf := pool.Get()                   // 返回 *[]byte，已重置为 len 0
+defer pool.Put(buf)
+*buf = append(*buf, data...)
+```
+
+### 11.4 使用原则
+
+- 优先使用 `utils.BufferPool` / `utils.BytePool` / `utils.NewBytePoolWithMax`，避免直接写 `sync.Pool`。
+- 池化对象只用于单次请求/操作生命周期，禁止跨请求保留状态。
+- 归还前应清理对象状态（引用、map、slice 等），避免内存泄漏。
+- `BytePool` 的 `maxCap` 仅在偶发大缓冲区场景使用，常态缓冲区大小稳定时可不设。
+- 不要把池化对象传入 goroutine 后继续使用，先拷贝数据再归还。
+
 ## 禁止事项
 
 - 不要手写重复的 slice 去重/过滤逻辑。
+- 不要直接使用 `sync.Pool` 复用 `*bytes.Buffer` / `*[]byte` 等常见对象，使用 `utils.BufferPool` / `utils.BytePool`。
 - 不要用 `fmt.Println` 调试工具函数结果，使用 `core.Info/Erro`。
 - 不要把 `core.Ctx` 传入 goroutine 后再调用工具函数读请求。
 - 不要在生产环境使用默认 AES 密钥。
