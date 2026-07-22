@@ -538,6 +538,39 @@ func (Money) GormDBDataType(db *gorm.DB, field *schema.Field) string {
 	}
 }
 
+// Value 实现 driver.Valuer，用于 ClickHouse Decimal 类型写入
+func (m Money) Value() (driver.Value, error) {
+	return strconv.FormatFloat(float64(m), 'f', -1, 64), nil
+}
+
+// Scan 实现 sql.Scanner
+func (m *Money) Scan(value any) error {
+	if value == nil {
+		return nil
+	}
+	switch v := value.(type) {
+	case float64:
+		*m = Money(v)
+	case int64:
+		*m = Money(v)
+	case string:
+		f, err := strconv.ParseFloat(v, 64)
+		if err != nil {
+			return err
+		}
+		*m = Money(f)
+	case []byte:
+		f, err := strconv.ParseFloat(string(v), 64)
+		if err != nil {
+			return err
+		}
+		*m = Money(f)
+	default:
+		return fmt.Errorf("unsupported Scan type for Money: %T", value)
+	}
+	return nil
+}
+
 func (m *Money) UnmarshalJSON(data []byte) error {
 	str := string(data)
 	var err error

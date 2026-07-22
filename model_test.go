@@ -1,10 +1,23 @@
 package core
 
 import (
+	"database/sql/driver"
 	"reflect"
 	"strings"
 	"testing"
 )
+
+func TestMoneyValueReturnsDecimalString(t *testing.T) {
+	var valuer driver.Valuer = Money(12.345)
+
+	value, err := valuer.Value()
+	if err != nil {
+		t.Fatalf("Money.Value() error = %v", err)
+	}
+	if got, ok := value.(string); !ok || got != "12.345" {
+		t.Fatalf("Money.Value() = %#v (%T), want decimal string %q", value, value, "12.345")
+	}
+}
 
 func TestSModelsDoesNotForceDialectSpecificTimestampType(t *testing.T) {
 	typ := reflect.TypeOf(SModels{})
