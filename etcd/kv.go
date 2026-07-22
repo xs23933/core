@@ -78,7 +78,10 @@ func (d *Discovery) getKV(key string, opts ...clientv3.OpOption) (string, *clien
 func (d *Discovery) putRaw(key string, value string, opts ...clientv3.OpOption) error {
 	ctx, cancel := kvContext()
 	defer cancel()
+	return d.putRawContext(ctx, key, value, opts...)
+}
 
+func (d *Discovery) putRawContext(ctx context.Context, key string, value string, opts ...clientv3.OpOption) error {
 	_, err := d.client.Put(ctx, d.kvKey(key), value, opts...)
 	return err
 }
@@ -145,6 +148,11 @@ func (d *Discovery) Add(key string, value []string, opts ...clientv3.OpOption) e
 // PutString 存储字符串值，跳过 JSON 序列化
 func (d *Discovery) PutString(key string, value string, opts ...clientv3.OpOption) error {
 	return d.putRaw(key, value, opts...)
+}
+
+// PutStringContext stores a raw string and uses the caller's context.
+func (d *Discovery) PutStringContext(ctx context.Context, key string, value string) error {
+	return d.putRawContext(ctx, key, value)
 }
 
 func appendStringSet(current, additions []string) []string {

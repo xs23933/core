@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -15,19 +16,12 @@ import (
 	"time"
 
 	"github.com/xs23933/core/v3"
+	gatewayroute "github.com/xs23933/core/v3/gateway/route"
+	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
-
-type capturedRoutePut struct {
-	key   string
-	value any
-}
-
-type captureRouteStore struct {
-	puts []capturedRoutePut
-}
 
 func TestGatewayNamespacePrefixes(t *testing.T) {
 	tests := []struct {
@@ -56,7 +50,10 @@ func TestGatewayPrefixDefaultsPreserveExplicitRoutePrefix(t *testing.T) {
 		t.Fatalf("derived RoutePrefix = %q, want /xpay/gateway/routes/", config.RoutePrefix)
 	}
 
-	config = &Config{Namespace: "xpay", RoutePrefix: "/custom/routes/"}
+	config = &Config{
+		Namespace:   "xpay",
+		RoutePrefix: "/custom/routes/",
+	}
 	applyGatewayPrefixDefaults(config)
 	if config.RoutePrefix != "/custom/routes/" {
 		t.Fatalf("explicit RoutePrefix = %q, want /custom/routes/", config.RoutePrefix)
@@ -71,11 +68,6 @@ func TestGatewayParseServiceKeyUsesExpectedRoot(t *testing.T) {
 	if _, _, ok := parseServiceKey("/union/services/auth/auth-1", "/xpay/services/"); ok {
 		t.Fatal("foreign namespace key should be rejected")
 	}
-}
-
-func (s *captureRouteStore) Put(_ context.Context, key string, value any) error {
-	s.puts = append(s.puts, capturedRoutePut{key: key, value: value})
-	return nil
 }
 
 func TestGatewayConnectRetryDelayCapsAtFiveSeconds(t *testing.T) {
@@ -126,8 +118,7 @@ func TestUserServicePutAutoRouteUsesServiceRoot(t *testing.T) {
 
 	app := core.New()
 	gw := &EtcdGateway{app: app, connPool: NewConnectionPool()}
-	gw.storeRoutes(make(map[string]*Route))
-	gw.storeHTTPInstances(make(map[string]httpServiceInstances))
+	gw.storeHTTPInstances(make(map[string]*httpServiceInstances))
 	gw.storeHTTPIndexes(make(map[string]*atomic.Uint64))
 	route := &Route{
 		Protocol:    RouteProtocolGRPC,
@@ -274,7 +265,7 @@ func TestGRPCProxyRejectsOversizedBodyWithStatusRequestEntityTooLarge(t *testing
 		config:   &Config{MaxRequestBodyBytes: 4},
 		connPool: NewConnectionPool(),
 	}
-	gw.storeHTTPInstances(make(map[string]httpServiceInstances))
+	gw.storeHTTPInstances(make(map[string]*httpServiceInstances))
 	gw.storeHTTPIndexes(make(map[string]*atomic.Uint64))
 	gw.registerRoute(&Route{
 		Protocol:    RouteProtocolGRPC,
@@ -326,37 +317,12 @@ func TestAppendGatewayRequestMetadataOverridesBodyFields(t *testing.T) {
 	}
 }
 
-func TestPublishHTTPRouteUsesStableKey(t *testing.T) {
-	store := &captureRouteStore{}
-	route := &Route{
-		Method:       http.MethodGet,
-		Path:         "/trace.js",
-		ServiceName:  "analytics",
-		UpstreamPath: "/trace.js",
-	}
-
-	if err := publishHTTPRoute(context.Background(), store, "/gateway/routes/", route); err != nil {
-		t.Fatalf("first publish: %v", err)
-	}
-	if err := publishHTTPRoute(context.Background(), store, "/gateway/routes/", route); err != nil {
-		t.Fatalf("second publish: %v", err)
-	}
-
-	if len(store.puts) != 2 {
-		t.Fatalf("puts = %d, want 2", len(store.puts))
-	}
-	if store.puts[0].key == "" || store.puts[0].key != store.puts[1].key {
-		t.Fatalf("route keys = %q, %q; want same non-empty key", store.puts[0].key, store.puts[1].key)
-	}
-}
-
 func TestHTTPRouteRegisteredButMissingInstanceReturnsUnavailable(t *testing.T) {
 	app := core.New()
 	gw := &EtcdGateway{}
 	gw.app = app
 	gw.connPool = NewConnectionPool()
-	gw.storeRoutes(make(map[string]*Route))
-	gw.storeHTTPInstances(make(map[string]httpServiceInstances))
+	gw.storeHTTPInstances(make(map[string]*httpServiceInstances))
 	gw.storeHTTPIndexes(make(map[string]*atomic.Uint64))
 
 	gw.addOrUpdateRoute(&Route{
@@ -382,8 +348,7 @@ func TestRemovingOldRouteIDKeepsReplacementForSameMethodPath(t *testing.T) {
 	gw := &EtcdGateway{}
 	gw.app = app
 	gw.connPool = NewConnectionPool()
-	gw.storeRoutes(make(map[string]*Route))
-	gw.storeHTTPInstances(make(map[string]httpServiceInstances))
+	gw.storeHTTPInstances(make(map[string]*httpServiceInstances))
 	gw.storeHTTPIndexes(make(map[string]*atomic.Uint64))
 
 	gw.addOrUpdateRoute(&Route{
@@ -414,6 +379,212 @@ func TestRemovingOldRouteIDKeepsReplacementForSameMethodPath(t *testing.T) {
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503; replacement route should remain matched", rec.Code)
 	}
+}
+
+func TestGatewayRouteAdminOutputIncludesActivationAndConflict(t *testing.T) {
+	app := core.New()
+	gw := &EtcdGateway{app: app, prefix: "/gateway/routes/", connPool: NewConnectionPool()}
+	gw.storeHTTPInstances(make(map[string]*httpServiceInstances))
+	gw.storeHTTPIndexes(make(map[string]*atomic.Uint64))
+	manual := minimalRouteStateDefinition("manual", gatewayroute.SourceManual, "admin", "manual-service", "/api/users/:id")
+	autoA := minimalRouteStateDefinition("auto-a", gatewayroute.SourceAutoHTTP, "service-a", "auto-a", "/api/users/:id")
+	autoB := minimalRouteStateDefinition("auto-b", gatewayroute.SourceAutoHTTP, "service-b", "auto-b", "/api/users/:id")
+	gw.storeRouteSnapshot(newRouteSnapshot(map[string]*routeSourceValue{
+		"/gateway/routes/manual/slot": {Definition: manual},
+		minimalAutomaticCatalogKey("/gateway/routes/", "service-a"): {
+			Catalog: &gatewayroute.Catalog{ServiceName: "service-a", Routes: []*gatewayroute.Definition{autoA}},
+		},
+		minimalAutomaticCatalogKey("/gateway/routes/", "service-b"): {
+			Catalog: &gatewayroute.Catalog{ServiceName: "service-b", Routes: []*gatewayroute.Definition{autoB}},
+		},
+	}))
+	gw.setupAdminAPI()
+
+	request := httptest.NewRequest(http.MethodGet, "/admin/gateway/routes", nil)
+	request.RemoteAddr = "127.0.0.1:12345"
+	response := httptest.NewRecorder()
+	app.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("list status = %d, want 200: %s", response.Code, response.Body.String())
+	}
+	var payload struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode route list: %v", err)
+	}
+	var found map[string]any
+	for _, item := range payload.Data {
+		if item["id"] == "manual" {
+			found = item
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("manual route absent from %#v", payload.Data)
+	}
+	if found["slot"] != manual.Slot || found["source"] != string(gatewayroute.SourceManual) || found["owner"] != "admin" {
+		t.Fatalf("identity fields = slot:%v source:%v owner:%v", found["slot"], found["source"], found["owner"])
+	}
+	if found["active"] != true {
+		t.Fatalf("active = %v, want true", found["active"])
+	}
+	conflict, ok := found["conflict"].(map[string]any)
+	if !ok {
+		t.Fatalf("conflict = %#v, want object", found["conflict"])
+	}
+	if records, ok := conflict["records"].([]any); !ok || len(records) != 2 {
+		t.Fatalf("conflict records = %#v, want two automatic declarations", conflict["records"])
+	}
+}
+
+func TestGatewayRouteAdminCreatePublishesManualSlotKey(t *testing.T) {
+	client, _ := startGatewayRouteStoreEtcd(t)
+	app := core.New()
+	gw := &EtcdGateway{
+		app:     app,
+		etcdCli: client,
+		prefix:  "/gateway/routes/",
+		config:  &Config{},
+	}
+	gw.storeRouteSnapshot(emptyRouteSnapshot())
+	gw.setupAdminAPI()
+
+	body := `{"protocol":"http","method":"GET","path":"/api/users/:id","service_name":"users"}`
+	request := httptest.NewRequest(http.MethodPost, "/admin/gateway/routes", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.RemoteAddr = "127.0.0.1:12345"
+	response := httptest.NewRecorder()
+	app.ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, want 201: %s", response.Code, response.Body.String())
+	}
+
+	slot, err := gatewayroute.SlotID(http.MethodGet, "/api/users/:id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := client.Get(context.Background(), "/gateway/routes/", clientv3.WithPrefix())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored.Kvs) != 1 || string(stored.Kvs[0].Key) != "/gateway/routes/manual/"+slot {
+		t.Fatalf("stored route keys = %v, want manual slot key", routeKVKeys(stored))
+	}
+}
+
+func TestGatewayRouteAdminUpdateDoesNotOverwriteAutomaticRecord(t *testing.T) {
+	client, _ := startGatewayRouteStoreEtcd(t)
+	automatic := minimalRouteStateDefinition("shared-id", gatewayroute.SourceAutoHTTP, "users", "automatic", "/api/users/:id")
+	automaticKey := minimalAutomaticCatalogKey("/gateway/routes/", "users")
+	automaticCatalog := &gatewayroute.Catalog{ServiceName: "users", Routes: []*gatewayroute.Definition{automatic}}
+	automaticValue, err := json.Marshal(automaticCatalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Put(context.Background(), automaticKey, string(automaticValue)); err != nil {
+		t.Fatal(err)
+	}
+
+	app := core.New()
+	gw := &EtcdGateway{
+		app:     app,
+		etcdCli: client,
+		prefix:  "/gateway/routes/",
+		config:  &Config{},
+	}
+	gw.storeRouteSnapshot(newRouteSnapshot(map[string]*routeSourceValue{
+		automaticKey: {Catalog: automaticCatalog},
+	}))
+	gw.setupAdminAPI()
+
+	body := `{"protocol":"http","method":"GET","path":"/api/users/:id","service_name":"manual","enabled":true}`
+	request := httptest.NewRequest(http.MethodPut, "/admin/gateway/routes/shared-id", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.RemoteAddr = "127.0.0.1:12345"
+	response := httptest.NewRecorder()
+	app.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("update status = %d, want 200: %s", response.Code, response.Body.String())
+	}
+
+	storedAutomatic, err := client.Get(context.Background(), automaticKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(storedAutomatic.Kvs) != 1 || !bytes.Equal(storedAutomatic.Kvs[0].Value, automaticValue) {
+		t.Fatalf("automatic record was overwritten or deleted: %#v", storedAutomatic.Kvs)
+	}
+	manualKey := "/gateway/routes/manual/" + automatic.Slot
+	storedManual, err := client.Get(context.Background(), manualKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(storedManual.Kvs) != 1 {
+		t.Fatalf("manual override key %s was not published", manualKey)
+	}
+}
+
+func TestGatewayRouteAdminGetAndDeleteSupportsLegacyAndManualKeys(t *testing.T) {
+	client, _ := startGatewayRouteStoreEtcd(t)
+	legacy := minimalRouteStateDefinition("legacy-id", "", "", "legacy", "/api/legacy")
+	legacy.Path = "/api/legacy"
+	legacy.Slot, _ = gatewayroute.SlotID(legacy.Method, legacy.Path)
+	manual := minimalRouteStateDefinition("manual-id", gatewayroute.SourceManual, "", "manual", "/api/manual")
+	manual.Path = "/api/manual"
+	manual.Slot, _ = gatewayroute.SlotID(manual.Method, manual.Path)
+	legacyKey := "/gateway/routes/legacy-id"
+	manualKey := "/gateway/routes/manual/" + manual.Slot
+	for storageKey, definition := range map[string]*gatewayroute.Definition{legacyKey: legacy, manualKey: manual} {
+		value, err := json.Marshal(definition)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := client.Put(context.Background(), storageKey, string(value)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	app := core.New()
+	gw := &EtcdGateway{app: app, etcdCli: client, prefix: "/gateway/routes/"}
+	gw.storeRouteSnapshot(newRouteSnapshot(map[string]*routeSourceValue{
+		legacyKey: {Definition: legacy},
+		manualKey: {Definition: manual},
+	}))
+	gw.setupAdminAPI()
+
+	get := httptest.NewRequest(http.MethodGet, "/admin/gateway/routes/manual-id", nil)
+	get.RemoteAddr = "127.0.0.1:12345"
+	getResponse := httptest.NewRecorder()
+	app.ServeHTTP(getResponse, get)
+	if getResponse.Code != http.StatusOK || !strings.Contains(getResponse.Body.String(), `"active":true`) {
+		t.Fatalf("manual get status=%d body=%s", getResponse.Code, getResponse.Body.String())
+	}
+
+	for id, storageKey := range map[string]string{"legacy-id": legacyKey, "manual-id": manualKey} {
+		request := httptest.NewRequest(http.MethodDelete, "/admin/gateway/routes/"+id, nil)
+		request.RemoteAddr = "127.0.0.1:12345"
+		response := httptest.NewRecorder()
+		app.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("delete %s status=%d body=%s", id, response.Code, response.Body.String())
+		}
+		stored, err := client.Get(context.Background(), storageKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(stored.Kvs) != 0 {
+			t.Fatalf("delete %s retained key %s", id, storageKey)
+		}
+	}
+}
+
+func routeKVKeys(response *clientv3.GetResponse) []string {
+	keys := make([]string, 0, len(response.Kvs))
+	for _, value := range response.Kvs {
+		keys = append(keys, string(value.Key))
+	}
+	return keys
 }
 
 func TestNextRouteWatchRevisionStartsAfterLoadedSnapshot(t *testing.T) {
@@ -449,14 +620,18 @@ func TestGRPCErrorToResponseHidesNonStatusError(t *testing.T) {
 
 func TestHTTPInstanceSelectionUsesSnapshotWithoutAllocating(t *testing.T) {
 	gw := &EtcdGateway{}
-	gw.storeHTTPInstances(make(map[string]httpServiceInstances))
-	gw.addHTTPInstance("task-service", "task-2", "127.0.0.1:8082")
-	gw.addHTTPInstance("task-service", "task-1", "127.0.0.1:8081")
+	gw.storeHTTPInstances(make(map[string]*httpServiceInstances))
+	if err := gw.addHTTPInstance("task-service", "task-2", "http://127.0.0.1:8082"); err != nil {
+		t.Fatal(err)
+	}
+	if err := gw.addHTTPInstance("task-service", "task-1", "http://127.0.0.1:8081"); err != nil {
+		t.Fatal(err)
+	}
 
 	first := gw.getHTTPInstance("task-service")
 	second := gw.getHTTPInstance("task-service")
-	if first == "" || second == "" || first == second {
-		t.Fatalf("round-robin instances = %q, %q; want two non-empty different addresses", first, second)
+	if first == nil || second == nil || first.ID == second.ID {
+		t.Fatalf("round-robin instances = %#v, %#v; want two non-empty different addresses", first, second)
 	}
 
 	_ = gw.getHTTPInstance("task-service")
@@ -470,16 +645,47 @@ func TestHTTPInstanceSelectionUsesSnapshotWithoutAllocating(t *testing.T) {
 
 func TestHTTPInstanceRemovalRebuildsSnapshot(t *testing.T) {
 	gw := &EtcdGateway{}
-	gw.storeHTTPInstances(make(map[string]httpServiceInstances))
-	gw.addHTTPInstance("task-service", "task-1", "127.0.0.1:8081")
-	gw.addHTTPInstance("task-service", "task-2", "127.0.0.1:8082")
+	gw.storeHTTPInstances(make(map[string]*httpServiceInstances))
+	if err := gw.addHTTPInstance("task-service", "task-1", "http://127.0.0.1:8081"); err != nil {
+		t.Fatal(err)
+	}
+	if err := gw.addHTTPInstance("task-service", "task-2", "http://127.0.0.1:8082"); err != nil {
+		t.Fatal(err)
+	}
 
 	gw.removeHTTPInstance("task-service", "task-1")
 
 	for i := 0; i < 4; i++ {
-		if got := gw.getHTTPInstance("task-service"); got != "127.0.0.1:8082" {
-			t.Fatalf("instance after removal = %q, want remaining address", got)
+		if got := gw.getHTTPInstance("task-service"); got == nil || got.ID != "task-2" {
+			t.Fatalf("instance after removal = %#v, want remaining instance", got)
 		}
+	}
+}
+
+func TestHTTPServiceDeleteThenPutKeepsLatestTarget(t *testing.T) {
+	gw := &EtcdGateway{connPool: NewConnectionPool()}
+	if err := gw.addHTTPInstance("task-service", "task-1", "http://127.0.0.1:8081"); err != nil {
+		t.Fatal(err)
+	}
+	pool := gw.connPool.GetOrCreate(nil, "task-service")
+	pool.storeState(servicePoolState{
+		byID: map[string]*ReflectionProxy{"task-1": {}},
+		all:  []*ReflectionProxy{{}},
+	})
+
+	// The watch applies the HTTP delete synchronously. Model a delayed gRPC
+	// cleanup by running it only after the replacement HTTP PUT.
+	gw.removeHTTPInstance("task-service", "task-1")
+	if err := gw.addHTTPInstance("task-service", "task-1", "http://127.0.0.1:8082"); err != nil {
+		t.Fatal(err)
+	}
+	gw.removeGRPCInstance("task-service", "task-1")
+	if gw.connPool.Get("task-service") != nil {
+		t.Fatal("delayed gRPC cleanup retained an empty pool")
+	}
+	got := gw.getHTTPInstance("task-service")
+	if got == nil || got.Addr != "http://127.0.0.1:8082" {
+		t.Fatalf("latest HTTP target = %#v, want re-added target", got)
 	}
 }
 
@@ -501,23 +707,6 @@ func TestServicePoolGetUsesSnapshotWithoutAllocating(t *testing.T) {
 	})
 	if allocs != 0 {
 		t.Fatalf("ServicePool.Get allocations = %v, want 0", allocs)
-	}
-}
-
-func TestConnectInstanceGuardSuppressesDuplicateInFlightAttempts(t *testing.T) {
-	gw := &EtcdGateway{}
-
-	key, ok := gw.beginConnectInstance("billing-service", "billing-1")
-	if !ok {
-		t.Fatal("first connect attempt should start")
-	}
-	if _, ok := gw.beginConnectInstance("billing-service", "billing-1"); ok {
-		t.Fatal("duplicate in-flight connect attempt should be suppressed")
-	}
-
-	gw.finishConnectInstance(key)
-	if _, ok := gw.beginConnectInstance("billing-service", "billing-1"); !ok {
-		t.Fatal("connect attempt should be allowed after previous attempt finishes")
 	}
 }
 
@@ -555,29 +744,29 @@ func TestCircuitBreakerHalfOpenFailureReopensCircuit(t *testing.T) {
 	}
 }
 
-func TestPrepareHTTPProxyRequestRewritesTargetPathAndHeaders(t *testing.T) {
-	target, err := parseHTTPServiceURL("http://127.0.0.1:8081/base")
+func TestSetHTTPProxyTargetOnlyChangesDestination(t *testing.T) {
+	target, err := parseHTTPServiceURL("http://127.0.0.1:8081")
 	if err != nil {
 		t.Fatalf("parse target: %v", err)
 	}
-	req := httptest.NewRequest(http.MethodGet, "/api/tasks/42?debug=1", nil)
-	route := &Route{
-		UpstreamPath: "/tasks/:id",
-		Headers:      map[string]string{"X-Gateway": "core"},
-	}
+	req := httptest.NewRequest(http.MethodGet, "/api/tasks/a%2Bb?tag=z&tag=a", nil)
+	req.Header["X-Multi"] = []string{"one", "two"}
+	wantPath := req.URL.Path
+	wantRawPath := req.URL.RawPath
+	wantRawQuery := req.URL.RawQuery
 
-	prepareHTTPProxyRequest(req, target, route, map[string]string{"id": "42"})
+	setHTTPProxyTarget(req, target)
 
 	if req.URL.Scheme != "http" || req.URL.Host != "127.0.0.1:8081" {
 		t.Fatalf("target = %s://%s, want http://127.0.0.1:8081", req.URL.Scheme, req.URL.Host)
 	}
-	if req.URL.Path != "/base/tasks/42" {
-		t.Fatalf("path = %q, want /base/tasks/42", req.URL.Path)
+	if req.URL.Path != wantPath || req.URL.RawPath != wantRawPath {
+		t.Fatalf("path = %q raw_path=%q, want unchanged %q %q", req.URL.Path, req.URL.RawPath, wantPath, wantRawPath)
 	}
-	if req.URL.RawQuery != "debug=1" {
-		t.Fatalf("query = %q, want debug=1", req.URL.RawQuery)
+	if req.URL.RawQuery != wantRawQuery {
+		t.Fatalf("query = %q, want unchanged %q", req.URL.RawQuery, wantRawQuery)
 	}
-	if got := req.Header.Get("X-Gateway"); got != "core" {
-		t.Fatalf("X-Gateway = %q, want core", got)
+	if got := req.Header.Values("X-Multi"); !reflect.DeepEqual(got, []string{"one", "two"}) {
+		t.Fatalf("X-Multi = %#v, want unchanged", got)
 	}
 }

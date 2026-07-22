@@ -20,26 +20,21 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/xs23933/core/v3"
 	"github.com/xs23933/core/v3/etcd"
+	"github.com/xs23933/core/v3/gateway/route"
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"golang.org/x/sync/singleflight"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
 
-type Route struct {
-	ID           string            `json:"id"`
-	Protocol     RouteProtocol     `json:"protocol,omitempty"`
-	Method       string            `json:"method"`
-	Path         string            `json:"path"`
-	ServiceName  string            `json:"service_name"`
-	GRPCMethod   string            `json:"grpc_method"`
-	UpstreamPath string            `json:"upstream_path,omitempty"`
-	Description  string            `json:"description"`
-	Headers      map[string]string `json:"headers,omitempty"`
-	Enabled      bool              `json:"enabled"`
-	CreatedAt    time.Time         `json:"created_at"`
-	UpdatedAt    time.Time         `json:"updated_at"`
-}
+type Route = route.Definition
+type RouteProtocol = route.Protocol
+
+const (
+	RouteProtocolGRPC = route.ProtocolGRPC
+	RouteProtocolHTTP = route.ProtocolHTTP
+)
 
 // CircuitBreaker 熔断器
 type CircuitBreaker struct {
@@ -68,14 +63,42 @@ type serviceInstance struct {
 	Metadata map[string]string `json:"metadata,omitempty"`
 }
 
+type registeredServiceInstance struct {
+	ServiceName string
+	InstanceID  string
+	GRPCAddr    string
+	HTTPAddr    string
+}
+
+type serviceSnapshot map[string]registeredServiceInstance
+
+type serviceSnapshotRevision struct {
+	Snapshot serviceSnapshot
+	Revision int64
+}
+
+type serviceWatchEvent struct {
+	Key      string
+	Instance registeredServiceInstance
+	Deleted  bool
+}
+
+type serviceWatchResponse struct {
+	Revision int64
+	Events   []serviceWatchEvent
+	Err      error
+}
+
+type serviceWatchSource interface {
+	Load(context.Context) (serviceSnapshotRevision, error)
+	Watch(context.Context, int64) <-chan serviceWatchResponse
+}
+
 func (s *serviceInstance) HTTPAddr() string {
-	if s != nil && s.Metadata != nil && s.Metadata["http_addr"] != "" {
-		return s.Metadata["http_addr"]
-	}
-	if s == nil {
+	if s == nil || s.Metadata == nil {
 		return ""
 	}
-	return s.Addr
+	return strings.TrimSpace(s.Metadata["http_addr"])
 }
 
 // EtcdGateway etcd 网关
@@ -86,19 +109,32 @@ type EtcdGateway struct {
 	serviceRoot string
 	config      *Config
 
-	mu     sync.Mutex
-	routes atomic.Value // map[string]*Route, copy-on-write
-	// grpcServiceRoutes 按 gRPC 服务名索引路由，用于清理已删除方法的旧路由
-	grpcServiceRoutes map[string]map[string]bool
+	mu         sync.Mutex
+	routeState atomic.Value // routeSnapshot, copy-on-write
+	// grpcServiceRoutes is indexed by logical service_name. Its schema pointer
+	// prevents redundant route registration for additional service IDs.
+	grpcServiceRoutes  map[string]map[string]bool
+	grpcServiceSchemas map[string]*ReflectionSchema
 
-	watchCtx    context.Context
-	watchCancel context.CancelFunc
+	watchCtx       context.Context
+	watchCancel    context.CancelFunc
+	lifecycleMu    sync.Mutex
+	taskWG         sync.WaitGroup
+	closed         bool
+	closeOnce      sync.Once
+	closeErr       error
+	ownsEtcdClient bool
 
-	circuitStates   sync.Map // map[string]*CircuitBreaker
-	connectInFlight sync.Map // map[string]struct{}
+	circuitStates       sync.Map // map[string]*CircuitBreaker
+	connectInFlight     sync.Map // map[string]struct{}
+	connectGroup        singleflight.Group
+	connectWaitObserver func(string)
+
+	desiredMu       sync.Mutex
+	desiredServices atomic.Value // serviceSnapshot, copy-on-write
 
 	httpMu        sync.Mutex
-	httpInstances atomic.Value // map[string]httpServiceInstances
+	httpInstances atomic.Value // map[string]*httpServiceInstances
 	httpIndexMu   sync.Mutex
 	httpIndexes   atomic.Value // map[string]*atomic.Uint64
 
@@ -119,6 +155,268 @@ type Config struct {
 const defaultMaxRequestBodyBytes int64 = 8 << 20
 
 var errRequestBodyTooLarge = errors.New("request body too large")
+
+var newGatewayEtcdClient = clientv3.New
+
+type etcdServiceWatchSource struct {
+	client      *clientv3.Client
+	serviceRoot string
+	launch      func(func()) bool
+}
+
+func (source etcdServiceWatchSource) Load(ctx context.Context) (serviceSnapshotRevision, error) {
+	if source.client == nil {
+		return serviceSnapshotRevision{}, errors.New("gateway: service watch etcd client is nil")
+	}
+	loadCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	response, err := source.client.Get(loadCtx, source.serviceRoot, clientv3.WithPrefix())
+	if err != nil {
+		return serviceSnapshotRevision{}, err
+	}
+	snapshot := make(serviceSnapshot)
+	for _, value := range response.Kvs {
+		instance, ok := decodeServiceSnapshotValue(source.serviceRoot, string(value.Key), value.Value)
+		if !ok {
+			continue
+		}
+		snapshot[connectInstanceKey(instance.ServiceName, instance.InstanceID)] = instance
+	}
+	return serviceSnapshotRevision{Snapshot: snapshot, Revision: response.Header.GetRevision()}, nil
+}
+
+func (source etcdServiceWatchSource) Watch(ctx context.Context, revision int64) <-chan serviceWatchResponse {
+	responses := make(chan serviceWatchResponse)
+	if source.client == nil || source.launch == nil {
+		close(responses)
+		return responses
+	}
+	options := []clientv3.OpOption{clientv3.WithPrefix()}
+	if revision > 0 {
+		options = append(options, clientv3.WithRev(revision))
+	}
+	watch := source.client.Watch(ctx, source.serviceRoot, options...)
+	forward := func() {
+		defer close(responses)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case response, ok := <-watch:
+				if !ok {
+					return
+				}
+				converted := serviceWatchResponse{Revision: response.Header.GetRevision(), Err: response.Err()}
+				if converted.Err == nil {
+					converted.Events = decodeServiceWatchEvents(source.serviceRoot, response.Events)
+				}
+				select {
+				case <-ctx.Done():
+					return
+				case responses <- converted:
+				}
+				if converted.Err != nil {
+					return
+				}
+			}
+		}
+	}
+	if !source.launch(forward) {
+		close(responses)
+	}
+	return responses
+}
+
+func decodeServiceWatchEvents(serviceRoot string, events []*clientv3.Event) []serviceWatchEvent {
+	result := make([]serviceWatchEvent, 0, len(events))
+	for _, event := range events {
+		if event == nil || event.Kv == nil {
+			continue
+		}
+		key := string(event.Kv.Key)
+		serviceName, instanceID, ok := parseServiceKey(key, serviceRoot)
+		if !ok {
+			core.Warn("[Gateway] ignore invalid service key from etcd watch: %s", key)
+			continue
+		}
+		item := serviceWatchEvent{
+			Key:      connectInstanceKey(serviceName, instanceID),
+			Deleted:  event.Type == clientv3.EventTypeDelete,
+			Instance: registeredServiceInstance{ServiceName: serviceName, InstanceID: instanceID},
+		}
+		if !item.Deleted {
+			instance, valid := decodeServiceSnapshotValue(serviceRoot, key, event.Kv.Value)
+			if !valid {
+				// An invalid replacement must invalidate a previously usable value
+				// for the same authoritative etcd key.
+				item.Deleted = true
+			} else {
+				item.Instance = instance
+			}
+		}
+		result = append(result, item)
+	}
+	return result
+}
+
+func decodeServiceSnapshotValue(serviceRoot, key string, value []byte) (registeredServiceInstance, bool) {
+	serviceName, instanceID, ok := parseServiceKey(key, serviceRoot)
+	if !ok {
+		return registeredServiceInstance{}, false
+	}
+	info, err := parseServiceInstance(value)
+	if err != nil {
+		core.Warn("[Gateway] ignore invalid service instance %s: %v", key, err)
+		return registeredServiceInstance{}, false
+	}
+	return registeredServiceInstance{
+		ServiceName: serviceName,
+		InstanceID:  instanceID,
+		GRPCAddr:    strings.TrimSpace(info.Addr),
+		HTTPAddr:    info.HTTPAddr(),
+	}, true
+}
+
+func cloneServiceSnapshot(snapshot serviceSnapshot) serviceSnapshot {
+	result := make(serviceSnapshot, len(snapshot))
+	for key, instance := range snapshot {
+		result[key] = instance
+	}
+	return result
+}
+
+func applyServiceWatchEvents(snapshot serviceSnapshot, events []serviceWatchEvent) serviceSnapshot {
+	next := cloneServiceSnapshot(snapshot)
+	for _, event := range events {
+		if event.Key == "" {
+			continue
+		}
+		if event.Deleted {
+			delete(next, event.Key)
+		} else {
+			next[event.Key] = event.Instance
+		}
+	}
+	return next
+}
+
+func nextServiceWatchRevision(revision int64) int64 {
+	if revision <= 0 {
+		return 0
+	}
+	return revision + 1
+}
+
+func runServiceWatchLoop(ctx context.Context, source serviceWatchSource, reconcile func(serviceSnapshot), wait func(context.Context, int) bool) {
+	runServiceWatchLoopFrom(ctx, source, nil, reconcile, wait)
+}
+
+func runServiceWatchLoopFrom(ctx context.Context, source serviceWatchSource, initial *serviceSnapshotRevision, reconcile func(serviceSnapshot), wait func(context.Context, int) bool) {
+	failures := 0
+	for ctx.Err() == nil {
+		var loaded serviceSnapshotRevision
+		if initial != nil {
+			loaded = *initial
+			initial = nil
+		} else {
+			var err error
+			loaded, err = source.Load(ctx)
+			if err != nil {
+				core.Warn("[Gateway] refresh service snapshot failed: %v", err)
+				if !wait(ctx, failures) {
+					return
+				}
+				failures++
+				continue
+			}
+		}
+		current := cloneServiceSnapshot(loaded.Snapshot)
+		reconcile(current)
+		if ctx.Err() != nil {
+			return
+		}
+
+		watchCtx, cancelWatch := context.WithCancel(ctx)
+		responses := source.Watch(watchCtx, nextServiceWatchRevision(loaded.Revision))
+		broken := false
+		for !broken {
+			select {
+			case <-ctx.Done():
+				cancelWatch()
+				return
+			case response, ok := <-responses:
+				if !ok || response.Err != nil {
+					broken = true
+					continue
+				}
+				current = applyServiceWatchEvents(current, response.Events)
+				reconcile(current)
+				failures = 0
+			}
+		}
+		cancelWatch()
+		if !wait(ctx, failures) {
+			return
+		}
+		failures++
+	}
+}
+
+func (gw *EtcdGateway) initializeLifecycle() {
+	if gw == nil {
+		return
+	}
+	gw.lifecycleMu.Lock()
+	if gw.watchCtx == nil {
+		gw.watchCtx, gw.watchCancel = context.WithCancel(context.Background())
+	}
+	gw.lifecycleMu.Unlock()
+	if gw.connPool == nil {
+		gw.connPool = NewConnectionPool()
+	}
+	if gw.grpcServiceRoutes == nil {
+		gw.grpcServiceRoutes = make(map[string]map[string]bool)
+	}
+	if gw.grpcServiceSchemas == nil {
+		gw.grpcServiceSchemas = make(map[string]*ReflectionSchema)
+	}
+	if gw.loadDesiredServiceSnapshot() == nil {
+		gw.setDesiredServiceSnapshot(make(serviceSnapshot))
+	}
+}
+
+func (gw *EtcdGateway) launchTask(task func()) bool {
+	if gw == nil || task == nil {
+		return false
+	}
+	gw.initializeLifecycle()
+	gw.lifecycleMu.Lock()
+	if gw.closed || gw.watchCtx.Err() != nil {
+		gw.lifecycleMu.Unlock()
+		return false
+	}
+	gw.taskWG.Add(1)
+	gw.lifecycleMu.Unlock()
+	go func() {
+		defer gw.taskWG.Done()
+		task()
+	}()
+	return true
+}
+
+func (gw *EtcdGateway) loadDesiredServiceSnapshot() serviceSnapshot {
+	if gw == nil {
+		return nil
+	}
+	if snapshot, ok := gw.desiredServices.Load().(serviceSnapshot); ok {
+		return snapshot
+	}
+	return nil
+}
+
+func (gw *EtcdGateway) setDesiredServiceSnapshot(snapshot serviceSnapshot) {
+	gw.desiredServices.Store(cloneServiceSnapshot(snapshot))
+}
 
 func gatewayServiceRoot(namespace string) string {
 	return etcd.NamespacePrefix(namespace, "services")
@@ -286,41 +584,81 @@ func NewEtcdGateway(app *core.Core, conf ...*Config) (*EtcdGateway, error) {
 		config.EtcdDialTimeout = 5 * time.Second
 	}
 
-	cli, err := clientv3.New(clientv3.Config{
+	cli, err := newGatewayEtcdClient(clientv3.Config{
 		Endpoints:   config.EtcdEndpoints,
 		DialTimeout: config.EtcdDialTimeout,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create etcd client failed: %w", err)
 	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-
+	clientOwned := true
+	defer func() {
+		if clientOwned {
+			_ = cli.Close()
+		}
+	}()
 	gw := &EtcdGateway{
-		app:               app,
-		etcdCli:           cli,
-		prefix:            config.RoutePrefix,
-		serviceRoot:       gatewayServiceRoot(config.Namespace),
-		config:            config,
-		grpcServiceRoutes: make(map[string]map[string]bool),
-		watchCtx:          ctx,
-		watchCancel:       cancel,
-		connPool:          NewConnectionPool(),
+		app:                app,
+		etcdCli:            cli,
+		prefix:             config.RoutePrefix,
+		serviceRoot:        gatewayServiceRoot(config.Namespace),
+		config:             config,
+		grpcServiceRoutes:  make(map[string]map[string]bool),
+		grpcServiceSchemas: make(map[string]*ReflectionSchema),
+		connPool:           NewConnectionPool(),
+		ownsEtcdClient:     true,
 	}
-	gw.storeRoutes(make(map[string]*Route))
-	gw.storeHTTPInstances(make(map[string]httpServiceInstances))
+	gw.initializeLifecycle()
+	gw.storeRouteSnapshot(emptyRouteSnapshot())
+	gw.storeHTTPInstances(make(map[string]*httpServiceInstances))
 	gw.storeHTTPIndexes(make(map[string]*atomic.Uint64))
 
-	routeWatchRevision, err := gw.loadAllRoutes()
+	routeSource := etcdRouteWatchSource{
+		client:      cli,
+		routePrefix: config.RoutePrefix,
+		launch:      func(task func()) { gw.launchTask(task) },
+	}
+	var initialRouteSnapshot *routeSnapshotRevision
+	loadedRoutes, err := routeSource.Load(gw.watchCtx)
 	if err != nil {
-		core.D("[Gateway] load all routes failed: %v", err)
+		core.D("[Gateway] load route snapshot failed: %v", err)
+	} else {
+		gw.replaceEtcdRouteSnapshot(loadedRoutes.Snapshot)
+		initialRouteSnapshot = &loadedRoutes
 	}
 
-	gw.discoverAndConnectServices()
+	gw.launchTask(func() {
+		runRouteWatchLoopFrom(
+			gw.watchCtx,
+			routeSource,
+			initialRouteSnapshot,
+			func(snapshot routeSnapshot) { gw.replaceEtcdRouteSnapshot(snapshot) },
+			func(events []routeEvent) { gw.applyRouteBatch(events) },
+			waitRouteWatchBackoff,
+		)
+	})
 
-	app.ErrGroup().Go(func() error {
-		gw.watchRoutes(routeWatchRevision)
-		return nil
+	serviceSource := etcdServiceWatchSource{
+		client:      cli,
+		serviceRoot: gw.serviceRoot,
+		launch:      gw.launchTask,
+	}
+	var initialServiceSnapshot *serviceSnapshotRevision
+	loadedServices, err := serviceSource.Load(gw.watchCtx)
+	if err != nil {
+		core.D("[Gateway] load service snapshot failed: %v", err)
+	} else {
+		gw.reconcileServiceSnapshot(loadedServices.Snapshot)
+		initialServiceSnapshot = &loadedServices
+	}
+	gw.launchTask(func() {
+		runServiceWatchLoopFrom(
+			gw.watchCtx,
+			serviceSource,
+			initialServiceSnapshot,
+			gw.reconcileServiceSnapshot,
+			waitRouteWatchBackoff,
+		)
 	})
 
 	gw.setupAdminAPI()
@@ -328,26 +666,9 @@ func NewEtcdGateway(app *core.Core, conf ...*Config) (*EtcdGateway, error) {
 	app.OnShutdown(func() { gw.Close() })
 
 	core.D("[Gateway] ✅ Etcd Gateway started")
+	gw.ownsEtcdClient = true
+	clientOwned = false
 	return gw, nil
-}
-
-func (gw *EtcdGateway) loadRoutes() map[string]*Route {
-	if routes, ok := gw.routes.Load().(map[string]*Route); ok && routes != nil {
-		return routes
-	}
-	return nil
-}
-
-func (gw *EtcdGateway) storeRoutes(routes map[string]*Route) {
-	gw.routes.Store(routes)
-}
-
-func copyRoutes(routes map[string]*Route, extra int) map[string]*Route {
-	next := make(map[string]*Route, len(routes)+extra)
-	for id, route := range routes {
-		next[id] = route
-	}
-	return next
 }
 
 // parseServiceKey 解析 etcd key，提取 serviceName 和 instanceID
@@ -378,79 +699,61 @@ func parseServiceInstance(data []byte) (*serviceInstance, error) {
 
 // discoverAndConnectServices 启动时发现并连接所有服务
 func (gw *EtcdGateway) discoverAndConnectServices() {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	resp, err := gw.etcdCli.Get(ctx, gw.serviceRoot, clientv3.WithPrefix())
-	if err != nil {
-		core.Erro("[Gateway] discover services failed: %v", err)
-		gw.app.ErrGroup().Go(func() error {
-			gw.watchEtcdServices(0)
-			return nil
-		})
-		return
-	}
-	watchRev := resp.Header.GetRevision() + 1
-
-	gw.app.ErrGroup().Go(func() error {
-		gw.watchEtcdServices(watchRev)
-		return nil
+	source := etcdServiceWatchSource{client: gw.etcdCli, serviceRoot: gw.serviceRoot, launch: gw.launchTask}
+	gw.launchTask(func() {
+		runServiceWatchLoop(gw.watchCtx, source, gw.reconcileServiceSnapshot, waitRouteWatchBackoff)
 	})
-
-	// 按 serviceName 分组实例
-	type inst struct{ id, addr string }
-	serviceInstances := make(map[string][]inst)
-
-	for _, kv := range resp.Kvs {
-		serviceName, instanceID, ok := parseServiceKey(string(kv.Key), gw.serviceRoot)
-		if !ok {
-			continue
-		}
-		info, err := parseServiceInstance(kv.Value)
-		if err != nil {
-			continue
-		}
-		if info.ID == "" {
-			info.ID = instanceID
-		}
-		gw.addHTTPInstance(serviceName, info.ID, info.HTTPAddr())
-		serviceInstances[serviceName] = append(serviceInstances[serviceName], inst{id: info.ID, addr: info.Addr})
-	}
-
-	if len(serviceInstances) == 0 {
-		core.D("[Gateway] etcd has no services")
-	} else {
-		for serviceName, instances := range serviceInstances {
-			go func(sn string, insts []inst) {
-				pool := gw.connPool.GetOrCreate(gw.app, sn)
-				var healthyProxy *ReflectionProxy
-				for _, i := range insts {
-					proxy, _, err := pool.AddOrUpdateInstance(i.id, i.addr)
-					if err != nil {
-						core.D("[Gateway] connect instance %s/%s at %s failed: %v", sn, i.id, i.addr, err)
-						continue
-					}
-					if healthyProxy == nil {
-						healthyProxy = proxy
-					}
-				}
-				if healthyProxy != nil {
-					gw.autoRegisterRoutes(sn, healthyProxy)
-					core.D("[Gateway] ✅ service %s connected (instances: %d)", sn, pool.Size())
-				}
-			}(serviceName, instances)
-		}
-	}
-
 }
 
 // connectInstance 连接单个服务实例（watch PUT 触发），带重试
-func (gw *EtcdGateway) connectInstance(serviceName, instanceID, addr string) {
+func (gw *EtcdGateway) connectInstance(serviceName, instanceID, addr string) (*ReflectionProxy, bool, error) {
+	key := connectInstanceKey(serviceName, instanceID)
+	for {
+		desired, ok := gw.loadDesiredServiceSnapshot()[key]
+		if !ok || desired.GRPCAddr == "" {
+			return nil, false, errServiceInstanceNotDesired
+		}
+		targetAddr := desired.GRPCAddr
+		if gw.connectWaitObserver != nil {
+			gw.connectWaitObserver(key)
+		}
+		value, err, _ := gw.connectGroup.Do(key, func() (any, error) {
+			gw.connectInFlight.Store(key, struct{}{})
+			defer gw.connectInFlight.Delete(key)
+			proxy, changed, connectErr := gw.connectInstanceOnce(serviceName, instanceID, targetAddr)
+			return connectResult{proxy: proxy, changed: changed, addr: targetAddr}, connectErr
+		})
+		result, _ := value.(connectResult)
+		if err != nil {
+			latest, stillDesired := gw.loadDesiredServiceSnapshot()[key]
+			if stillDesired && latest.GRPCAddr != "" && latest.GRPCAddr != result.addr && gw.watchCtx.Err() == nil {
+				continue
+			}
+			return nil, false, err
+		}
+		latest, stillDesired := gw.loadDesiredServiceSnapshot()[key]
+		if stillDesired && latest.GRPCAddr != result.addr && gw.watchCtx.Err() == nil {
+			continue
+		}
+		return result.proxy, result.changed, nil
+	}
+}
+
+type connectResult struct {
+	proxy   *ReflectionProxy
+	changed bool
+	addr    string
+}
+
+func (gw *EtcdGateway) connectInstanceOnce(serviceName, instanceID, addr string) (*ReflectionProxy, bool, error) {
 	if !gw.circuitBreakerCheck(serviceName) {
-		return
+		return nil, false, errors.New("gateway: service circuit breaker is open")
 	}
 
 	pool := gw.connPool.GetOrCreate(gw.app, serviceName)
+	if desiredAddr, desired := pool.DesiredAddress(instanceID); !desired || desiredAddr != addr {
+		return nil, false, errServiceInstanceNotDesired
+	}
 
 	// 尝试连接，带重试（服务可能 etcd 注册了但 gRPC 还没启动）
 	var proxy *ReflectionProxy
@@ -459,22 +762,27 @@ func (gw *EtcdGateway) connectInstance(serviceName, instanceID, addr string) {
 
 	for attempt := range gatewayConnectRetryAttempts {
 		if attempt > 0 {
+			timer := time.NewTimer(gatewayConnectRetryDelay(attempt))
 			select {
 			case <-gw.watchCtx.Done():
-				return
-			case <-time.After(gatewayConnectRetryDelay(attempt)):
+				timer.Stop()
+				return nil, false, gw.watchCtx.Err()
+			case <-timer.C:
 			}
 		}
-		proxy, changed, err = pool.AddOrUpdateInstance(instanceID, addr)
+		proxy, changed, err = pool.AddOrUpdateInstanceContext(gw.watchCtx, instanceID, addr)
 		if err == nil {
 			break
+		}
+		if errors.Is(err, errServiceInstanceNotDesired) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, false, err
 		}
 	}
 
 	if err != nil {
 		core.D("[Gateway] connect instance %s/%s at %s failed: %v", serviceName, instanceID, addr, err)
 		gw.circuitBreakerRecordFailure(serviceName)
-		return
+		return nil, false, err
 	}
 
 	gw.circuitBreakerRecordSuccess(serviceName)
@@ -483,6 +791,7 @@ func (gw *EtcdGateway) connectInstance(serviceName, instanceID, addr string) {
 		core.D("[Gateway] ✅ instance %s/%s connected at %s", serviceName, instanceID, addr)
 		gw.autoRegisterRoutes(serviceName, proxy)
 	}
+	return proxy, changed, nil
 }
 
 const gatewayConnectRetryAttempts = 30
@@ -499,125 +808,124 @@ func connectInstanceKey(serviceName, instanceID string) string {
 	return serviceName + "/" + instanceID
 }
 
-func (gw *EtcdGateway) beginConnectInstance(serviceName, instanceID string) (string, bool) {
-	key := connectInstanceKey(serviceName, instanceID)
-	if _, loaded := gw.connectInFlight.LoadOrStore(key, struct{}{}); loaded {
-		return key, false
-	}
-	return key, true
-}
-
-func (gw *EtcdGateway) finishConnectInstance(key string) {
-	if key != "" {
-		gw.connectInFlight.Delete(key)
-	}
-}
-
-// removeInstance 移除单个服务实例（watch DELETE 触发）
-func (gw *EtcdGateway) removeInstance(serviceName, instanceID string) {
+// handleServiceDelete preserves etcd watch order for HTTP targets while the
+// potentially slow gRPC connection cleanup remains asynchronous.
+func (gw *EtcdGateway) handleServiceDelete(serviceName, instanceID string) {
 	gw.removeHTTPInstance(serviceName, instanceID)
+	if pool := gw.connPool.Get(serviceName); pool != nil {
+		pool.MarkInstanceUndesired(instanceID)
+	}
+	gw.launchTask(func() { gw.removeGRPCInstance(serviceName, instanceID) })
+}
+
+func (gw *EtcdGateway) removeGRPCInstance(serviceName, instanceID string) {
 	pool := gw.connPool.Get(serviceName)
 	if pool == nil {
 		core.Warn("[Gateway] instance %s/%s removed from etcd but proxy pool is missing", serviceName, instanceID)
 		return
 	}
 
-	pool.RemoveInstance(instanceID)
+	pool.RemoveInstanceIfUndesired(instanceID)
 	core.D("[Gateway] instance %s/%s removed", serviceName, instanceID)
 
 	// 如果没有实例了，移除整个池
-	if pool.Size() == 0 {
-		gw.connPool.Remove(serviceName)
+	if gw.connPool.RemoveIfEmpty(serviceName, pool) {
+		gw.removeAutoRegisteredRoutes(serviceName)
 		core.Warn("[Gateway] service %s fully disconnected after removing instance %s", serviceName, instanceID)
 	}
 }
 
 // watchEtcdServices 监听 etcd 中的服务变化，watch channel 意外关闭时自动重试
 func (gw *EtcdGateway) watchEtcdServices(startRev int64) {
-	baseDelay := time.Second
-	maxDelay := 30 * time.Second
-	rev := startRev
+	_ = startRev // Recovery always begins with a full authoritative snapshot.
+	source := etcdServiceWatchSource{client: gw.etcdCli, serviceRoot: gw.serviceRoot, launch: gw.launchTask}
+	runServiceWatchLoop(gw.watchCtx, source, gw.reconcileServiceSnapshot, waitRouteWatchBackoff)
+}
 
-	for {
-		core.Info("[Gateway] watching etcd services prefix %s from revision %d", gw.serviceRoot, rev)
-		opts := []clientv3.OpOption{clientv3.WithPrefix()}
-		if rev > 0 {
-			opts = append(opts, clientv3.WithRev(rev))
-		}
-		watchChan := gw.etcdCli.Watch(gw.watchCtx, gw.serviceRoot, opts...)
+func (gw *EtcdGateway) reconcileServiceSnapshot(snapshot serviceSnapshot) {
+	if gw == nil {
+		return
+	}
+	gw.initializeLifecycle()
+	next := cloneServiceSnapshot(snapshot)
 
-		for resp := range watchChan {
-			if err := resp.Err(); err != nil {
-				core.Warn("[Gateway] etcd service watch error at revision %d: %v", resp.Header.GetRevision(), err)
-				continue
+	gw.desiredMu.Lock()
+	previous := cloneServiceSnapshot(gw.loadDesiredServiceSnapshot())
+	gw.setDesiredServiceSnapshot(next)
+	gw.desiredMu.Unlock()
+
+	// Publish every desired marker before any asynchronous removal. This keeps a
+	// pending B alive when A is deleted from the same logical service.
+	for _, instance := range next {
+		gw.connPool.SetDesiredInstance(gw.app, instance.ServiceName, instance.InstanceID, instance.GRPCAddr)
+	}
+
+	// HTTP reconciliation is synchronous, so a delete followed immediately by a
+	// PUT cannot be undone by delayed gRPC cleanup.
+	for serviceName, instances := range gw.loadHTTPInstances() {
+		for instanceID := range instances.byID {
+			if _, desired := next[connectInstanceKey(serviceName, instanceID)]; !desired {
+				gw.removeHTTPInstance(serviceName, instanceID)
 			}
-			rev = resp.Header.GetRevision() + 1
-			for _, ev := range resp.Events {
-				key := string(ev.Kv.Key)
-				serviceName, instanceID, ok := parseServiceKey(key, gw.serviceRoot)
-				if !ok {
-					core.Warn("[Gateway] ignore invalid service key from etcd watch: %s", key)
-					continue
-				}
-
-				switch ev.Type {
-				case clientv3.EventTypePut:
-					info, err := parseServiceInstance(ev.Kv.Value)
-					if err != nil {
-						core.Warn("[Gateway] ignore invalid service instance %s: %v", key, err)
-						continue
-					}
-					if info.ID == "" {
-						info.ID = instanceID
-					}
-					gw.addHTTPInstance(serviceName, info.ID, info.HTTPAddr())
-					core.Info("[Gateway] watch: %s/%s registered at %s", serviceName, info.ID, info.Addr)
-
-					if key, ok := gw.beginConnectInstance(serviceName, info.ID); ok {
-						go func() {
-							defer gw.finishConnectInstance(key)
-							gw.connectInstance(serviceName, info.ID, info.Addr)
-						}()
-					}
-
-				case clientv3.EventTypeDelete:
-					core.D("[Gateway] watch: %s/%s deregistered", serviceName, instanceID)
-					go gw.removeInstance(serviceName, instanceID)
-				}
-			}
-		}
-
-		// watch channel 关闭，检查是否因为 context 取消
-		if gw.watchCtx.Err() != nil {
-			core.D("[Gateway] etcd service watch stopped: %v", gw.watchCtx.Err())
-			return
-		}
-
-		core.Warn("[Gateway] etcd service watch stopped unexpectedly at revision %d, retrying...", rev)
-		select {
-		case <-gw.watchCtx.Done():
-			return
-		case <-time.After(baseDelay):
-		}
-		baseDelay *= 2
-		if baseDelay > maxDelay {
-			baseDelay = maxDelay
 		}
 	}
+	for _, instance := range next {
+		if err := gw.addHTTPInstance(instance.ServiceName, instance.InstanceID, instance.HTTPAddr); err != nil {
+			core.Warn("[Gateway] remove invalid HTTP instance %s/%s: %v", instance.ServiceName, instance.InstanceID, err)
+		}
+	}
+
+	for key, old := range previous {
+		if _, desired := next[key]; desired {
+			continue
+		}
+		if pool := gw.connPool.Get(old.ServiceName); pool != nil {
+			pool.MarkInstanceUndesired(old.InstanceID)
+		}
+		serviceName, instanceID := old.ServiceName, old.InstanceID
+		gw.launchTask(func() { gw.removeGRPCInstance(serviceName, instanceID) })
+	}
+
+	for _, instance := range next {
+		pool := gw.connPool.Get(instance.ServiceName)
+		if installedAddr, installed := pool.InstanceAddress(instance.InstanceID); installed && installedAddr == instance.GRPCAddr {
+			continue
+		}
+		serviceName, instanceID, addr := instance.ServiceName, instance.InstanceID, instance.GRPCAddr
+		gw.launchTask(func() { _, _, _ = gw.connectInstance(serviceName, instanceID, addr) })
+	}
+}
+
+func (gw *EtcdGateway) addDesiredServiceInstance(instance registeredServiceInstance) {
+	gw.desiredMu.Lock()
+	next := cloneServiceSnapshot(gw.loadDesiredServiceSnapshot())
+	next[connectInstanceKey(instance.ServiceName, instance.InstanceID)] = instance
+	gw.setDesiredServiceSnapshot(next)
+	gw.desiredMu.Unlock()
+	gw.connPool.SetDesiredInstance(gw.app, instance.ServiceName, instance.InstanceID, instance.GRPCAddr)
 }
 
 // autoRegisterRoutes 自动为 gRPC 方法注册 HTTP 路由，同时清理已删除方法的旧路由
 func (gw *EtcdGateway) autoRegisterRoutes(serviceName string, proxy *ReflectionProxy) {
+	if proxy == nil || proxy.schema == nil {
+		return
+	}
 	methods := proxy.Methods()
 
 	gw.mu.Lock()
 	defer gw.mu.Unlock()
+	if gw.grpcServiceSchemas == nil {
+		gw.grpcServiceSchemas = make(map[string]*ReflectionSchema)
+	}
+	if gw.grpcServiceRoutes == nil {
+		gw.grpcServiceRoutes = make(map[string]map[string]bool)
+	}
+	if gw.grpcServiceSchemas[serviceName] == proxy.schema {
+		return
+	}
+	events := make([]routeEvent, 0, len(methods))
 
-	routes := gw.loadRoutes()
-	nextRoutes := copyRoutes(routes, len(methods))
-
-	// 收集本次注册的所有 routeHash，按 gRPC 服务名分组
-	newHashesByService := make(map[string]map[string]bool)
+	newHashes := make(map[string]bool)
 
 	for fullMethod, desc := range methods {
 		if grpcServiceExcluded(gw.config, desc.Service) {
@@ -632,18 +940,12 @@ func (gw *EtcdGateway) autoRegisterRoutes(serviceName string, proxy *ReflectionP
 		routeID := fmt.Sprintf("auto-%s-%s", grpcServiceName, strings.TrimPrefix(fullMethod, "/"))
 		routeIDHash := core.SHA256(routeID)
 
-		if newHashesByService[grpcServiceName] == nil {
-			newHashesByService[grpcServiceName] = make(map[string]bool)
-		}
-		newHashesByService[grpcServiceName][routeIDHash] = true
+		storageKey := "runtime:auto-grpc/" + serviceName + "/" + routeIDHash
 
-		// 先注销旧路由再注册（避免重复）
-		if old, exists := nextRoutes[routeIDHash]; exists {
-			gw.unregisterRoute(old)
-		}
-
-		nextRoutes[routeIDHash] = &Route{
+		definition := &Route{
 			ID:          routeIDHash,
+			Source:      route.SourceAutoGRPC,
+			Owner:       serviceName,
 			Protocol:    RouteProtocolGRPC,
 			Method:      httpMethod,
 			Path:        httpPath,
@@ -654,25 +956,40 @@ func (gw *EtcdGateway) autoRegisterRoutes(serviceName string, proxy *ReflectionP
 			CreatedAt:   time.Now(),
 			UpdatedAt:   time.Now(),
 		}
-
-		gw.registerRoute(nextRoutes[routeIDHash])
-	}
-
-	// 清理已删除方法的旧路由：该 gRPC 服务以前有但现在没有的路由
-	for grpcSvc, newHashes := range newHashesByService {
-		if oldHashes, exists := gw.grpcServiceRoutes[grpcSvc]; exists {
-			for oldHash := range oldHashes {
-				if !newHashes[oldHash] {
-					if route, ok := nextRoutes[oldHash]; ok {
-						gw.unregisterRoute(route)
-						delete(nextRoutes, oldHash)
-					}
-				}
-			}
+		if err := normalizeAndValidateRoute(definition); err != nil {
+			core.Warn("[Gateway] ignore invalid reflected route %s: %v", fullMethod, err)
+			continue
 		}
-		gw.grpcServiceRoutes[grpcSvc] = newHashes
+		newHashes[storageKey] = true
+		events = append(events, routeEvent{StorageKey: storageKey, Value: &routeSourceValue{Definition: definition}})
 	}
-	gw.storeRoutes(nextRoutes)
+
+	for oldStorageKey := range gw.grpcServiceRoutes[serviceName] {
+		if !newHashes[oldStorageKey] {
+			events = append(events, routeEvent{StorageKey: oldStorageKey, Deleted: true})
+		}
+	}
+	gw.grpcServiceRoutes[serviceName] = newHashes
+	gw.grpcServiceSchemas[serviceName] = proxy.schema
+	gw.applyRouteBatchLocked(events)
+}
+
+func (gw *EtcdGateway) removeAutoRegisteredRoutes(serviceName string) {
+	gw.mu.Lock()
+	defer gw.mu.Unlock()
+	old := gw.grpcServiceRoutes[serviceName]
+	if len(old) == 0 {
+		delete(gw.grpcServiceRoutes, serviceName)
+		delete(gw.grpcServiceSchemas, serviceName)
+		return
+	}
+	events := make([]routeEvent, 0, len(old))
+	for storageKey := range old {
+		events = append(events, routeEvent{StorageKey: storageKey, Deleted: true})
+	}
+	delete(gw.grpcServiceRoutes, serviceName)
+	delete(gw.grpcServiceSchemas, serviceName)
+	gw.applyRouteBatchLocked(events)
 }
 
 // grpcToHTTP 将 gRPC 方法转换为 HTTP 路由
@@ -735,32 +1052,6 @@ func camelToKebab(s string) string {
 	return string(result)
 }
 
-func (gw *EtcdGateway) loadAllRoutes() (int64, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	resp, err := gw.etcdCli.Get(ctx, gw.prefix, clientv3.WithPrefix())
-	if err != nil {
-		core.Erro("[Gateway] load routes failed: %v", err)
-		return 0, err
-	}
-
-	for _, kv := range resp.Kvs {
-		var route Route
-		if err := json.Unmarshal(kv.Value, &route); err != nil {
-			continue
-		}
-		if err := normalizeAndValidateRoute(&route); err != nil {
-			core.Warn("[Gateway] ignore invalid route %s: %v", string(kv.Key), err)
-			continue
-		}
-		if route.Enabled {
-			gw.addOrUpdateRoute(&route)
-		}
-	}
-	return nextRouteWatchRevision(resp.Header.GetRevision()), nil
-}
-
 func nextRouteWatchRevision(loadedRevision int64) int64 {
 	if loadedRevision <= 0 {
 		return 0
@@ -768,114 +1059,37 @@ func nextRouteWatchRevision(loadedRevision int64) int64 {
 	return loadedRevision + 1
 }
 
-func (gw *EtcdGateway) watchRoutes(startRev int64) {
-	baseDelay := time.Second
-	maxDelay := 30 * time.Second
-	rev := startRev
-
-	for {
-		opts := []clientv3.OpOption{clientv3.WithPrefix()}
-		if rev > 0 {
-			opts = append(opts, clientv3.WithRev(rev))
-		}
-		watchChan := gw.etcdCli.Watch(gw.watchCtx, gw.prefix, opts...)
-		for resp := range watchChan {
-			if err := resp.Err(); err != nil {
-				core.Warn("[Gateway] route watch error at revision %d: %v", resp.Header.GetRevision(), err)
-				continue
-			}
-			rev = resp.Header.GetRevision() + 1
-			for _, ev := range resp.Events {
-				switch ev.Type {
-				case clientv3.EventTypePut:
-					var route Route
-					if err := json.Unmarshal(ev.Kv.Value, &route); err != nil {
-						continue
-					}
-					if route.Enabled {
-						gw.addOrUpdateRoute(&route)
-					} else {
-						gw.removeRouteByID(route.ID)
-					}
-				case clientv3.EventTypeDelete:
-					routeID := strings.TrimPrefix(string(ev.Kv.Key), gw.prefix)
-					gw.removeRouteByID(routeID)
-				}
-			}
-		}
-
-		// watch channel 关闭，检查是否因为 context 取消
-		if gw.watchCtx.Err() != nil {
-			return
-		}
-
-		core.Warn("[Gateway] route watch stopped unexpectedly at revision %d, retrying...", rev)
-		select {
-		case <-gw.watchCtx.Done():
-			return
-		case <-time.After(baseDelay):
-		}
-		baseDelay *= 2
-		if baseDelay > maxDelay {
-			baseDelay = maxDelay
-		}
-	}
-}
-
 func (gw *EtcdGateway) addOrUpdateRoute(route *Route) {
 	if err := normalizeAndValidateRoute(route); err != nil {
 		core.Warn("[Gateway] ignore invalid route: %v", err)
 		return
 	}
-	gw.mu.Lock()
-	defer gw.mu.Unlock()
-
-	routes := gw.loadRoutes()
-	nextRoutes := copyRoutes(routes, 1)
-	if old, exists := nextRoutes[route.ID]; exists {
-		gw.unregisterRoute(old)
+	if route.ID == "" {
+		route.ID = routeID(route)
 	}
-
-	nextRoutes[route.ID] = route
-	gw.registerRoute(route)
-	gw.storeRoutes(nextRoutes)
+	storageKey := gw.prefix + route.ID
+	if gw.prefix == "" {
+		storageKey = route.ID
+	}
+	gw.applyRouteBatch([]routeEvent{{StorageKey: storageKey, Value: &routeSourceValue{Definition: route}}})
 }
 
 func (gw *EtcdGateway) removeRouteByID(routeID string) {
-	gw.mu.Lock()
-	defer gw.mu.Unlock()
-
-	routes := gw.loadRoutes()
-	route, exists := routes[routeID]
-	if !exists {
+	snapshot := gw.loadRouteSnapshot()
+	records := snapshot.recordsByID[routeID]
+	if len(records) == 0 {
 		return
 	}
-	nextRoutes := copyRoutes(routes, 0)
-	delete(nextRoutes, routeID)
-	if replacement := findRouteReplacement(nextRoutes, route); replacement != nil {
-		gw.unregisterRoute(route)
-		gw.registerRoute(replacement)
-	} else {
-		gw.unregisterRoute(route)
-	}
-	gw.storeRoutes(nextRoutes)
-}
-
-func findRouteReplacement(routes map[string]*Route, removed *Route) *Route {
-	if removed == nil {
-		return nil
-	}
-	method := strings.ToUpper(removed.Method)
-	path := strings.TrimSuffix(removed.Path, "/")
-	for _, route := range routes {
-		if route == nil {
+	events := make([]routeEvent, 0, len(records))
+	seen := make(map[string]struct{}, len(records))
+	for _, record := range records {
+		if _, exists := seen[record.StorageKey]; exists {
 			continue
 		}
-		if strings.ToUpper(route.Method) == method && strings.TrimSuffix(route.Path, "/") == path {
-			return route
-		}
+		seen[record.StorageKey] = struct{}{}
+		events = append(events, routeEvent{StorageKey: record.StorageKey, Deleted: true})
 	}
-	return nil
+	gw.applyRouteBatch(events)
 }
 
 func (gw *EtcdGateway) registerRoute(route *Route) {
@@ -907,14 +1121,14 @@ func (gw *EtcdGateway) createProxyHandler(route *Route) core.HandlerFunc {
 			rawBody, err = readAndResetBody(ctx.Request(), gw.maxRequestBodyBytes())
 			if errors.Is(err, errRequestBodyTooLarge) {
 				return ctx.Status(http.StatusRequestEntityTooLarge).JSON(core.Map{
-					"code": http.StatusRequestEntityTooLarge, "message": "request body too large",
+					"code": http.StatusRequestEntityTooLarge, "msg": "request body too large",
 				})
 			}
 			if err != nil {
 				core.Erro("[Gateway] gRPC proxy read body failed: method=%s path=%s grpc=%s err=%v",
 					ctx.Method(), ctx.Path(), route.GRPCMethod, err)
 				return ctx.Status(http.StatusBadRequest).JSON(core.Map{
-					"code": 400, "message": "invalid request body",
+					"code": 400, "msg": "invalid request body",
 				})
 			}
 		}
@@ -924,8 +1138,8 @@ func (gw *EtcdGateway) createProxyHandler(route *Route) core.HandlerFunc {
 			core.Erro("[Gateway] proxy not available for service: %s route=%s %s grpc=%s state={%s}",
 				route.ServiceName, ctx.Method(), ctx.Path(), route.GRPCMethod, gw.proxyLookupDebugState(route.ServiceName))
 			return ctx.Status(http.StatusServiceUnavailable).JSON(core.Map{
-				"code":    503,
-				"message": fmt.Sprintf("service %s unavailable", route.ServiceName),
+				"code": 503,
+				"msg":  fmt.Sprintf("service %s unavailable", route.ServiceName),
 			})
 		}
 
@@ -944,7 +1158,7 @@ func (gw *EtcdGateway) createProxyHandler(route *Route) core.HandlerFunc {
 			core.Erro("[Gateway] gRPC proxy marshal request failed: method=%s path=%s grpc=%s err=%v",
 				ctx.Method(), ctx.Path(), route.GRPCMethod, err)
 			return ctx.Status(http.StatusBadRequest).JSON(core.Map{
-				"code": 400, "message": "invalid request body",
+				"code": 400, "msg": "invalid request body",
 			})
 		}
 		md := metadata.New(nil)
@@ -1061,11 +1275,9 @@ func grpcMetadataHeaderSkipped(key string) bool {
 }
 
 func (gw *EtcdGateway) doGetProxy(serviceName string) *ReflectionProxy {
-	if !gw.circuitBreakerCheck(serviceName) {
-		core.D("[Gateway] doGetProxy: %s circuit open, fast fail", serviceName)
+	if gw == nil || gw.connPool == nil {
 		return nil
 	}
-
 	pool := gw.connPool.Get(serviceName)
 	if pool != nil {
 		proxy := pool.Get()
@@ -1074,9 +1286,14 @@ func (gw *EtcdGateway) doGetProxy(serviceName string) *ReflectionProxy {
 			return proxy
 		}
 	}
+	if !gw.circuitBreakerCheck(serviceName) {
+		core.D("[Gateway] doGetProxy: %s circuit open with no usable pooled connection", serviceName)
+		return nil
+	}
 
-	// 池为空，尝试通过 EtcdDiscovery 发现
-	if gw.app.EtcdDiscovery == nil {
+	// Pool misses use the same lifecycle-owned, singleflight-coalesced connect
+	// path as etcd watch reconciliation. Request handling never dials or reflects.
+	if gw.app == nil || gw.app.EtcdDiscovery == nil {
 		core.Warn("[Gateway] doGetProxy: %s has no proxy pool and EtcdDiscovery is disabled", serviceName)
 		return nil
 	}
@@ -1086,27 +1303,16 @@ func (gw *EtcdGateway) doGetProxy(serviceName string) *ReflectionProxy {
 		return nil
 	}
 
-	// 创建池并添加实例
-	newPool := gw.connPool.GetOrCreate(gw.app, serviceName)
 	for _, s := range services {
 		instanceID := s.ID
 		if instanceID == "" {
 			instanceID = s.Addr // fallback
 		}
-		if _, _, err := newPool.AddOrUpdateInstance(instanceID, s.Addr); err != nil {
-			core.Warn("[Gateway] doGetProxy: connect discovered instance %s/%s at %s failed: %v",
-				serviceName, instanceID, s.Addr, err)
-		}
+		instance := registeredServiceInstance{ServiceName: serviceName, InstanceID: instanceID, GRPCAddr: s.Addr}
+		gw.addDesiredServiceInstance(instance)
+		gw.launchTask(func() { _, _, _ = gw.connectInstance(serviceName, instanceID, s.Addr) })
 	}
-
-	proxy := newPool.Get()
-	if proxy == nil {
-		gw.circuitBreakerRecordFailure(serviceName)
-		return nil
-	}
-
-	gw.circuitBreakerRecordSuccess(serviceName)
-	return proxy
+	return nil
 }
 
 func (gw *EtcdGateway) proxyLookupDebugState(serviceName string) string {
@@ -1148,7 +1354,7 @@ func (gw *EtcdGateway) setupAdminAPI() {
 func (gw *EtcdGateway) localOnly(fn func(core.Ctx) error) func(core.Ctx) error {
 	return func(ctx core.Ctx) error {
 		if !isLoopbackRemoteAddr(ctx.Request().RemoteAddr) {
-			return ctx.Status(403).JSON(core.Map{"code": 403, "message": "forbidden"})
+			return ctx.Status(403).JSON(core.Map{"code": 403, "msg": "forbidden"})
 		}
 		return fn(ctx)
 	}
@@ -1168,69 +1374,91 @@ func isLoopbackRemoteAddr(remoteAddr string) bool {
 }
 
 func (gw *EtcdGateway) createRoute(ctx core.Ctx) error {
-	var route Route
-	if err := ctx.Bind(&route); err != nil {
-		return ctx.Status(400).JSON(core.Map{"code": 400, "message": err.Error()})
+	var definition Route
+	if err := ctx.Bind(&definition); err != nil {
+		return ctx.Status(400).JSON(core.Map{"code": 400, "msg": err.Error()})
 	}
 
-	if err := prepareRoute(&route); err != nil {
-		return ctx.Status(400).JSON(core.Map{"code": 400, "message": err.Error()})
+	if err := prepareRoute(&definition); err != nil {
+		return ctx.Status(400).JSON(core.Map{"code": 400, "msg": err.Error()})
 	}
-
-	data, err := json.Marshal(route)
-	if err != nil {
-		return ctx.Status(400).JSON(core.Map{"code": 400, "message": err.Error()})
-	}
-	putCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	definition.Source = route.SourceManual
+	definition.Owner = ""
+	putCtx, cancel := context.WithTimeout(ctx.Context(), 5*time.Second)
 	defer cancel()
-	if _, err := gw.etcdCli.Put(putCtx, gw.prefix+route.ID, string(data)); err != nil {
-		return ctx.Status(500).JSON(core.Map{"code": 500, "message": err.Error()})
+	if err := gw.routePublisher().PublishManual(putCtx, &definition); err != nil {
+		return ctx.Status(500).JSON(core.Map{"code": 500, "msg": err.Error()})
 	}
 
-	return ctx.Status(201).JSON(core.Map{"code": 0, "message": "success", "data": route})
+	return ctx.Status(201).JSON(core.Map{"code": 0, "msg": "success", "data": definition})
 }
 
 func (gw *EtcdGateway) updateRoute(ctx core.Ctx) error {
 	routeID := ctx.Params("id")
-	var route Route
-	if err := ctx.Bind(&route); err != nil {
-		return ctx.Status(400).JSON(core.Map{"code": 400, "message": err.Error()})
+	var definition Route
+	if err := ctx.Bind(&definition); err != nil {
+		return ctx.Status(400).JSON(core.Map{"code": 400, "msg": err.Error()})
 	}
 
-	route.ID = routeID
-	if err := normalizeAndValidateRoute(&route); err != nil {
-		return ctx.Status(400).JSON(core.Map{"code": 400, "message": err.Error()})
+	definition.ID = routeID
+	if err := normalizeAndValidateRoute(&definition); err != nil {
+		return ctx.Status(400).JSON(core.Map{"code": 400, "msg": err.Error()})
 	}
-	route.UpdatedAt = time.Now()
-
-	data, err := json.Marshal(route)
-	if err != nil {
-		return ctx.Status(400).JSON(core.Map{"code": 400, "message": err.Error()})
+	definition.Source = route.SourceManual
+	definition.Owner = ""
+	definition.UpdatedAt = time.Now()
+	snapshot := gw.loadRouteSnapshot()
+	if previous, exists := routeRecordByID(snapshot, gw.prefix, routeID); exists && definition.CreatedAt.IsZero() {
+		definition.CreatedAt = previous.Definition.CreatedAt
 	}
-	putCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	putCtx, cancel := context.WithTimeout(ctx.Context(), 5*time.Second)
 	defer cancel()
-	if _, err := gw.etcdCli.Put(putCtx, gw.prefix+routeID, string(data)); err != nil {
-		return ctx.Status(500).JSON(core.Map{"code": 500, "message": err.Error()})
+	if err := gw.routePublisher().PublishManual(putCtx, &definition); err != nil {
+		return ctx.Status(500).JSON(core.Map{"code": 500, "msg": err.Error()})
+	}
+	newStorageKey := manualRouteStorageKey(gw.prefix, definition.Slot)
+	for _, record := range snapshot.recordsByID[routeID] {
+		stored := record.Definition
+		if record.StorageKey == newStorageKey || stored == nil || (stored.Source != "" && stored.Source != route.SourceManual) {
+			continue
+		}
+		if _, err := gw.etcdCli.Delete(putCtx, record.StorageKey); err != nil {
+			return ctx.Status(500).JSON(core.Map{"code": 500, "msg": err.Error()})
+		}
 	}
 
-	return ctx.JSON(core.Map{"code": 0, "message": "success"})
+	return ctx.JSON(core.Map{"code": 0, "msg": "success"})
 }
 
 func (gw *EtcdGateway) deleteRoute(ctx core.Ctx) error {
 	routeID := ctx.Params("id")
-	deleteCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	deleteCtx, cancel := context.WithTimeout(ctx.Context(), 5*time.Second)
 	defer cancel()
-	if _, err := gw.etcdCli.Delete(deleteCtx, gw.prefix+routeID); err != nil {
-		return ctx.Status(500).JSON(core.Map{"code": 500, "message": err.Error()})
+	snapshot := gw.loadRouteSnapshot()
+	storageKeys := make([]string, 0, len(snapshot.recordsByID[routeID]))
+	for _, record := range snapshot.recordsByID[routeID] {
+		definition := record.Definition
+		if definition != nil && (definition.Source == "" || definition.Source == route.SourceManual) {
+			storageKeys = append(storageKeys, record.StorageKey)
+		}
+	}
+	if len(storageKeys) == 0 {
+		storageKeys = append(storageKeys, normalizeRouteStoragePrefix(gw.prefix)+routeID)
+	}
+	for _, storageKey := range storageKeys {
+		if _, err := gw.etcdCli.Delete(deleteCtx, storageKey); err != nil {
+			return ctx.Status(500).JSON(core.Map{"code": 500, "msg": err.Error()})
+		}
 	}
 	return ctx.ToJSONCode("success")
 }
 
 func (gw *EtcdGateway) listRoutes(ctx core.Ctx) error {
-	routeMap := gw.loadRoutes()
-	routes := make([]*Route, 0, len(routeMap))
-	for _, r := range routeMap {
-		routes = append(routes, r)
+	snapshot := gw.loadRouteSnapshot()
+	records := snapshot.allRecords()
+	routes := make([]routeAdminView, 0, len(records))
+	for _, record := range records {
+		routes = append(routes, newRouteAdminView(snapshot, record))
 	}
 
 	return ctx.JSON(core.Map{"code": 0, "data": routes, "total": len(routes)})
@@ -1238,23 +1466,127 @@ func (gw *EtcdGateway) listRoutes(ctx core.Ctx) error {
 
 func (gw *EtcdGateway) getRoute(ctx core.Ctx) error {
 	routeID := ctx.Params("id")
-	route, exists := gw.loadRoutes()[routeID]
-
+	snapshot := gw.loadRouteSnapshot()
+	record, exists := routeRecordByID(snapshot, gw.prefix, routeID)
 	if !exists {
-		return ctx.Status(404).JSON(core.Map{"code": 404, "message": "route not found"})
+		return ctx.Status(404).JSON(core.Map{"code": 404, "msg": "route not found"})
 	}
-	return ctx.ToJSONCode(route)
+	return ctx.ToJSONCode(newRouteAdminView(snapshot, record))
+}
+
+type routeAdminView struct {
+	*Route
+	StorageKey string         `json:"storage_key"`
+	Slot       string         `json:"slot"`
+	Source     route.Source   `json:"source"`
+	Owner      string         `json:"owner"`
+	Active     bool           `json:"active"`
+	Conflict   *routeConflict `json:"conflict,omitempty"`
+}
+
+func newRouteAdminView(snapshot routeSnapshot, record routeRecord) routeAdminView {
+	definition := record.Definition
+	source := definition.Source
+	if source == "" {
+		source = route.SourceManual
+	}
+	var conflict *routeConflict
+	if value, exists := snapshot.conflicts[definition.Slot]; exists {
+		copy := value
+		conflict = &copy
+	}
+	return routeAdminView{
+		Route:      definition,
+		StorageKey: record.StorageKey,
+		Slot:       definition.Slot,
+		Source:     source,
+		Owner:      definition.Owner,
+		Active:     snapshot.activeRecordKeys[routeRecordKey(record)],
+		Conflict:   conflict,
+	}
+}
+
+func routeRecordByID(snapshot routeSnapshot, routePrefix, id string) (routeRecord, bool) {
+	records := snapshot.recordsByID[id]
+	if len(records) == 0 {
+		return routeRecord{}, false
+	}
+	legacyKey := normalizeRouteStoragePrefix(routePrefix) + id
+	for _, record := range records {
+		if record.StorageKey == legacyKey {
+			return record, true
+		}
+	}
+	for _, record := range records {
+		if snapshot.activeRecordKeys[routeRecordKey(record)] {
+			return record, true
+		}
+	}
+	return records[0], true
+}
+
+func (gw *EtcdGateway) routePublisher() route.Publisher {
+	return route.Publisher{
+		Store:       clientRouteStore{client: gw.etcdCli},
+		RoutePrefix: gw.prefix,
+	}
+}
+
+func manualRouteStorageKey(prefix, slot string) string {
+	return normalizeRouteStoragePrefix(prefix) + string(route.SourceManual) + "/" + slot
+}
+
+func normalizeRouteStoragePrefix(prefix string) string {
+	return strings.TrimRight(strings.TrimSpace(prefix), "/") + "/"
 }
 
 func (gw *EtcdGateway) Close() error {
-	if gw.watchCancel != nil {
-		gw.watchCancel()
+	if gw == nil {
+		return nil
 	}
-	if gw.connPool != nil {
-		gw.connPool.Close()
-	}
-	if gw.etcdCli != nil {
-		return gw.etcdCli.Close()
-	}
-	return nil
+	gw.closeOnce.Do(func() {
+		gw.lifecycleMu.Lock()
+		gw.closed = true
+		cancel := gw.watchCancel
+		gw.lifecycleMu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
+
+		// Every Gateway watcher, forwarder, retry, connect, and async delete is
+		// accounted for before state or owned clients are torn down.
+		gw.taskWG.Wait()
+		if gw.connPool != nil {
+			gw.connPool.Close()
+		}
+
+		gw.httpMu.Lock()
+		gw.storeHTTPInstances(make(map[string]*httpServiceInstances))
+		gw.httpMu.Unlock()
+		gw.httpIndexMu.Lock()
+		gw.storeHTTPIndexes(make(map[string]*atomic.Uint64))
+		gw.httpIndexMu.Unlock()
+
+		gw.desiredMu.Lock()
+		gw.setDesiredServiceSnapshot(make(serviceSnapshot))
+		gw.desiredMu.Unlock()
+		gw.mu.Lock()
+		gw.storeRouteSnapshot(emptyRouteSnapshot())
+		gw.grpcServiceRoutes = make(map[string]map[string]bool)
+		gw.grpcServiceSchemas = make(map[string]*ReflectionSchema)
+		gw.mu.Unlock()
+
+		gw.circuitStates.Range(func(key, _ any) bool {
+			gw.circuitStates.Delete(key)
+			return true
+		})
+		gw.connectInFlight.Range(func(key, _ any) bool {
+			gw.connectInFlight.Delete(key)
+			return true
+		})
+		if gw.ownsEtcdClient && gw.etcdCli != nil {
+			gw.closeErr = gw.etcdCli.Close()
+		}
+	})
+	return gw.closeErr
 }

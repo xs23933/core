@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/xs23933/core/v3/etcd"
 	"github.com/xs23933/core/v3/reuseport"
@@ -24,6 +25,18 @@ var (
 	ErrGRPCServerAlreadyConfigured = errors.New("grpc server already configured")
 	// ErrGRPCTLSSharedAddress 表示 transport credentials 不能在 HTTP 共端口 ServeHTTP 路径上生效。
 	ErrGRPCTLSSharedAddress = errors.New("grpc transport credentials require a dedicated grpc address")
+
+	newCoreEtcdRegistry      = etcd.NewRegistry
+	newCoreEtcdDiscovery     = etcd.NewDiscovery
+	registerCoreEtcdRegistry = func(registry *etcd.Registry) error {
+		return registry.Register()
+	}
+	deregisterCoreEtcdRegistry = func(registry *etcd.Registry) error {
+		return registry.Deregister()
+	}
+	closeCoreEtcdDiscovery = func(discovery *etcd.Discovery) error {
+		return discovery.Close()
+	}
 )
 
 // GRPCServerConfig 定义 Core 创建 gRPC server 前可注入的通用 transport 与 interceptor。
@@ -176,15 +189,22 @@ func (app *Core) shutdownGRPC() {
 // EnableEtcdRegistry 启用 etcd 服务注册
 // 当 opts 为 nil 时，从配置文件读取；当 opts 已设置字段时，保留用户值
 func (app *Core) EnableEtcdRegistry(opts *etcd.Options) error {
+	app.mutex.Lock()
+	shutdownStarted := app.shutdownStarted
+	app.mutex.Unlock()
+	if shutdownStarted {
+		return errors.New("core: cannot enable etcd registry after shutdown")
+	}
 	if opts == nil {
 		opts = etcd.DefaultOptions()
 	}
 	app.applyEtcdRegistryDefaults(opts)
 
-	registry, err := etcd.NewRegistry(opts)
+	registry, err := newCoreEtcdRegistry(opts)
 	if err != nil {
 		return err
 	}
+	registryCleanup := onceCleanup(func() { _ = deregisterCoreEtcdRegistry(registry) })
 
 	discoveryOpts := &etcd.Options{
 		Namespace:   opts.Namespace,
@@ -193,22 +213,64 @@ func (app *Core) EnableEtcdRegistry(opts *etcd.Options) error {
 		Password:    opts.Password,
 		DialTimeout: opts.DialTimeout,
 	}
-	if err := app.EnableEtcdDiscovery(discoveryOpts); err != nil {
+	discovery, err := newCoreEtcdDiscovery(discoveryOpts)
+	if err != nil {
+		registryCleanup()
+		return err
+	}
+	discoveryCleanup := onceCleanup(func() { _ = closeCoreEtcdDiscovery(discovery) })
+
+	if err := registerCoreEtcdRegistry(registry); err != nil {
+		discoveryCleanup()
+		registryCleanup()
 		return err
 	}
 
+	app.mutex.Lock()
+	if app.shutdownStarted {
+		app.mutex.Unlock()
+		discoveryCleanup()
+		registryCleanup()
+		return errors.New("core: cannot install etcd registry after shutdown")
+	}
+	previousRegistryCleanup := app.etcdRegistryCleanup
+	previousDiscoveryCleanup := app.etcdDiscoveryCleanup
 	app.etcdRegistry = registry
+	app.EtcdDiscovery = discovery
+	app.etcdRegistryServiceName = opts.ServiceName
+	app.etcdRegistryNamespace = opts.Namespace
+	app.etcdRegistryCleanup = registryCleanup
+	app.etcdDiscoveryCleanup = discoveryCleanup
+	registerReflection := !app.grpcReflectionRegistered
+	app.grpcReflectionRegistered = true
+	app.mutex.Unlock()
 
-	if err := registry.Register(); err != nil {
-		return err
+	if previousRegistryCleanup != nil {
+		previousRegistryCleanup()
 	}
-
-	app.OnShutdown(func() {
-		registry.Deregister()
-	})
-	reflection.Register(app.GetGRPCServer())
+	if previousDiscoveryCleanup != nil {
+		previousDiscoveryCleanup()
+	}
+	if registerReflection {
+		reflection.Register(app.GetGRPCServer())
+	}
 
 	return nil
+}
+
+// EtcdRegistryIdentity returns the identity installed by the most recent
+// successful EnableEtcdRegistry call. Failed replacements leave this snapshot
+// unchanged.
+func (app *Core) EtcdRegistryIdentity() (serviceName, namespace string, ok bool) {
+	if app == nil {
+		return "", "", false
+	}
+	app.mutex.Lock()
+	defer app.mutex.Unlock()
+	if app.etcdRegistry == nil || app.EtcdDiscovery == nil {
+		return "", "", false
+	}
+	return app.etcdRegistryServiceName, app.etcdRegistryNamespace, true
 }
 
 func (app *Core) applyEtcdRegistryDefaults(opts *etcd.Options) {
@@ -235,6 +297,16 @@ func (app *Core) applyEtcdRegistryDefaults(opts *etcd.Options) {
 	if opts.Version == "" {
 		opts.Version = app.Conf.GetString("etcd.version", "1.0.0")
 	}
+	if httpAddr := strings.TrimSpace(app.Conf.GetString("etcd.http_addr", "")); httpAddr != "" {
+		if _, exists := opts.Metadata["http_addr"]; !exists {
+			metadata := make(map[string]string, len(opts.Metadata)+1)
+			for key, value := range opts.Metadata {
+				metadata[key] = value
+			}
+			metadata["http_addr"] = httpAddr
+			opts.Metadata = metadata
+		}
+	}
 }
 
 // EnableEtcdDiscovery 启用 etcd 服务发现
@@ -244,16 +316,21 @@ func (app *Core) EnableEtcdDiscovery(opts *etcd.Options) error {
 	}
 	app.applyEtcdDiscoveryDefaults(opts)
 
-	discovery, err := etcd.NewDiscovery(opts)
+	discovery, err := newCoreEtcdDiscovery(opts)
 	if err != nil {
 		return err
 	}
+	discoveryCleanup := onceCleanup(func() { _ = closeCoreEtcdDiscovery(discovery) })
 
+	app.mutex.Lock()
+	previousDiscoveryCleanup := app.etcdDiscoveryCleanup
 	app.EtcdDiscovery = discovery
+	app.etcdDiscoveryCleanup = discoveryCleanup
+	app.mutex.Unlock()
 
-	app.OnShutdown(func() {
-		discovery.Close()
-	})
+	if previousDiscoveryCleanup != nil {
+		previousDiscoveryCleanup()
+	}
 
 	return nil
 }
@@ -270,4 +347,11 @@ func (app *Core) applyEtcdDiscoveryDefaults(opts *etcd.Options) {
 // OnShutdown 添加关闭钩子
 func (app *Core) OnShutdown(fn func()) {
 	app.shutdownHooks = append(app.shutdownHooks, fn)
+}
+
+func onceCleanup(fn func()) func() {
+	var once sync.Once
+	return func() {
+		once.Do(fn)
+	}
 }

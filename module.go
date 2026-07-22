@@ -32,6 +32,11 @@ func (app *Core) addHandler(h handler) {
 				if strings.HasPrefix(name, strings.ToLower(method)) {
 					name = FixURI(prefix, name, method)
 					group.core().AddHandle([]string{method}, name, group, nil, app.ProcessedHandler(fn)...)
+					app.recordAutomaticHTTPRoute(automaticHTTPRoute{
+						Method:  strings.ToUpper(method),
+						Path:    name,
+						Handler: h.HandName() + "." + m.Name,
+					})
 					D("route: %s %s > %s.%s", method, name, h.HandName(), m.Name)
 					h.PushHandler(method, name)
 				}
@@ -86,6 +91,9 @@ func (app *Core) loadMods() {
 	modPrefix := app.modName
 	for _, m := range app.getModules(modPrefix) {
 		mo := m.Instance()
+		app.mutex.Lock()
+		app.loadedModules = append(app.loadedModules, mo)
+		app.mutex.Unlock()
 		if mod, ok := mo.(canStart); ok {
 			app.eg.Go(func() error {
 				select {
@@ -112,20 +120,49 @@ func (app *Core) ErrGroup() *errgroup.Group {
 }
 
 func (app *Core) shutdown() {
-	// 执行关闭钩子
-	for _, hook := range app.shutdownHooks {
-		hook()
-	}
+	app.shutdownOnce.Do(func() {
+		app.mutex.Lock()
+		app.shutdownStarted = true
+		app.mutex.Unlock()
 
-	for _, m := range app.getModules(app.modName) {
-		mo := m.Instance()
-		if mod, ok := mo.(canShutdown); ok {
-			mod.Stop(app)
+		if app.stop != nil {
+			app.stop()
 		}
-	}
 
-	// 关闭 gRPC
-	app.shutdownGRPC()
+		// 执行关闭钩子
+		for _, hook := range app.shutdownHooks {
+			hook()
+		}
+
+		app.mutex.Lock()
+		loadedModules := append([]Module(nil), app.loadedModules...)
+		app.mutex.Unlock()
+		for _, mo := range loadedModules {
+			if mod, ok := mo.(canShutdown); ok {
+				_ = mod.Stop(app)
+			}
+		}
+
+		app.mutex.Lock()
+		registryCleanup := app.etcdRegistryCleanup
+		discoveryCleanup := app.etcdDiscoveryCleanup
+		app.etcdRegistryCleanup = nil
+		app.etcdDiscoveryCleanup = nil
+		app.etcdRegistry = nil
+		app.EtcdDiscovery = nil
+		app.etcdRegistryServiceName = ""
+		app.etcdRegistryNamespace = ""
+		app.mutex.Unlock()
+		if registryCleanup != nil {
+			registryCleanup()
+		}
+		if discoveryCleanup != nil {
+			discoveryCleanup()
+		}
+
+		// 关闭 gRPC
+		app.shutdownGRPC()
+	})
 }
 
 func (app *Core) getModules(scope string) []ModuleInfo {

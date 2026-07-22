@@ -40,10 +40,22 @@ type CertMagicConfig struct {
 	CacheDir string
 }
 
+var prepareCoreTLSForServe = func(app *Core) error {
+	return app.prepareTLSForServe()
+}
+
+var syncCoreAutomaticHTTPRoutesForServe = func(app *Core, ctx context.Context) error {
+	return app.syncAutomaticHTTPRoutes(ctx)
+}
+
 type Core struct {
 	*http.Server
-	h3    *http3.Server
-	mutex sync.Mutex
+	h3              *http3.Server
+	mutex           sync.Mutex
+	shutdownOnce    sync.Once
+	shutdownStarted bool
+	startupOnce     sync.Once
+	startupErr      error
 
 	trees      []*RouteNode
 	routeLocks []sync.RWMutex
@@ -61,6 +73,7 @@ type Core struct {
 	stop               context.CancelFunc
 	defaultRestful     RestfulDefine
 	modName            string
+	loadedModules      []Module
 	MaxMultipartMemory int64
 	enablePrefork      bool
 	networkProto       string
@@ -83,9 +96,17 @@ type Core struct {
 	grpcClientInitialized map[string]struct{}
 
 	// etcd 相关
-	etcdRegistry  *etcd.Registry
-	EtcdDiscovery *etcd.Discovery
-	shutdownHooks []func()
+	etcdRegistry              *etcd.Registry
+	EtcdDiscovery             *etcd.Discovery
+	etcdRegistryServiceName   string
+	etcdRegistryNamespace     string
+	etcdRegistryCleanup       func()
+	etcdDiscoveryCleanup      func()
+	automaticHTTPRoutesMu     sync.RWMutex
+	automaticHTTPRoutes       []automaticHTTPRoute
+	automaticHTTPRouteIndexes map[string]int
+	shutdownHooks             []func()
+	grpcReflectionRegistered  bool
 }
 
 // core implements Router.
@@ -105,7 +126,9 @@ func New(options ...Options) *Core {
 		Conf: Options{
 			"debug": true,
 		},
-		MaxMultipartMemory: defaultMultipartMemory,
+		MaxMultipartMemory:        defaultMultipartMemory,
+		automaticHTTPRoutes:       make([]automaticHTTPRoute, 0),
+		automaticHTTPRouteIndexes: make(map[string]int),
 	}
 
 	var out io.Writer = os.Stdout
@@ -330,30 +353,13 @@ func (app *Core) Serve(ln net.Listener) error {
 	} else {
 		D("Listen: http://%s\n", port)
 	}
-	app.runProcess()
-
-	// 启动 gRPC 服务器（如果启用）
-	if err := app.startGRPCServer(); err != nil {
+	if err := app.prepareServe(ln); err != nil {
 		return err
 	}
-
-	// 确保关闭时也关闭 gRPC
-	defer app.shutdownGRPC()
+	defer app.shutdown()
 
 	// 优先使用 certMagic
 	if app.certMagicEnabled || app.certMagicConfig.Email != "" {
-		if app.certMagicEnabled {
-			if err := app.setupCertMagic(); err != nil {
-				Erro("CertMagic setup error: %v", err)
-				return err
-			}
-		} else if app.certMagicConfig.Email != "" {
-			if err := app.onDemand(app.certMagicConfig.Email, app.certMagicConfig.CacheDir); err != nil {
-				Erro("On-demand certificate error: %v", err)
-				return err
-			}
-		}
-
 		app.eg.Go(func() error {
 			ln, err := reuseport.ListenUDPWithReusePort("udp", ":https")
 			if err != nil {
@@ -374,14 +380,6 @@ func (app *Core) Serve(ln net.Listener) error {
 			Info("Starting HTTP/3 (%s) server", ":https")
 			return app.h3.Serve(ln)
 		})
-		tls := &tls.Config{
-			MinVersion:     app.TLSConfig.MinVersion,
-			GetCertificate: app.TLSConfig.GetCertificate,
-			NextProtos:     append([]string{"h2"}, app.TLSConfig.NextProtos...),
-		}
-		app.Server.TLSConfig = tls
-		http2.ConfigureServer(app.Server, &http2.Server{})
-
 		// CertMagic 的 TLS 配置已经设置好了
 		if err := app.Server.ServeTLS(ln, "", ""); err != nil {
 			return err
@@ -391,17 +389,6 @@ func (app *Core) Serve(ln net.Listener) error {
 	}
 
 	if app.certManager != nil {
-		app.Server.TLSConfig = &tls.Config{
-			MinVersion:     tls.VersionTLS12,
-			GetCertificate: app.certManager.GetCertificate,
-			NextProtos:     []string{"h2", "http/1.1", acme.ALPNProto},
-		}
-		http2.ConfigureServer(app.Server, &http2.Server{})
-
-		app.GET("/.well-known/acme-challenge/*", app.certManager.HTTPHandler(nil))
-		app.GET("/.health", func(c Ctx) {
-			c.SendStatus(200, "ok")
-		})
 		Info("ACME Enabled, serving HTTPS on :443")
 		go func() {
 			mux := http.NewServeMux()
@@ -445,7 +432,6 @@ func (app *Core) prefork() error {
 		// kill current child proc when master exited
 		go watchMaster()
 
-		app.runProcess()
 		return app.Serve(ln)
 	}
 
@@ -496,9 +482,70 @@ func (app *Core) prefork() error {
 	return (<-channel).err
 }
 
-func (app *Core) runProcess() {
-	app.loadMods() // load modules
-	// app.buildTree()
+func (app *Core) prepareServe(ln net.Listener) error {
+	app.startupOnce.Do(func() {
+		app.startupErr = app.prepareServeOnce()
+	})
+	if app.startupErr != nil {
+		return app.unwindStartup(ln, app.startupErr)
+	}
+	return nil
+}
+
+func (app *Core) prepareServeOnce() error {
+	app.loadMods()
+	if err := app.startGRPCServer(); err != nil {
+		return err
+	}
+	if err := prepareCoreTLSForServe(app); err != nil {
+		return err
+	}
+	if err := syncCoreAutomaticHTTPRoutesForServe(app, app.Ctx); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (app *Core) prepareTLSForServe() error {
+	if app.certMagicEnabled || app.certMagicConfig.Email != "" {
+		if app.certMagicEnabled {
+			if err := app.setupCertMagic(); err != nil {
+				return fmt.Errorf("certmagic setup: %w", err)
+			}
+		} else if err := app.onDemand(app.certMagicConfig.Email, app.certMagicConfig.CacheDir); err != nil {
+			return fmt.Errorf("on-demand certificate setup: %w", err)
+		}
+		app.Server.TLSConfig = &tls.Config{
+			MinVersion:     app.TLSConfig.MinVersion,
+			GetCertificate: app.TLSConfig.GetCertificate,
+			NextProtos:     append([]string{"h2"}, app.TLSConfig.NextProtos...),
+		}
+		return http2.ConfigureServer(app.Server, &http2.Server{})
+	}
+
+	if app.certManager != nil {
+		app.Server.TLSConfig = &tls.Config{
+			MinVersion:     tls.VersionTLS12,
+			GetCertificate: app.certManager.GetCertificate,
+			NextProtos:     []string{"h2", "http/1.1", acme.ALPNProto},
+		}
+		if err := http2.ConfigureServer(app.Server, &http2.Server{}); err != nil {
+			return err
+		}
+		app.GET("/.well-known/acme-challenge/*", app.certManager.HTTPHandler(nil))
+		app.GET("/.health", func(c Ctx) {
+			c.SendStatus(200, "ok")
+		})
+	}
+	return nil
+}
+
+func (app *Core) unwindStartup(ln net.Listener, err error) error {
+	if ln != nil {
+		_ = ln.Close()
+	}
+	app.shutdown()
+	return err
 }
 
 func (app *Core) registerHealthRoute() {

@@ -30,6 +30,35 @@ func TestKVKey(t *testing.T) {
 	}
 }
 
+func TestPutStringContextPreservesRawStrings(t *testing.T) {
+	discovery := startLeaseDiscovery(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	const key = "/xpay-test/gateway/routes/manual/a"
+	const want = `{"id":"a"}`
+	if err := discovery.PutStringContext(ctx, key, want); err != nil {
+		t.Fatalf("put raw string: %v", err)
+	}
+	got, err := discovery.GetString(key)
+	if err != nil {
+		t.Fatalf("get raw string: %v", err)
+	}
+	if got != want {
+		t.Fatalf("stored value = %q, want %q", got, want)
+	}
+}
+
+func TestContextKVMethodsHonorCanceledContext(t *testing.T) {
+	discovery := startLeaseDiscovery(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if err := discovery.PutStringContext(ctx, "/xpay-test/canceled", "value"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("PutStringContext error = %v, want context.Canceled", err)
+	}
+}
+
 func TestDiscoveryRefreshServiceReplacesStaleInstances(t *testing.T) {
 	d := &Discovery{}
 	d.storeServices(map[string]map[string]*ServiceInfo{

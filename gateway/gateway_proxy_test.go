@@ -189,8 +189,8 @@ func TestReflectionProxyInvokeReturnsInvalidArgumentForParseFailure(t *testing.T
 	}
 	resolver := dynamicpb.NewTypes(files)
 
-	proxy := &ReflectionProxy{}
-	proxy.methodCache.Store("/test.Service/Post", &MethodDescriptor{
+	proxy := &ReflectionProxy{schema: &ReflectionSchema{methods: map[string]*MethodDescriptor{}}}
+	proxy.schema.methods["/test.Service/Post"] = &MethodDescriptor{
 		FullMethod: "/test.Service/Post",
 		NewRequest: func() protoreflect.ProtoMessage {
 			return dynamicpb.NewMessage(reqDesc.(protoreflect.MessageDescriptor))
@@ -199,7 +199,7 @@ func TestReflectionProxyInvokeReturnsInvalidArgumentForParseFailure(t *testing.T
 			return dynamicpb.NewMessage(respDesc.(protoreflect.MessageDescriptor))
 		},
 		Resolver: resolver,
-	})
+	}
 
 	_, err = proxy.Invoke(context.Background(), "/test.Service/Post", []byte(`{"amount":"bad"}`))
 	st, ok := status.FromError(err)

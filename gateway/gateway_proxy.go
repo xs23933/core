@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -25,10 +26,21 @@ import (
 )
 
 type ReflectionProxy struct {
-	conn        *grpc.ClientConn
-	methodCache sync.Map
-	addr        string
-	app         *core.Core
+	conn      *grpc.ClientConn
+	schema    *ReflectionSchema
+	addr      string
+	app       *core.Core
+	ready     func() bool
+	closeFn   func() error
+	closeOnce sync.Once
+	closeErr  error
+}
+
+// ReflectionSchema is the immutable reflected method set shared by all
+// connections for one logical service. The map is built completely before the
+// schema is published to a ServicePool.
+type ReflectionSchema struct {
+	methods map[string]*MethodDescriptor
 }
 
 type MethodDescriptor struct {
@@ -49,32 +61,57 @@ func NewReflectionProxy(app *core.Core, addr string) (*ReflectionProxy, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create client conn failed: %w", err)
 	}
-	return newReflectionProxyFromConn(app, addr, conn)
+	return newReflectionProxyFromConnContext(context.Background(), app, addr, conn, nil)
 }
 
 func newReflectionProxyForService(app *core.Core, serviceName, addr string) (*ReflectionProxy, error) {
+	return newReflectionProxyForServiceContext(context.Background(), app, serviceName, addr, nil)
+}
+
+func newReflectionProxyForServiceContext(ctx context.Context, app *core.Core, serviceName, addr string, schema *ReflectionSchema) (*ReflectionProxy, error) {
 	conn, err := app.GrpcClientAt(serviceName, addr)
 	if err != nil {
 		return nil, fmt.Errorf("create client conn failed: %w", err)
 	}
-	return newReflectionProxyFromConn(app, addr, conn)
+	return newReflectionProxyFromConnContext(ctx, app, addr, conn, schema)
 }
 
 func newReflectionProxyFromConn(app *core.Core, addr string, conn *grpc.ClientConn) (*ReflectionProxy, error) {
-	p := &ReflectionProxy{conn: conn, addr: addr, app: app}
-
-	if err := p.discoverAndRegister(); err != nil {
-		_ = conn.Close()
-		return nil, fmt.Errorf("discover and register failed: %w", err)
-	}
-	return p, nil
+	return newReflectionProxyFromConnContext(context.Background(), app, addr, conn, nil)
 }
 
-func (p *ReflectionProxy) discoverAndRegister() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+func newReflectionProxyFromConnContext(ctx context.Context, app *core.Core, addr string, conn *grpc.ClientConn, schema *ReflectionSchema) (*ReflectionProxy, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if schema == nil {
+		var err error
+		schema, err = discoverReflectionSchema(ctx, conn)
+		if err != nil {
+			_ = conn.Close()
+			return nil, fmt.Errorf("discover and register failed: %w", err)
+		}
+	}
+	return &ReflectionProxy{conn: conn, schema: schema, addr: addr, app: app}, nil
+}
+
+func discoverReflectionSchema(parent context.Context, conn *grpc.ClientConn) (*ReflectionSchema, error) {
+	ctx, cancel := context.WithTimeout(parent, 10*time.Second)
 	defer cancel()
 
-	stub := grpc_reflection_v1alpha.NewServerReflectionClient(p.conn)
+	methods := make(map[string]*MethodDescriptor)
+	if err := discoverReflectionMethods(ctx, conn, methods); err != nil {
+		return nil, err
+	}
+	return &ReflectionSchema{methods: methods}, nil
+}
+
+func discoverReflectionMethods(ctx context.Context, conn *grpc.ClientConn, methodsByName map[string]*MethodDescriptor) error {
+	if conn == nil {
+		return errors.New("reflection connection is nil")
+	}
+
+	stub := grpc_reflection_v1alpha.NewServerReflectionClient(conn)
 	refClient := grpcreflect.NewClientV1Alpha(ctx, stub)
 	defer refClient.Reset()
 
@@ -105,7 +142,6 @@ func (p *ReflectionProxy) discoverAndRegister() error {
 			}
 			seen[fd.GetName()] = true
 			fdSet.File = append(fdSet.File, fd)
-			// 递归收集所有依赖
 			for _, dep := range fd.Dependency {
 				depFD, _ := refClient.FileByFilename(dep)
 				if depFD != nil {
@@ -114,39 +150,31 @@ func (p *ReflectionProxy) discoverAndRegister() error {
 			}
 		}
 
-		methods := svcDesc.GetMethods()
-		for _, method := range methods {
+		serviceMethods := svcDesc.GetMethods()
+		for _, method := range serviceMethods {
 			collectDeps(method.GetInputType().GetFile().AsFileDescriptorProto())
 			collectDeps(method.GetOutputType().GetFile().AsFileDescriptorProto())
 		}
 
-		// 一次构建 FileDescriptor
 		files, err := protodesc.NewFiles(fdSet)
 		if err != nil {
 			core.Erro("[ReflectionProxy] build file descriptor set failed: %v", err)
 			continue
 		}
 
-		// 预构建消息描述符查找表
 		msgDescMap := buildMessageIndex(files)
 		resolver := dynamicpb.NewTypes(files)
-
-		// 注册所有方法
-		for _, method := range methods {
+		for _, method := range serviceMethods {
 			fullMethod := fmt.Sprintf("/%s/%s", serviceName, method.GetName())
-
 			reqDesc := msgDescMap[method.GetInputType().GetFullyQualifiedName()]
 			respDesc := msgDescMap[method.GetOutputType().GetFullyQualifiedName()]
-
 			if reqDesc == nil || respDesc == nil {
 				continue
 			}
 
-			// 提取 proto package
 			pkg := svcDesc.GetFile().GetPackage()
-
-			req, resp := reqDesc, respDesc // capture for closure
-			p.methodCache.Store(fullMethod, &MethodDescriptor{
+			req, resp := reqDesc, respDesc
+			methodsByName[fullMethod] = &MethodDescriptor{
 				FullMethod:  fullMethod,
 				Package:     pkg,
 				Service:     serviceName,
@@ -154,10 +182,22 @@ func (p *ReflectionProxy) discoverAndRegister() error {
 				NewRequest:  func() proto.Message { return dynamicpb.NewMessage(req) },
 				NewResponse: func() proto.Message { return dynamicpb.NewMessage(resp) },
 				Resolver:    resolver,
-			})
+			}
 		}
 	}
 
+	return nil
+}
+
+func (p *ReflectionProxy) discoverAndRegister() error {
+	if p == nil {
+		return errors.New("reflection proxy is nil")
+	}
+	schema, err := discoverReflectionSchema(context.Background(), p.conn)
+	if err != nil {
+		return err
+	}
+	p.schema = schema
 	return nil
 }
 
@@ -179,15 +219,19 @@ func collectMessages(messages protoreflect.MessageDescriptors, idx map[string]pr
 }
 
 func (p *ReflectionProxy) Invoke(ctx context.Context, fullMethod string, jsonReq []byte) ([]byte, error) {
-	cached, ok := p.methodCache.Load(fullMethod)
+	var cached *MethodDescriptor
+	if p != nil && p.schema != nil {
+		cached = p.schema.methods[fullMethod]
+	}
+	ok := cached != nil
 	if !ok {
-		if p.app.Debug {
+		if p != nil && p.app != nil && p.app.Debug {
 			return nil, fmt.Errorf("method not found: %s", fullMethod)
 		}
 		return nil, core.ErrNotFound
 	}
 
-	desc := cached.(*MethodDescriptor)
+	desc := cached
 
 	req := desc.NewRequest()
 	if err := protoJSONUnmarshal(jsonReq, req, desc.Resolver); err != nil {
@@ -299,17 +343,28 @@ func protoJSONMarshal(msg proto.Message, resolver interface {
 
 // Methods 返回所有已注册的方法
 func (p *ReflectionProxy) Methods() map[string]*MethodDescriptor {
-	result := make(map[string]*MethodDescriptor)
-	p.methodCache.Range(func(key, value any) bool {
-		result[key.(string)] = value.(*MethodDescriptor)
-		return true
-	})
+	if p == nil || p.schema == nil {
+		return map[string]*MethodDescriptor{}
+	}
+	result := make(map[string]*MethodDescriptor, len(p.schema.methods))
+	for name, descriptor := range p.schema.methods {
+		result[name] = descriptor
+	}
 	return result
 }
 
 func (p *ReflectionProxy) Close() error {
-	if p.conn != nil {
-		return p.conn.Close()
+	if p == nil {
+		return nil
 	}
-	return nil
+	p.closeOnce.Do(func() {
+		if p.closeFn != nil {
+			p.closeErr = p.closeFn()
+			return
+		}
+		if p.conn != nil {
+			p.closeErr = p.conn.Close()
+		}
+	})
+	return p.closeErr
 }

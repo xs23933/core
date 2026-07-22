@@ -13,104 +13,75 @@ import (
 	"time"
 
 	core "github.com/xs23933/core/v3"
+	"github.com/xs23933/core/v3/etcd"
+	gatewayroute "github.com/xs23933/core/v3/gateway/route"
 )
-
-type RouteProtocol string
-
-const (
-	RouteProtocolGRPC RouteProtocol = "grpc"
-	RouteProtocolHTTP RouteProtocol = "http"
-)
-
-const httpRouteRepublishInterval = 30 * time.Second
-
-type routeStore interface {
-	Put(ctx context.Context, key string, value any) error
-}
-
-type discoveryRouteStore struct {
-	app *core.Core
-}
-
-func (s discoveryRouteStore) Put(_ context.Context, key string, value any) error {
-	if s.app == nil || s.app.EtcdDiscovery == nil {
-		return errors.New("gateway: etcd discovery is not enabled")
-	}
-	return s.app.EtcdDiscovery.Put(key, value)
-}
 
 // RegisterHTTPRoute explicitly publishes an HTTP route definition to etcd.
 // The service must already have enabled etcd registry/discovery.
-func RegisterHTTPRoute(app *core.Core, route *Route, routePrefix ...string) error {
-	if app == nil {
-		return errors.New("gateway: app is nil")
+func RegisterHTTPRoute(app *core.Core, value *Route, routePrefix ...string) error {
+	if len(routePrefix) == 0 || routePrefix[0] == "" {
+		return RegisterHTTPRoutes(app, value)
 	}
-	if route == nil {
-		return errors.New("gateway: route is nil")
+	if app == nil || app.EtcdDiscovery == nil {
+		return errors.New("gateway: etcd discovery is not enabled")
 	}
-	if route.ServiceName == "" {
-		route.ServiceName = app.Conf.GetString("etcd.service_name", "")
+	serviceName, _, ok := app.EtcdRegistryIdentity()
+	if !ok {
+		return errors.New("gateway: etcd registry is not enabled")
 	}
-	namespace := app.Conf.GetString("etcd.namespace", "")
-	if app.EtcdDiscovery != nil {
-		namespace = app.EtcdDiscovery.Namespace()
+	return publishManualHTTPRoutes(app.Ctx, serviceName, publisherForDiscovery(app.EtcdDiscovery, routePrefix[0]), value)
+}
+
+// RegisterHTTPRoutes validates and publishes a complete batch of manual HTTP
+// routes. It performs no periodic republishing and starts no worker.
+func RegisterHTTPRoutes(app *core.Core, routes ...*Route) error {
+	if app == nil || app.EtcdDiscovery == nil {
+		return errors.New("gateway: etcd discovery is not enabled")
+	}
+	serviceName, namespace, ok := app.EtcdRegistryIdentity()
+	if !ok {
+		return errors.New("gateway: etcd registry is not enabled")
+	}
+	return publishManualHTTPRoutes(app.Ctx, serviceName, publisherForDiscovery(app.EtcdDiscovery, defaultRoutePrefix(namespace)), routes...)
+}
+
+func publisherForDiscovery(discovery *etcd.Discovery, routePrefix ...string) gatewayroute.Publisher {
+	namespace := ""
+	if discovery != nil {
+		namespace = discovery.Namespace()
 	}
 	prefix := defaultRoutePrefix(namespace)
 	if len(routePrefix) > 0 && routePrefix[0] != "" {
 		prefix = routePrefix[0]
 	}
-	store := discoveryRouteStore{app: app}
-	if err := publishHTTPRoute(context.Background(), store, prefix, route); err != nil {
-		return err
+	return gatewayroute.Publisher{
+		Store:       discoveryRouteStore{discovery: discovery},
+		RoutePrefix: prefix,
 	}
-	startHTTPRouteRepublisher(app, store, prefix, route)
-	return nil
 }
 
-func registerHTTPRoute(ctx context.Context, store routeStore, prefix string, route *Route) error {
-	return publishHTTPRoute(ctx, store, prefix, route)
-}
-
-func publishHTTPRoute(ctx context.Context, store routeStore, prefix string, route *Route) error {
-	if store == nil {
-		return errors.New("gateway: route store is nil")
-	}
-	if route == nil {
-		return errors.New("gateway: route is nil")
-	}
-	route.Protocol = RouteProtocolHTTP
-	if err := prepareRoute(route); err != nil {
-		return err
-	}
-	prefix = strings.TrimSuffix(prefix, "/") + "/"
-	return store.Put(ctx, prefix+route.ID, route)
-}
-
-func startHTTPRouteRepublisher(app *core.Core, store routeStore, prefix string, route *Route) {
-	if app == nil || store == nil || route == nil {
-		return
-	}
-	routeCopy := *route
-	if route.Headers != nil {
-		routeCopy.Headers = make(map[string]string, len(route.Headers))
-		for key, value := range route.Headers {
-			routeCopy.Headers[key] = value
+func publishManualHTTPRoutes(ctx context.Context, serviceName string, publisher gatewayroute.Publisher, routes ...*Route) error {
+	prepared := make([]*Route, len(routes))
+	for index, value := range routes {
+		if value == nil {
+			continue
 		}
-	}
-	app.ErrGroup().Go(func() error {
-		ticker := time.NewTicker(httpRouteRepublishInterval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-app.Ctx.Done():
-				return nil
-			case <-ticker.C:
-				if err := publishHTTPRoute(app.Ctx, store, prefix, &routeCopy); err != nil {
-					core.Warn("[Gateway] republish HTTP route %s %s failed: %v", routeCopy.Method, routeCopy.Path, err)
-				}
-			}
+		copy := cloneRouteDefinition(value)
+		copy.Protocol = RouteProtocolHTTP
+		if copy.ServiceName == "" {
+			copy.ServiceName = serviceName
 		}
-	})
+		copy.Enabled = true
+		if err := normalizeAndValidateRoute(copy); err != nil {
+			return err
+		}
+		if copy.ID == "" {
+			copy.ID = routeID(copy)
+		}
+		prepared[index] = copy
+	}
+	return publisher.PublishManual(ctx, prepared...)
 }
 
 func prepareRoute(route *Route) error {
@@ -138,47 +109,19 @@ func normalizeAndValidateRoute(route *Route) error {
 		route.Protocol = RouteProtocolGRPC
 	}
 	route.Method = strings.ToUpper(strings.TrimSpace(route.Method))
+	route.Path = strings.TrimSpace(route.Path)
+	route.UpstreamPath = strings.TrimSpace(route.UpstreamPath)
+	if err := gatewayroute.Validate(route); err != nil {
+		return err
+	}
 	route.Path = normalizeRoutePath(route.Path)
 	route.UpstreamPath = normalizeOptionalRoutePath(route.UpstreamPath)
-
-	if route.ServiceName == "" {
-		return errors.New("gateway: service_name is required")
+	slot, err := gatewayroute.SlotID(route.Method, route.Path)
+	if err != nil {
+		return err
 	}
-	if route.Method == "" {
-		return errors.New("gateway: method is required")
-	}
-	if route.Path == "" {
-		return errors.New("gateway: path is required")
-	}
-	if !supportedHTTPMethod(route.Method) {
-		return fmt.Errorf("gateway: unsupported method %s", route.Method)
-	}
-
-	switch route.Protocol {
-	case RouteProtocolGRPC:
-		if route.GRPCMethod == "" {
-			return errors.New("gateway: grpc_method is required for grpc route")
-		}
-	case RouteProtocolHTTP:
-		if route.UpstreamPath == "" {
-			route.UpstreamPath = route.Path
-		}
-	case "":
-		return errors.New("gateway: protocol is required")
-	default:
-		return fmt.Errorf("gateway: unsupported protocol %s", route.Protocol)
-	}
+	route.Slot = slot
 	return nil
-}
-
-func supportedHTTPMethod(method string) bool {
-	switch method {
-	case http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut,
-		http.MethodPatch, http.MethodDelete, http.MethodOptions:
-		return true
-	default:
-		return false
-	}
 }
 
 func normalizeRoutePath(path string) string {
@@ -205,21 +148,10 @@ func normalizeOptionalRoutePath(path string) string {
 func routeID(route *Route) string {
 	target := route.GRPCMethod
 	if route.Protocol == RouteProtocolHTTP {
-		target = route.UpstreamPath
+		target = ""
 	}
 	raw := fmt.Sprintf("%s|%s|%s|%s|%s", route.Protocol, route.ServiceName, route.Method, route.Path, target)
 	return core.SHA256(raw)
-}
-
-func resolveHTTPUpstreamPath(template, requestPath string, params map[string]string) string {
-	path := template
-	if path == "" {
-		path = requestPath
-	}
-	for key, value := range params {
-		path = strings.ReplaceAll(path, ":"+key, url.PathEscape(value))
-	}
-	return normalizeRoutePath(path)
 }
 
 func (gw *EtcdGateway) createHTTPProxyHandler(route *Route) core.HandlerFunc {
@@ -229,56 +161,28 @@ func (gw *EtcdGateway) createHTTPProxyHandler(route *Route) core.HandlerFunc {
 			core.Erro("[Gateway] HTTP proxy %s failed: %v", route.ServiceName, proxyErr)
 			w.Header().Set(core.HeaderContentType, core.MIMEApplicationJSONCharsetUTF8)
 			w.WriteHeader(http.StatusBadGateway)
-			_, _ = w.Write([]byte(`{"code":502,"message":"bad gateway"}`))
+			_, _ = w.Write([]byte(`{"code":502,"msg":"bad gateway"}`))
 		},
 	}
 	return func(ctx core.Ctx) error {
-		addr := gw.getHTTPInstance(route.ServiceName)
-		if addr == "" {
+		instance := gw.getHTTPInstance(route.ServiceName)
+		if instance == nil {
 			return ctx.Status(http.StatusServiceUnavailable).JSON(core.Map{
-				"code":    http.StatusServiceUnavailable,
-				"message": fmt.Sprintf("service %s unavailable", route.ServiceName),
-			})
-		}
-
-		target, err := parseHTTPServiceURL(addr)
-		if err != nil {
-			return ctx.Status(http.StatusBadGateway).JSON(core.Map{
-				"code": http.StatusBadGateway, "message": err.Error(),
+				"code": http.StatusServiceUnavailable,
+				"msg":  fmt.Sprintf("service %s unavailable", route.ServiceName),
 			})
 		}
 
 		req := ctx.Request().Clone(ctx.Context())
-		prepareHTTPProxyRequest(req, target, route, ctx.ParamsMaps())
-
+		setHTTPProxyTarget(req, instance.Target)
 		proxy.ServeHTTP(ctx.Response(), req)
 		return nil
 	}
 }
 
-func prepareHTTPProxyRequest(req *http.Request, target *url.URL, route *Route, params map[string]string) {
+func setHTTPProxyTarget(req *http.Request, target *url.URL) {
 	req.URL.Scheme = target.Scheme
 	req.URL.Host = target.Host
-	req.URL.Path = joinHTTPProxyPath(target.Path, resolveHTTPUpstreamPath(route.UpstreamPath, req.URL.Path, params))
-	req.URL.RawPath = ""
-	if target.RawQuery == "" || req.URL.RawQuery == "" {
-		req.URL.RawQuery = target.RawQuery + req.URL.RawQuery
-	} else {
-		req.URL.RawQuery = target.RawQuery + "&" + req.URL.RawQuery
-	}
-	for key, value := range route.Headers {
-		req.Header.Set(key, value)
-	}
-}
-
-func joinHTTPProxyPath(basePath, reqPath string) string {
-	if basePath == "" || basePath == "/" {
-		return normalizeRoutePath(reqPath)
-	}
-	if reqPath == "" || reqPath == "/" {
-		return normalizeRoutePath(basePath)
-	}
-	return strings.TrimRight(basePath, "/") + "/" + strings.TrimLeft(reqPath, "/")
 }
 
 func parseHTTPServiceURL(addr string) (*url.URL, error) {
@@ -286,47 +190,74 @@ func parseHTTPServiceURL(addr string) (*url.URL, error) {
 	if addr == "" {
 		return nil, errors.New("gateway: empty HTTP service address")
 	}
-	if !strings.Contains(addr, "://") {
-		addr = "http://" + addr
-	}
 	target, err := url.Parse(addr)
-	if err != nil || target.Host == "" {
-		return nil, fmt.Errorf("gateway: invalid HTTP service address %q", addr)
+	if err != nil {
+		return nil, fmt.Errorf("gateway: invalid HTTP service address %q: %w", addr, err)
+	}
+	target.Scheme = strings.ToLower(target.Scheme)
+	if (target.Scheme != "http" && target.Scheme != "https") || target.Hostname() == "" || target.User != nil || target.Opaque != "" {
+		return nil, fmt.Errorf("gateway: invalid HTTP service origin %q", addr)
+	}
+	if target.Path != "" && target.Path != "/" {
+		return nil, fmt.Errorf("gateway: HTTP service origin %q must not contain a path", addr)
+	}
+	if target.RawPath != "" && target.EscapedPath() != "/" {
+		return nil, fmt.Errorf("gateway: HTTP service origin %q must not contain an escaped path", addr)
+	}
+	if target.RawQuery != "" || target.ForceQuery {
+		return nil, fmt.Errorf("gateway: HTTP service origin %q must not contain a query", addr)
+	}
+	if target.Fragment != "" || target.RawFragment != "" {
+		return nil, fmt.Errorf("gateway: HTTP service origin %q must not contain a fragment", addr)
 	}
 	return target, nil
 }
 
-type httpServiceInstances struct {
-	byID  map[string]string
-	addrs []string
+// HTTPInstance is an immutable HTTP service target prepared from a registry
+// event. Target is parsed once and reused by the request hot path.
+type HTTPInstance struct {
+	ID     string
+	Addr   string
+	Target *url.URL
 }
 
-func newHTTPServiceInstances(byID map[string]string) httpServiceInstances {
+type httpServiceInstances struct {
+	byID      map[string]*HTTPInstance
+	instances []*HTTPInstance
+}
+
+func newHTTPServiceInstances(byID map[string]*HTTPInstance) *httpServiceInstances {
 	ids := make([]string, 0, len(byID))
 	for id := range byID {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
 
-	addrs := make([]string, 0, len(ids))
+	instances := make([]*HTTPInstance, 0, len(ids))
 	for _, id := range ids {
-		addrs = append(addrs, byID[id])
+		instances = append(instances, byID[id])
 	}
-	return httpServiceInstances{byID: byID, addrs: addrs}
+	return &httpServiceInstances{byID: byID, instances: instances}
 }
 
-func (gw *EtcdGateway) loadHTTPInstances() map[string]httpServiceInstances {
-	if value, ok := gw.httpInstances.Load().(map[string]httpServiceInstances); ok && value != nil {
+func (gw *EtcdGateway) loadHTTPInstances() map[string]*httpServiceInstances {
+	if gw == nil {
+		return nil
+	}
+	if value, ok := gw.httpInstances.Load().(map[string]*httpServiceInstances); ok && value != nil {
 		return value
 	}
 	return nil
 }
 
-func (gw *EtcdGateway) storeHTTPInstances(instances map[string]httpServiceInstances) {
+func (gw *EtcdGateway) storeHTTPInstances(instances map[string]*httpServiceInstances) {
 	gw.httpInstances.Store(instances)
 }
 
 func (gw *EtcdGateway) loadHTTPIndexes() map[string]*atomic.Uint64 {
+	if gw == nil {
+		return nil
+	}
 	if value, ok := gw.httpIndexes.Load().(map[string]*atomic.Uint64); ok && value != nil {
 		return value
 	}
@@ -337,55 +268,96 @@ func (gw *EtcdGateway) storeHTTPIndexes(indexes map[string]*atomic.Uint64) {
 	gw.httpIndexes.Store(indexes)
 }
 
-func (gw *EtcdGateway) getHTTPIndex(serviceName string) *atomic.Uint64 {
-	if index := gw.loadHTTPIndexes()[serviceName]; index != nil {
-		return index
-	}
-
+func (gw *EtcdGateway) ensureHTTPIndex(serviceName string) {
 	gw.httpIndexMu.Lock()
 	defer gw.httpIndexMu.Unlock()
 
 	indexes := gw.loadHTTPIndexes()
-	if index := indexes[serviceName]; index != nil {
-		return index
+	if indexes[serviceName] != nil {
+		return
 	}
 
 	next := make(map[string]*atomic.Uint64, len(indexes)+1)
 	for name, index := range indexes {
 		next[name] = index
 	}
-	index := &atomic.Uint64{}
-	next[serviceName] = index
+	next[serviceName] = &atomic.Uint64{}
 	gw.storeHTTPIndexes(next)
-	return index
 }
 
-func copyHTTPInstances(instances map[string]httpServiceInstances) map[string]httpServiceInstances {
-	next := make(map[string]httpServiceInstances, len(instances))
-	for serviceName, serviceInstances := range instances {
-		byID := make(map[string]string, len(serviceInstances.byID))
-		for instanceID, addr := range serviceInstances.byID {
-			byID[instanceID] = addr
+func (gw *EtcdGateway) removeHTTPIndex(serviceName string) {
+	gw.httpIndexMu.Lock()
+	defer gw.httpIndexMu.Unlock()
+
+	indexes := gw.loadHTTPIndexes()
+	if indexes[serviceName] == nil {
+		return
+	}
+	next := make(map[string]*atomic.Uint64, len(indexes)-1)
+	for name, index := range indexes {
+		if name != serviceName {
+			next[name] = index
 		}
-		next[serviceName] = newHTTPServiceInstances(byID)
+	}
+	gw.storeHTTPIndexes(next)
+}
+
+func copyHTTPInstances(instances map[string]*httpServiceInstances, capacity int) map[string]*httpServiceInstances {
+	next := make(map[string]*httpServiceInstances, len(instances)+capacity)
+	for serviceName, serviceInstances := range instances {
+		next[serviceName] = serviceInstances
 	}
 	return next
 }
 
-func (gw *EtcdGateway) addHTTPInstance(serviceName, instanceID, addr string) {
-	if gw == nil || serviceName == "" || instanceID == "" || addr == "" {
-		return
+func copyHTTPInstancesByID(serviceInstances *httpServiceInstances, capacity int) map[string]*HTTPInstance {
+	size := capacity
+	if serviceInstances != nil {
+		size += len(serviceInstances.byID)
 	}
+	byID := make(map[string]*HTTPInstance, size)
+	if serviceInstances != nil {
+		for instanceID, instance := range serviceInstances.byID {
+			byID[instanceID] = instance
+		}
+	}
+	return byID
+}
+
+func (gw *EtcdGateway) addHTTPInstance(serviceName, instanceID, addr string) error {
+	if gw == nil {
+		return errors.New("gateway: HTTP gateway is nil")
+	}
+	serviceName = strings.TrimSpace(serviceName)
+	instanceID = strings.TrimSpace(instanceID)
+	addr = strings.TrimSpace(addr)
+	if serviceName == "" {
+		return errors.New("gateway: HTTP service_name is required")
+	}
+	if instanceID == "" {
+		return errors.New("gateway: HTTP service_id is required")
+	}
+	if addr == "" {
+		gw.removeHTTPInstance(serviceName, instanceID)
+		return nil
+	}
+	target, err := parseHTTPServiceURL(addr)
+	if err != nil {
+		gw.removeHTTPInstance(serviceName, instanceID)
+		return err
+	}
+	instance := &HTTPInstance{ID: instanceID, Addr: addr, Target: target}
+
 	gw.httpMu.Lock()
 	defer gw.httpMu.Unlock()
-	instances := copyHTTPInstances(gw.loadHTTPInstances())
-	byID := instances[serviceName].byID
-	if byID == nil {
-		byID = make(map[string]string)
-	}
-	byID[instanceID] = addr
-	instances[serviceName] = newHTTPServiceInstances(byID)
-	gw.storeHTTPInstances(instances)
+	current := gw.loadHTTPInstances()
+	next := copyHTTPInstances(current, 1)
+	byID := copyHTTPInstancesByID(current[serviceName], 1)
+	byID[instanceID] = instance
+	next[serviceName] = newHTTPServiceInstances(byID)
+	gw.ensureHTTPIndex(serviceName)
+	gw.storeHTTPInstances(next)
+	return nil
 }
 
 func (gw *EtcdGateway) removeHTTPInstance(serviceName, instanceID string) {
@@ -394,26 +366,35 @@ func (gw *EtcdGateway) removeHTTPInstance(serviceName, instanceID string) {
 	}
 	gw.httpMu.Lock()
 	defer gw.httpMu.Unlock()
-	instances := copyHTTPInstances(gw.loadHTTPInstances())
-	serviceInstances := instances[serviceName]
-	if serviceInstances.byID == nil {
+	current := gw.loadHTTPInstances()
+	serviceInstances := current[serviceName]
+	if serviceInstances == nil || serviceInstances.byID[instanceID] == nil {
 		return
 	}
-	delete(serviceInstances.byID, instanceID)
-	if len(serviceInstances.byID) == 0 {
-		delete(instances, serviceName)
-	} else {
-		instances[serviceName] = newHTTPServiceInstances(serviceInstances.byID)
+
+	next := copyHTTPInstances(current, 0)
+	byID := copyHTTPInstancesByID(serviceInstances, 0)
+	delete(byID, instanceID)
+	if len(byID) == 0 {
+		delete(next, serviceName)
+		gw.storeHTTPInstances(next)
+		gw.removeHTTPIndex(serviceName)
+		gw.circuitStates.Delete(serviceName)
+		return
 	}
-	gw.storeHTTPInstances(instances)
+	next[serviceName] = newHTTPServiceInstances(byID)
+	gw.storeHTTPInstances(next)
 }
 
-func (gw *EtcdGateway) getHTTPInstance(serviceName string) string {
+func (gw *EtcdGateway) getHTTPInstance(serviceName string) *HTTPInstance {
 	serviceInstances := gw.loadHTTPInstances()[serviceName]
-	addrs := serviceInstances.addrs
-	if len(addrs) == 0 {
-		return ""
+	if serviceInstances == nil || len(serviceInstances.instances) == 0 {
+		return nil
 	}
-	idx := gw.getHTTPIndex(serviceName).Add(1) - 1
-	return addrs[int(idx%uint64(len(addrs)))]
+	index := gw.loadHTTPIndexes()[serviceName]
+	if index == nil {
+		return nil
+	}
+	position := index.Add(1) - 1
+	return serviceInstances.instances[int(position%uint64(len(serviceInstances.instances)))]
 }

@@ -200,10 +200,6 @@ func (r *Registry) Deregister() error {
 		_, _ = r.lease.Revoke(ctx, leaseID)
 	}
 
-	if _, err := r.client.Delete(ctx, r.opts.ServiceKey()); err != nil {
-		return fmt.Errorf("deregister service: %w", err)
-	}
-
 	if err := r.client.Close(); err != nil {
 		return fmt.Errorf("close etcd client: %w", err)
 	}
