@@ -37,6 +37,23 @@ func TestUnmatchedOptionsWithoutHandlerRemainsNotFound(t *testing.T) {
 	}
 }
 
+func TestUnmatchedGetIsNotOptionsFallback(t *testing.T) {
+	app := New()
+	app.Use(func(c Ctx) error {
+		if IsRouteFallback(c) {
+			t.Fatal("unmatched GET was marked as an OPTIONS route fallback")
+		}
+		return c.Next()
+	})
+
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/users", nil))
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status=%d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
 func TestExplicitOptionsRouteHasPriority(t *testing.T) {
 	app := New()
 	app.Use(func(c Ctx) error {

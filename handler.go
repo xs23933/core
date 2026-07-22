@@ -14,13 +14,19 @@ type HandlerFun = func(Ctx)
 type HandlerNormal = func(w http.ResponseWriter, r *http.Request)
 
 func DefaultErrorHandler(c Ctx, err error) error {
-	code := StatusInternalServerError
-	var e *Error
-	if errors.As(err, &e) {
-		code = int(e.status.Code())
-	}
+	code, message := errorStatus(err)
 	c.SetHeader(HeaderContentType, MIMETextPlainCharsetUTF8)
-	return c.SendStatus(code, err.Error())
+	return c.SendStatus(code, message)
+}
+
+func errorStatus(err error) (int, string) {
+	code := StatusInternalServerError
+	message := err.Error()
+	var e Errors
+	if errors.As(err, &e) {
+		code, message = e.Errors()
+	}
+	return code, message
 }
 
 type handler interface {

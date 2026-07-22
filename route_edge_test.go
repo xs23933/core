@@ -2,6 +2,7 @@ package core
 
 import (
 	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 )
@@ -256,33 +257,219 @@ func TestRouteManyParamRoutesCoexist(t *testing.T) {
 
 // ── 前缀冲突路由共存 (app/save、apps/:param?、apis/:param?) ──
 // 验证修复后，在 radix tree 中共享前缀 "ap" 的多个路由可以正确共存。
-// 插入顺序: apis/:param? → app/save → apps/:param?，触发前缀拆分与级联合并。
+// 覆盖三条路由的全部注册顺序，包括会触发前缀拆分与级联合并的顺序。
 
 func TestRoutePrefixConflictCoexist(t *testing.T) {
+	registrations := []struct {
+		path    string
+		handler HandlerFunc
+	}{
+		{"/api/v1/apis/:param?", func(c Ctx) error {
+			return c.SendString("apis:" + c.Params("param"))
+		}},
+		{"/api/v1/app/save", func(c Ctx) error {
+			return c.SendString("app-save")
+		}},
+		{"/api/v1/apps/:param?", func(c Ctx) error {
+			return c.SendString("apps:" + c.Params("param"))
+		}},
+		{"/api/v1/info/:param", func(c Ctx) error {
+			return c.SendString("info:" + c.Params("param"))
+		}},
+		{"/api/v1/kio/*path", func(c Ctx) error {
+			return c.SendString("kio:" + c.Params("path"))
+		}},
+		{"/api/v1/err_500", func(c Ctx) error {
+			return c.SendStatus(500, "internal server error")
+		}},
+	}
+	orders := [][]int{
+		{0, 1, 2},
+		{0, 2, 1},
+		{1, 0, 2},
+		{1, 2, 0},
+		{2, 0, 1},
+		{2, 1, 0},
+	}
+
+	for _, order := range orders {
+		t.Run(fmt.Sprint(order), func(t *testing.T) {
+			app := New(Options{
+				"colorful": false,
+				"debug":    true,
+			})
+			for _, index := range order {
+				route := registrations[index]
+				app.POST(route.path, route.handler)
+			}
+			for _, index := range []int{3, 4, 5} {
+				route := registrations[index]
+				app.POST(route.path, route.handler)
+			}
+
+			assertRoute(t, app, "POST", "/api/v1/apis/1231", 200, "apis:1231")
+			assertRoute(t, app, "POST", "/api/v1/apis", 200, "apis:")
+			assertRoute(t, app, "POST", "/api/v1/app/save", 200, "app-save")
+			assertRoute(t, app, "POST", "/api/v1/apps/1231", 200, "apps:1231")
+			assertRoute(t, app, "POST", "/api/v1/apps", 200, "apps:")
+			assertRoute(t, app, "POST", "/api/v1/app", 404, "")
+			assertRoute(t, app, "POST", "/api/v1/info/1231", 200, "info:1231")
+
+			assertRoute(t, app, "POST", "/api/v1/kio/1231", 200, "kio:1231")
+			assertRoute(t, app, "POST", "/api/v1/kio", 200, "kio:")
+			assertRoute(t, app, "POST", "/api/v1/kio/1231/456", 200, "kio:1231/456")
+			// 增加404 的测试
+			assertRoute(t, app, "POST", "/api/v1/info", 404, "")
+			assertRoute(t, app, "POST", "/api/v1", 404, "")
+			assertRoute(t, app, "POST", "/api/v1/err_500", 500, "internal server error")
+
+			for _, root := range app.trees {
+				assertRouteTreeInvariants(t, root)
+			}
+		})
+	}
+}
+
+func TestRouteStaticSegmentBoundaryCoexist(t *testing.T) {
+	registrations := []struct {
+		path string
+		body string
+	}{
+		{path: "/foo/bar", body: "nested"},
+		{path: "/foobar", body: "joined"},
+	}
+
+	for _, order := range [][]int{{0, 1}, {1, 0}} {
+		t.Run(fmt.Sprint(order), func(t *testing.T) {
+			app := New()
+			for _, index := range order {
+				route := registrations[index]
+				app.GET(route.path, func(c Ctx) error {
+					return c.SendString(route.body)
+				})
+			}
+
+			assertRoute(t, app, http.MethodGet, "/foo/bar", http.StatusOK, "nested")
+			assertRoute(t, app, http.MethodGet, "/foobar", http.StatusOK, "joined")
+		})
+	}
+}
+
+func TestRouteStaticSegmentBoundaryRemoval(t *testing.T) {
 	app := New()
-
-	app.POST("/api/v1/apis/:param?", func(c Ctx) error {
-		return c.SendString("apis:" + c.Params("param"))
+	app.GET("/foo/bar", func(c Ctx) error {
+		return c.SendString("nested")
 	})
-	app.POST("/api/v1/app/save", func(c Ctx) error {
-		return c.SendString("app-save")
-	})
-	app.POST("/api/v1/apps/:param?", func(c Ctx) error {
-		return c.SendString("apps:" + c.Params("param"))
+	app.GET("/foobar", func(c Ctx) error {
+		return c.SendString("joined")
 	})
 
-	// apis/:param? — param=1231
-	assertRoute(t, app, "POST", "/api/v1/apis/1231", 200, "apis:1231")
-	// apis/:param? — param 为空（可选参数）
-	assertRoute(t, app, "POST", "/api/v1/apis", 200, "apis:")
-	// app/save — 精确匹配静态路由
-	assertRoute(t, app, "POST", "/api/v1/app/save", 200, "app-save")
-	// apps/:param? — param=1231
-	assertRoute(t, app, "POST", "/api/v1/apps/1231", 200, "apps:1231")
-	// apps/:param? — param 为空（可选参数）
-	assertRoute(t, app, "POST", "/api/v1/apps", 200, "apps:")
-	// /api/v1/app 不应匹配 apps/:param?（app ≠ apps）
-	assertRoute(t, app, "POST", "/api/v1/app", 404, "")
+	app.RemoveHandle([]string{http.MethodGet}, "/foo/bar")
+
+	assertRoute(t, app, http.MethodGet, "/foo/bar", http.StatusNotFound, "")
+	assertRoute(t, app, http.MethodGet, "/foobar", http.StatusOK, "joined")
+}
+
+func TestRouteDynamicSegmentBoundary(t *testing.T) {
+	tests := []struct {
+		name      string
+		path      string
+		validPath string
+		validBody string
+		handler   HandlerFunc
+	}{
+		{
+			name:      "required parameter",
+			path:      "/foo/:id",
+			validPath: "/foo/bar",
+			validBody: "param:bar",
+			handler: func(c Ctx) error {
+				return c.SendString("param:" + c.Params("id"))
+			},
+		},
+		{
+			name:      "optional parameter",
+			path:      "/foo/:id?",
+			validPath: "/foo/bar",
+			validBody: "optional:bar",
+			handler: func(c Ctx) error {
+				return c.SendString("optional:" + c.Params("id"))
+			},
+		},
+		{
+			name:      "catch all",
+			path:      "/foo/*rest",
+			validPath: "/foo/bar/baz",
+			validBody: "catch:bar/baz",
+			handler: func(c Ctx) error {
+				return c.SendString("catch:" + c.Params("rest"))
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			app := New()
+			app.GET(tt.path, tt.handler)
+
+			assertRoute(t, app, http.MethodGet, tt.validPath, http.StatusOK, tt.validBody)
+			assertRoute(t, app, http.MethodGet, "/foobar", http.StatusNotFound, "")
+		})
+	}
+}
+
+func TestRouteMiddlewareRespectsStaticSegmentBoundary(t *testing.T) {
+	app := New()
+	app.Use("/foo", func(c Ctx) error {
+		c.SetHeader("X-Foo-Middleware", "applied")
+		return c.Next()
+	})
+	app.GET("/foo/bar", func(c Ctx) error {
+		return c.SendString("nested")
+	})
+	app.GET("/foobar", func(c Ctx) error {
+		return c.SendString("joined")
+	})
+
+	nested := httptest.NewRecorder()
+	app.ServeHTTP(nested, httptest.NewRequest(http.MethodGet, "/foo/bar", nil))
+	if got := nested.Header().Get("X-Foo-Middleware"); got != "applied" {
+		t.Fatalf("/foo/bar middleware header = %q, want applied", got)
+	}
+
+	joined := httptest.NewRecorder()
+	app.ServeHTTP(joined, httptest.NewRequest(http.MethodGet, "/foobar", nil))
+	if got := joined.Header().Get("X-Foo-Middleware"); got != "" {
+		t.Fatalf("/foobar middleware header = %q, want empty", got)
+	}
+}
+
+func assertRouteTreeInvariants(t *testing.T, node *RouteNode) {
+	t.Helper()
+	if node == nil {
+		return
+	}
+	if len(node.indices) != len(node.children) {
+		t.Fatalf("node %q: indices length = %d, children length = %d", node.path, len(node.indices), len(node.children))
+	}
+
+	for i, child := range node.children {
+		if child == nil {
+			t.Fatalf("node %q: child %d is nil", node.path, i)
+		}
+		if child.path == "" {
+			t.Fatalf("node %q: child %d has empty path", node.path, i)
+		}
+		if node.indices[i] != child.path[0] {
+			t.Fatalf("node %q: index %q does not match child path %q", node.path, node.indices[i], child.path)
+		}
+		if i > 0 && node.indices[i-1] >= node.indices[i] {
+			t.Fatalf("node %q: indices %q are not strictly increasing", node.path, node.indices)
+		}
+		assertRouteTreeInvariants(t, child)
+	}
+	assertRouteTreeInvariants(t, node.paramChild)
+	assertRouteTreeInvariants(t, node.catchChild)
 }
 
 // ── 前缀冲突路由共存 channel 场景 ──
@@ -315,6 +502,38 @@ func TestRoutePrefixConflictCoexistChannel(t *testing.T) {
 	assertRoute(t, app, "POST", "/api/v1/channel/groups/1231", 200, "channel-groups:1231")
 	// channel/groups/:param? — param 为空（可选参数）
 	assertRoute(t, app, "POST", "/api/v1/channel/groups", 200, "channel-groups:")
+}
+
+func TestRouteRequiredParamAndCatchAllCoexist(t *testing.T) {
+	registrations := []func(*Core){
+		func(app *Core) {
+			app.POST("/:param", func(c Ctx) error {
+				return c.SendString("param:" + c.Params("param"))
+			})
+		},
+		func(app *Core) {
+			app.POST("/*", func(c Ctx) error {
+				return c.SendString("catch:" + c.Params(""))
+			})
+		},
+	}
+
+	for _, order := range [][]int{{0, 1}, {1, 0}} {
+		t.Run(fmt.Sprint(order), func(t *testing.T) {
+			app := New()
+			for _, index := range order {
+				registrations[index](app)
+			}
+
+			assertRoute(t, app, "POST", "/1231", 200, "param:1231")
+			assertRoute(t, app, "POST", "/nested/path", 200, "catch:nested/path")
+			assertRoute(t, app, "POST", "/", 200, "catch:")
+
+			for _, root := range app.trees {
+				assertRouteTreeInvariants(t, root)
+			}
+		})
+	}
 }
 
 // ── Unicode / 中文字符 ──

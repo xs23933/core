@@ -360,6 +360,8 @@ app.Use("/internal", internalAuthMiddleware.Handle)
 - 嵌套路径始终按父路径到子路径执行，例如 `/api` 中间件先于 `/api/internal` 中间件。
 - 路径级中间件之后才执行路由自身的 middleware 和最终 handler。
 
+未匹配到显式路由的请求也会经过全局中间件，然后由框架的 fallback handler 返回 404；因此显式注册的 `core.Logger()` 能记录 `404 METHOD /path`。路径级中间件不会为未匹配路由执行。`IsRouteFallback(c)` 仍只在未匹配的 OPTIONS fallback 链中返回 `true`。
+
 ```go
 // 期望执行顺序：requestID -> accessLog -> handler。
 // 全局中间件需要反向注册。
@@ -380,16 +382,14 @@ app.GET("/api/internal/status", statusHandler)
 
 ```go
 import (
+	core "github.com/xs23933/core/v3"
     "github.com/xs23933/core/v3/middleware/requestid"
     "github.com/xs23933/core/v3/middleware/cors"
-    "github.com/xs23933/core/v3/middleware/logger"
-    "github.com/xs23933/core/v3/middleware/recover"
 )
 
 app.Use(requestid.New())  // 请求ID
 app.Use(cors.New())       // CORS 支持
-app.Use(logger.New())     // 请求日志
-app.Use(recover.New())    // 异常恢复
+app.Use(core.Logger())    // 显式启用请求日志；Recovery 由 core.New() 自动注册
 ```
 
 ### 7. 验证器
@@ -1883,12 +1883,16 @@ func (Handler) GetUser(c core.Ctx) {
 ### 3. 日志记录
 
 ```go
-// 配置日志
-import "github.com/xs23933/core/v3/middleware/logger"
+// 方式一：始终输出请求日志。
+// core.New() 默认不输出，需要时显式启用。
+app.Use(core.Logger())
 
-app.Use(logger.New(logger.Options{
-    Format: "${time} ${status} ${method} ${path} ${latency}\n",
-    Output: os.Stdout,
+// 方式二：按 debug 配置控制或自定义输出。
+// 与上面的裸 Logger() 二选一，不要同时注册。
+app.Use(core.Logger(core.LoggerConfig{
+	App:    app,
+	Debug:  app.Debug,
+	Output: os.Stdout,
 }))
 
 // 自定义日志级别

@@ -518,6 +518,7 @@ func GetUser(ctx context.Context, id string) (UserVO, error) {
 // 使用内置中间件
 app.Use(requestid.New())
 app.Use(cors.New())
+app.Use(core.Logger()) // 显式启用请求日志；core.New() 默认不输出 access log
 
 m, mw := metrics.New()
 app.Use(mw)
@@ -548,6 +549,8 @@ func AccessLog() core.HandlerFunc {
     }
 }
 ```
+
+未匹配显式路由的请求会先执行全局中间件，再由框架 fallback handler 返回 404；路径级中间件不会执行。显式注册的 `core.Logger()` 因此可记录 404。`IsRouteFallback(c)` 仅用于识别未匹配的 OPTIONS 预检 fallback，不会将普通 404 标记为 OPTIONS fallback。
 
 ### 3.8 gRPC 与网关
 

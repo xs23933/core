@@ -138,26 +138,28 @@ func (app *Core) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	method := c.Method()
 	methodIdx := methodPos(method)
 
-	// 检查方法是否支持
-	if methodIdx == -1 || methodIdx >= len(app.trees) {
-		c.SendStatus(StatusNotFound, ErrNotFound.Error())
-		return
+	var root *RouteNode
+	if methodIdx >= 0 && methodIdx < len(app.trees) {
+		root = app.trees[methodIdx]
 	}
 
-	root := app.trees[methodIdx]
-	if root == nil {
-		c.SendStatus(StatusNotFound, ErrNotFound.Error())
-		return
+	var (
+		handlers HandlerFuncs
+		ok       bool
+	)
+	if root != nil {
+		handlers, ok = root.match(c.Path(), c)
 	}
 
-	handlers, ok := root.match(c.Path(), c)
 	if !ok {
-		if method != MethodOptions || len(root.middlewares) == 0 {
-			c.SendStatus(StatusNotFound, ErrNotFound.Error())
-			return
+		middlewareRoot := root
+		if middlewareRoot == nil && len(app.trees) > 0 {
+			middlewareRoot = app.trees[0]
 		}
-		handlers = make(HandlerFuncs, 0, len(root.middlewares)+1)
-		handlers = append(handlers, root.middlewares...)
+		if middlewareRoot != nil {
+			handlers = make(HandlerFuncs, 0, len(middlewareRoot.middlewares)+1)
+			handlers = append(handlers, middlewareRoot.middlewares...)
+		}
 		handlers = append(handlers, func(c Ctx) error {
 			return c.SendStatus(StatusNotFound, ErrNotFound.Error())
 		})
@@ -168,12 +170,8 @@ func (app *Core) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	c.handlers = handlers
 	c.indexHandler = -1
 	if err := c.Next(); err != nil {
-		if e, ok := err.(Errors); ok {
-			eCode, eMsg := e.Errors()
-			c.SendStatus(eCode, eMsg)
-		} else {
-			c.SendStatus(StatusInternalServerError, err.Error())
-		}
+		code, message := errorStatus(err)
+		c.SendStatus(code, message)
 	}
 }
 

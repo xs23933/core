@@ -1,7 +1,6 @@
 package core
 
 import (
-	"sort"
 	"strings"
 )
 
@@ -101,21 +100,61 @@ func (n *RouteNode) removeChild(c byte) {
 	}
 }
 
+// insertStaticPath 插入静态路径片段，并返回代表完整 path 的节点。
+// 循环下沉可处理任意层级的前缀冲突，同时保证同一父节点下首字节唯一。
+func (n *RouteNode) insertStaticPath(path string) *RouteNode {
+	current := n
+	remaining := path
+
+	for {
+		child := current.findChild(remaining[0])
+		if child == nil {
+			child = &RouteNode{path: remaining, nType: static}
+			current.addChild(child)
+			return child
+		}
+
+		commonLen := lcp(child.path, remaining)
+		if commonLen == len(child.path) {
+			remaining = remaining[commonLen:]
+			if remaining == "" {
+				return child
+			}
+			current = child
+			continue
+		}
+
+		parent := &RouteNode{
+			path:  child.path[:commonLen],
+			nType: static,
+		}
+		current.replaceChild(remaining[0], parent)
+
+		child.path = child.path[commonLen:]
+		parent.addChild(child)
+
+		remaining = remaining[commonLen:]
+		if remaining == "" {
+			return parent
+		}
+		current = parent
+	}
+}
+
 // addRoute 向基数树插入一条完整路由（带 handler）
 func (n *RouteNode) addRoute(path string, handlers HandlerFuncs) {
-	fullPath := path
 	segments := splitPath(path)
-	n.addRouteSegments(segments, 0, fullPath, handlers)
+	n.addRouteSegments(segments, 0, handlers)
 }
 
 // addRouteNode 向基数树插入中间件节点（不带 handler），返回该节点指针
 func (n *RouteNode) addRouteNode(fullPath string) *RouteNode {
 	segments := splitPath(fullPath)
-	return n.addRouteSegments(segments, 0, fullPath, nil)
+	return n.addRouteSegments(segments, 0, nil)
 }
 
 // addRouteSegments 递归插入路由片段
-func (n *RouteNode) addRouteSegments(segments []string, idx int, fullPath string, handlers HandlerFuncs) *RouteNode {
+func (n *RouteNode) addRouteSegments(segments []string, idx int, handlers HandlerFuncs) *RouteNode {
 	if idx >= len(segments) {
 		if handlers != nil {
 			n.handlers = handlers
@@ -152,7 +191,7 @@ func (n *RouteNode) addRouteSegments(segments []string, idx int, fullPath string
 			if idx == len(segments)-1 && handlers != nil {
 				n.paramChild.handlers = handlers
 			}
-			return n.paramChild.addRouteSegments(segments, idx+1, fullPath, handlers)
+			return n.paramChild.addRouteSegments(segments, idx+1, handlers)
 		}
 
 		child := &RouteNode{
@@ -165,144 +204,15 @@ func (n *RouteNode) addRouteSegments(segments []string, idx int, fullPath string
 			child.handlers = handlers
 			return child
 		}
-		return child.addRouteSegments(segments, idx+1, fullPath, handlers)
+		return child.addRouteSegments(segments, idx+1, handlers)
 	}
 
-	// static: 寻找或创建静态子节点，支持路径压缩
-	child := n.findChild(seg[0])
-	if child == nil {
-		// 无匹配子节点，创建新节点
-		newChild := &RouteNode{path: seg, nType: static}
-		n.addChild(newChild)
-		if idx == len(segments)-1 && handlers != nil {
-			newChild.handlers = handlers
-			return newChild
-		}
-		return newChild.addRouteSegments(segments, idx+1, fullPath, handlers)
-	}
-
-	// 找到首字节匹配的子节点，进行路径压缩
-	commonLen := lcp(child.path, seg)
-
-	if commonLen == len(child.path) {
-		// child.path 是 seg 的前缀，继续在该子节点下插入
-		remaining := seg[commonLen:]
-		if remaining == "" {
-			// 完全匹配，继续向下处理剩余 segments
-			if idx == len(segments)-1 && handlers != nil {
-				child.handlers = handlers
-				return child
-			}
-			return child.addRouteSegments(segments, idx+1, fullPath, handlers)
-		}
-		// 检查剩余部分是否与 child 已有子节点的路径前缀冲突
-		// 例如: child="channel", remaining="s", child 已有子节点 "save"
-		// 此时需要将 "s" 和 "save" 合并为 "s" → {"ave", 新节点}
-		if existingChild := child.findChild(remaining[0]); existingChild != nil {
-			mergeLen := lcp(remaining, existingChild.path)
-			merged := &RouteNode{
-				path:  remaining[:mergeLen],
-				nType: static,
-			}
-			child.replaceChild(remaining[0], merged)
-
-			if mergeLen == len(existingChild.path) {
-				// existingChild 的 path 被完全消化，将其属性迁移到 merged
-				merged.indices = existingChild.indices
-				merged.children = existingChild.children
-				merged.handlers = existingChild.handlers
-				merged.middlewares = existingChild.middlewares
-				merged.paramChild = existingChild.paramChild
-				merged.catchChild = existingChild.catchChild
-			} else {
-				existingChild.path = existingChild.path[mergeLen:]
-				merged.addChild(existingChild)
-			}
-
-			if mergeLen == len(remaining) {
-				return merged.addRouteSegments(segments, idx+1, fullPath, handlers)
-			}
-
-			// 处理 leftover，可能与 merged 已迁移的子节点再次冲突（级联合并）
-			currentRemaining := remaining[mergeLen:]
-			currentNode := merged
-			for {
-				if confChild := currentNode.findChild(currentRemaining[0]); confChild != nil {
-					mergeLen2 := lcp(currentRemaining, confChild.path)
-					merged2 := &RouteNode{
-						path:  currentRemaining[:mergeLen2],
-						nType: static,
-					}
-					currentNode.replaceChild(currentRemaining[0], merged2)
-
-					if mergeLen2 == len(confChild.path) {
-						merged2.indices = confChild.indices
-						merged2.children = confChild.children
-						merged2.handlers = confChild.handlers
-						merged2.middlewares = confChild.middlewares
-						merged2.paramChild = confChild.paramChild
-						merged2.catchChild = confChild.catchChild
-					} else {
-						confChild.path = confChild.path[mergeLen2:]
-						merged2.addChild(confChild)
-					}
-
-					if mergeLen2 == len(currentRemaining) {
-						return merged2.addRouteSegments(segments, idx+1, fullPath, handlers)
-					}
-					currentRemaining = currentRemaining[mergeLen2:]
-					currentNode = merged2
-					continue
-				}
-
-				newChild := &RouteNode{path: currentRemaining, nType: static}
-				currentNode.addChild(newChild)
-				if idx == len(segments)-1 && handlers != nil {
-					newChild.handlers = handlers
-					return newChild
-				}
-				return newChild.addRouteSegments(segments, idx+1, fullPath, handlers)
-			}
-		}
-
-		// 无冲突，将剩余部分作为 child 的静态子节点
-		newChild := &RouteNode{path: remaining, nType: static}
-		child.addChild(newChild)
-		if idx == len(segments)-1 && handlers != nil {
-			newChild.handlers = handlers
-			return newChild
-		}
-		return newChild.addRouteSegments(segments, idx+1, fullPath, handlers)
-	}
-
-	// commonLen < len(child.path): 需要分裂子节点
-	// 创建新的父节点（公共前缀部分）
-	parent := &RouteNode{
-		path:     child.path[:commonLen],
-		nType:    static,
-		indices:  string(child.path[commonLen]),
-		children: []*RouteNode{child},
-	}
-	child.path = child.path[commonLen:]
-	n.replaceChild(seg[0], parent)
-
-	// 继续插入
-	remaining := seg[commonLen:]
-	if remaining == "" {
-		if idx == len(segments)-1 && handlers != nil {
-			parent.handlers = handlers
-			return parent
-		}
-		return parent.addRouteSegments(segments, idx+1, fullPath, handlers)
-	}
-
-	newChild := &RouteNode{path: remaining, nType: static}
-	parent.addChild(newChild)
+	child := n.insertStaticPath(seg)
 	if idx == len(segments)-1 && handlers != nil {
-		newChild.handlers = handlers
-		return newChild
+		child.handlers = handlers
+		return child
 	}
-	return newChild.addRouteSegments(segments, idx+1, fullPath, handlers)
+	return child.addRouteSegments(segments, idx+1, handlers)
 }
 
 // splitPath 将路径按 "/" 分割为 segments
@@ -311,7 +221,17 @@ func splitPath(path string) []string {
 	if trimmed == "" {
 		return nil
 	}
-	return strings.Split(trimmed, "/")
+	segments := strings.Split(trimmed, "/")
+	for i := 0; i < len(segments)-1; i++ {
+		next := segments[i+1]
+		if !strings.HasPrefix(segments[i], ":") &&
+			!strings.HasPrefix(segments[i], "*") &&
+			!strings.HasPrefix(next, ":") &&
+			!strings.HasPrefix(next, "*") {
+			segments[i] += "/"
+		}
+	}
+	return segments
 }
 
 // match 匹配路径，返回 handler 链和是否匹配成功。
@@ -348,10 +268,9 @@ func (n *RouteNode) match(path string, ctx Ctx) (HandlerFuncs, bool) {
 
 // matchPath 递归路径匹配
 func (n *RouteNode) matchPath(path string, ctx Ctx, chain HandlerFuncs) (HandlerFuncs, bool) {
-	childChain := append(chain, n.middlewares...)
-
 	// 空路径：检查本节点 handlers 和特殊子节点（可选参数、通配符）
 	if path == "" {
+		childChain := append(chain, n.middlewares...)
 		if len(n.handlers) > 0 {
 			return append(childChain, n.handlers...), true
 		}
@@ -374,6 +293,7 @@ func (n *RouteNode) matchPath(path string, ctx Ctx, chain HandlerFuncs) (Handler
 	// param/catchAll 节点：自身不匹配路径段，直接匹配子节点
 	// （父节点的 matchChildren 已消费参数值）
 	if n.nType == param || n.nType == params || n.nType == catchAll {
+		childChain := append(chain, n.middlewares...)
 		return n.matchChildren(path, ctx, childChain)
 	}
 
@@ -385,9 +305,9 @@ func (n *RouteNode) matchPath(path string, ctx Ctx, chain HandlerFuncs) (Handler
 				return nil, false
 			}
 			remaining := path[commonLen:]
-			// 消费首字符 /（段分隔符）
-			if len(remaining) > 0 && remaining[0] == '/' {
-				remaining = remaining[1:]
+			childChain := chain
+			if remaining == "" || strings.HasSuffix(n.path, "/") || strings.HasPrefix(remaining, "/") {
+				childChain = append(childChain, n.middlewares...)
 			}
 			// 完全匹配当前节点
 			if remaining == "" {
@@ -396,6 +316,7 @@ func (n *RouteNode) matchPath(path string, ctx Ctx, chain HandlerFuncs) (Handler
 			return n.matchChildren(remaining, ctx, childChain)
 		}
 		// n.path == "" (仅 root 可能出现): 直接匹配子节点
+		childChain := append(chain, n.middlewares...)
 		return n.matchChildren(path, ctx, childChain)
 	}
 
@@ -436,11 +357,14 @@ func (n *RouteNode) matchChildren(path string, ctx Ctx, chain HandlerFuncs) (Han
 		}
 	}
 
+	dynamicPath := strings.TrimPrefix(path, "/")
+	dynamicAllowed := n.nType != static || strings.HasSuffix(n.path, "/") || strings.HasPrefix(path, "/")
+
 	// 3b. 匹配参数子节点
-	if n.paramChild != nil && path != "" {
+	if dynamicAllowed && n.paramChild != nil && dynamicPath != "" {
 		// 提取参数值（当前段）
-		before, after, ok0 := strings.Cut(path, "/")
-		paramVal := path
+		before, after, ok0 := strings.Cut(dynamicPath, "/")
+		paramVal := dynamicPath
 		rest := ""
 		if ok0 {
 			paramVal = before
@@ -460,10 +384,10 @@ func (n *RouteNode) matchChildren(path string, ctx Ctx, chain HandlerFuncs) (Han
 	}
 
 	// 3c. 匹配通配符子节点（兜底）
-	if n.catchChild != nil {
+	if dynamicAllowed && n.catchChild != nil {
 		paramName := n.catchChild.path[1:] // 去掉 "*"
 		oldVal, hadParam := saveParam(ctx, paramName)
-		ctx.SetParams(paramName, path)
+		ctx.SetParams(paramName, dynamicPath)
 
 		childChain := append(chain, n.catchChild.middlewares...)
 		if len(n.catchChild.handlers) > 0 {
@@ -516,33 +440,25 @@ func (n *RouteNode) removeRouteRecursive(segments []string, idx int) bool {
 		return removed
 	}
 
-	// static
-	child := n.findChild(seg[0])
-	if child == nil {
+	return n.removeStaticRoute(segments, idx, seg)
+}
+
+// removeStaticRoute 沿压缩后的静态节点消费当前 segment。
+func (n *RouteNode) removeStaticRoute(segments []string, idx int, remaining string) bool {
+	child := n.findChild(remaining[0])
+	if child == nil || !strings.HasPrefix(remaining, child.path) {
 		return false
 	}
 
-	// 由于路径压缩，child.path 可能包含多个 segment
-	// 需要匹配完整的 child.path 对应的所有 segments
-	childSegments := splitPath(child.path)
-	remaining := make([]string, 0, len(segments)-idx)
-	remaining = append(remaining, segments[idx:]...)
-
-	// 检查 child.path 的 segments 是否与 remaining 的前 N 个匹配
-	matchLen := 0
-	for matchLen < len(childSegments) && matchLen < len(remaining) {
-		if childSegments[matchLen] != remaining[matchLen] {
-			return false
-		}
-		matchLen++
+	rest := remaining[len(child.path):]
+	var removed bool
+	if rest == "" {
+		removed = child.removeRouteRecursive(segments, idx+1)
+	} else {
+		removed = child.removeStaticRoute(segments, idx, rest)
 	}
-	if matchLen < len(childSegments) {
-		return false
-	}
-
-	removed := child.removeRouteRecursive(segments, idx+matchLen)
 	if removed && child.empty() {
-		n.removeChild(seg[0])
+		n.removeChild(remaining[0])
 	}
 	return removed
 }
@@ -580,6 +496,3 @@ func restoreParam(ctx Ctx, key, oldVal string, hadParam bool) {
 		delete(baseCtx.params, key)
 	}
 }
-
-// ensure sort is used (for indices ordering)
-var _ = sort.Strings

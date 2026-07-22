@@ -32,26 +32,37 @@ type LoggerConfig struct {
 }
 
 func Logger(conf ...LoggerConfig) HandlerFunc {
-	debug := false
+	debug := true
 	if len(conf) > 0 {
-		forceColor = conf[0].ForceColor
-		if conf[0].Output != nil {
-			// logout = conf[0].Output
-			logout = &HookWriter{
-				Writer:  conf[0].Output,
-				Monitor: LogHub,
-			}
-			debug = conf[0].Debug
-			conf[0].App.ErrorHandler = ErrorHandler(func(c Ctx, err error) error {
+		debug = conf[0].Debug
+		configureLogger(conf[0])
+	}
+	return HandlerFunc(func(c Ctx) error {
+		c.StartAt(time.Now())
+		err := c.Next()
+		code := c.GetStatus()
+		if err != nil {
+			code, _ = errorStatus(err)
+		}
+		requestLog(debug, code, c.Method(), c.Path(), time.Since(c.StartAt()).String())
+		return err
+	})
+}
+
+func configureLogger(conf LoggerConfig) {
+	forceColor = conf.ForceColor
+	if conf.Output != nil {
+		logout = &HookWriter{
+			Writer:  conf.Output,
+			Monitor: LogHub,
+		}
+		if conf.App != nil {
+			conf.App.ErrorHandler = ErrorHandler(func(c Ctx, err error) error {
 				st := c.StartAt()
-				code := StatusInternalServerError
-				var e *Error
-				if errors.As(err, &e) {
-					code = int(e.status.Code())
-				}
-				requestLog(debug, code, c.Method(), c.Path(), time.Since(st).String())
+				code, message := errorStatus(err)
+				requestLog(conf.Debug, code, c.Method(), c.Path(), time.Since(st).String())
 				c.SetHeader(HeaderContentType, MIMETextPlainCharsetUTF8)
-				return c.SendStatus(code, err.Error())
+				return c.SendStatus(code, message)
 			})
 		}
 	}
@@ -60,14 +71,6 @@ func Logger(conf ...LoggerConfig) HandlerFunc {
 		(!isatty.IsTerminal(w.Fd()) && !isatty.IsCygwinTerminal(w.Fd())) {
 		isTerm = false
 	}
-	return HandlerFunc(func(c Ctx) error {
-		c.StartAt(time.Now())
-		err := c.Next()
-		if err == nil {
-			requestLog(debug, c.GetStatus(), c.Method(), c.Path(), time.Since(c.StartAt()).String())
-		}
-		return err
-	})
 }
 
 func requestLog(debug bool, code int, method, path, ts string) {
@@ -75,6 +78,12 @@ func requestLog(debug bool, code int, method, path, ts string) {
 	tp := info
 	if !debug {
 		return
+	}
+	switch {
+	case code >= http.StatusMultipleChoices && code < http.StatusBadRequest:
+		tp = warn
+	case code >= http.StatusBadRequest:
+		tp = erro
 	}
 	if isTerm || forceColor {
 		rst = reset
@@ -85,12 +94,8 @@ func requestLog(debug bool, code int, method, path, ts string) {
 			color = green
 		case code >= http.StatusMultipleChoices && code < http.StatusBadRequest:
 			color = yellow
-			tp = warn
-			rst = reset
-		case code >= http.StatusBadRequest && code < http.StatusInternalServerError:
+		case code >= http.StatusBadRequest:
 			color = red
-			tp = erro
-			rst = reset
 		}
 	}
 	golog.Printf("%s%s%s %d %s%s%s %s %s%s%s\n", color, tp, rst, code, mcolor, method, rst, path, tcolor, ts, rst)

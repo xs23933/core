@@ -58,6 +58,8 @@ app.Use(ratelimit.New(ratelimit.Config{
 
 `cors.New(config...)` 是纯中间件构造器。未匹配显式路由的 OPTIONS 请求会进入全局中间件，由 CORS 处理合法预检；显式 OPTIONS 路由仍优先。精确 Origin 会校验 scheme、host 和显式端口，`*.example.com` 只匹配子域。`AllowHeaders` 为空时回显 `Access-Control-Request-Headers`，而 `AllowOrigins: "*"` 与凭据模式不能组合。旧的 `cors.New(app, ...)` 调用迁移到 `cors.New(...)`；`cors.NewWithApp(app, ...)` 仅用于临时兼容。
 
+所有未匹配显式路由的请求都会经过全局中间件，再由框架 fallback handler 返回 404；路径级中间件不会为未匹配路由执行。因此显式注册的 `app.Use(core.Logger())` 可记录 404；`core.New()` 默认不安装请求日志中间件。`core.IsRouteFallback(c)` 仅在未匹配 OPTIONS 预检时返回 `true`，普通 404 请求返回 `false`。
+
 ## 3. 路径级中间件
 
 路径级中间件直接使用不带通配符的路径前缀：

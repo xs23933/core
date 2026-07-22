@@ -110,19 +110,23 @@ if err := w.RedirectStdout(); err != nil {
 `Logger()` 中间件自动记录每个请求：
 
 ```go
-// core.New() 内部自动注册，无需手动添加
-// 输出格式（debug 模式）：
+// core.New() 默认不输出请求日志，需要时显式注册。
+app.Use(core.Logger())
+
+// 输出格式：
 // [I] 200 GET /api/users 1.2ms
 // [W] 301 POST /api/old 0.3ms
 // [E] 500 GET /api/error 5.1ms
 ```
+
+裸调用 `core.Logger()` 表示明确启用，不依赖 `app.Debug`。未匹配显式路由的请求也会经过该全局中间件，因此会输出例如 `[E] 404 GET /api/v1 0.2ms`的日志。
 
 状态码着色规则：
 - 2xx → 绿色 `[I]`
 - 3xx → 黄色 `[W]`
 - 4xx+ → 红色 `[E]`
 
-**生产环境**（`debug: false`）：请求日志不输出，减少 I/O。
+需要让请求日志跟随 `app.Debug` 或自定义输出时，使用 `core.Logger(core.LoggerConfig{App: app, Debug: app.Debug, Output: output})`。`Debug: false` 时不输出请求日志。
 
 ## Panic Recovery
 

@@ -238,7 +238,8 @@ func New(options ...Options) *Core {
 		cancel()
 	}()
 
-	app.Use(Logger(LoggerConfig{ForceColor: colorful, App: app, Debug: app.Debug, Output: out}), Recovery())
+	configureLogger(LoggerConfig{ForceColor: colorful, Debug: app.Debug, Output: out})
+	app.Use(Recovery())
 
 	if conf := Conf.GetMap("database"); len(conf) > 0 {
 		if _, err := NewModel(conf, app.Debug, colorful); err != nil {

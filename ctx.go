@@ -165,7 +165,7 @@ type BaseCtx struct {
 // an OPTIONS request did not match an explicit route.
 func IsRouteFallback(c Ctx) bool {
 	ctx, ok := c.(*BaseCtx)
-	return ok && !ctx.matched
+	return ok && ctx.Method() == MethodOptions && !ctx.matched
 }
 
 func (c *BaseCtx) Ctx() context.Context {
