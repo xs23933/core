@@ -144,22 +144,26 @@ func (app *Core) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var (
-		handlers HandlerFuncs
-		ok       bool
+		handlers         HandlerFuncs
+		fallbackHandlers HandlerFuncs
+		ok               bool
 	)
 	if root != nil {
+		app.routeLocks[methodIdx].RLock()
 		handlers, ok = root.match(c.Path(), c)
+		if !ok {
+			fallbackHandlers = append(c.handlers[:0], root.middlewares...)
+		}
+		app.routeLocks[methodIdx].RUnlock()
 	}
 
 	if !ok {
-		middlewareRoot := root
-		if middlewareRoot == nil && len(app.trees) > 0 {
-			middlewareRoot = app.trees[0]
+		if root == nil && len(app.trees) > 0 && app.trees[0] != nil {
+			app.routeLocks[0].RLock()
+			fallbackHandlers = append(c.handlers[:0], app.trees[0].middlewares...)
+			app.routeLocks[0].RUnlock()
 		}
-		if middlewareRoot != nil {
-			handlers = make(HandlerFuncs, 0, len(middlewareRoot.middlewares)+1)
-			handlers = append(handlers, middlewareRoot.middlewares...)
-		}
+		handlers = fallbackHandlers
 		handlers = append(handlers, func(c Ctx) error {
 			return c.SendStatus(StatusNotFound, ErrNotFound.Error())
 		})
@@ -173,6 +177,15 @@ func (app *Core) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		code, message := errorStatus(err)
 		c.SendStatus(code, message)
 	}
+}
+
+func (app *Core) mutateRoute(methodIndex int, mutate func(*RouteNode)) {
+	if methodIndex < 0 || methodIndex >= len(app.trees) || app.trees[methodIndex] == nil {
+		return
+	}
+	app.routeLocks[methodIndex].Lock()
+	defer app.routeLocks[methodIndex].Unlock()
+	mutate(app.trees[methodIndex])
 }
 
 // core.go - AddHandle 方法
@@ -196,6 +209,8 @@ func (app *Core) AddHandle(methods []string, uri string, group *Group, handler a
 
 	// 确保路径格式
 	uri = app.preparePath(uri)
+	// 在获取写锁前完成格式校验，避免注册 panic 后遗留锁状态。
+	_ = splitPath(uri)
 
 	for _, method := range methods {
 		method := strings.ToUpper(method)
@@ -205,17 +220,17 @@ func (app *Core) AddHandle(methods []string, uri string, group *Group, handler a
 
 		if method == MethodUse {
 			if uri == "/" || uri == "" { // 全局中间件
-				for _, root := range app.trees {
-					if root != nil {
+				for index := range app.trees {
+					app.mutateRoute(index, func(root *RouteNode) {
 						root.middlewares = append(handlers, root.middlewares...)
-					}
+					})
 				}
 			} else {
-				for _, root := range app.trees {
-					if root != nil {
+				for index := range app.trees {
+					app.mutateRoute(index, func(root *RouteNode) {
 						node := root.addRouteNode(uri)
 						node.middlewares = append(node.middlewares, handlers...)
-					}
+					})
 				}
 			}
 			continue
@@ -223,41 +238,39 @@ func (app *Core) AddHandle(methods []string, uri string, group *Group, handler a
 
 		if method == MethodAll {
 			for i := range app.trees {
-				if app.trees[i] != nil {
-					app.trees[i].addRoute(uri, handlers)
-				}
+				app.mutateRoute(i, func(root *RouteNode) {
+					root.addRoute(uri, handlers)
+				})
 			}
 			continue
 		}
 
 		methodIdx := methodPos(method)
-		if methodIdx >= 0 && methodIdx < len(app.trees) {
-			root := app.trees[methodIdx]
-			if root != nil {
-				root.addRoute(uri, handlers)
-			}
-		}
+		app.mutateRoute(methodIdx, func(root *RouteNode) {
+			root.addRoute(uri, handlers)
+		})
 	}
 	return app
 }
 
 func (app *Core) RemoveHandle(methods []string, uri string) {
 	uri = app.preparePath(uri)
+	_ = splitPath(uri)
 
 	for _, method := range methods {
 		method = strings.ToUpper(method)
 		if method == MethodAll {
-			for _, root := range app.trees {
-				if root != nil {
+			for index := range app.trees {
+				app.mutateRoute(index, func(root *RouteNode) {
 					root.removeRoute(uri)
-				}
+				})
 			}
 			continue
 		}
 
 		methodIdx := methodPos(method)
-		if methodIdx >= 0 && methodIdx < len(app.trees) && app.trees[methodIdx] != nil {
-			app.trees[methodIdx].removeRoute(uri)
-		}
+		app.mutateRoute(methodIdx, func(root *RouteNode) {
+			root.removeRoute(uri)
+		})
 	}
 }

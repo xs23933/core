@@ -27,6 +27,8 @@ type RouteNode struct {
 	handlers    HandlerFuncs
 }
 
+const linearChildSearchThreshold = 8
+
 // lcp 返回两个字符串的最长公共前缀长度
 func lcp(a, b string) int {
 	n := min(len(b), len(a))
@@ -38,39 +40,59 @@ func lcp(a, b string) int {
 	return n
 }
 
-// findChild 在 indices 中二分查找首字节为 c 的子节点
-func (n *RouteNode) findChild(c byte) *RouteNode {
-	if n.indices == "" {
-		return nil
-	}
-	// indices 按字典序排列，先查找首字节位置
-	for i := 0; i < len(n.indices); i++ {
-		if n.indices[i] >= c {
+// childIndex 返回首字节为 c 的静态子节点下标。
+// 小 fan-out 使用有序短扫描以减少固定开销；较大 fan-out 使用运行时优化过的 IndexByte。
+func (n *RouteNode) childIndex(c byte) int {
+	if len(n.indices) <= linearChildSearchThreshold {
+		for i := 0; i < len(n.indices); i++ {
 			if n.indices[i] == c {
-				return n.children[i]
+				return i
 			}
-			return nil
+			if n.indices[i] > c {
+				break
+			}
+		}
+		return -1
+	}
+	return strings.IndexByte(n.indices, c)
+}
+
+// childPosition 使用二分查找返回有序插入位置以及该首字节是否已存在。
+func (n *RouteNode) childPosition(c byte) (int, bool) {
+	low, high := 0, len(n.indices)
+	for low < high {
+		middle := int(uint(low+high) >> 1)
+		if n.indices[middle] < c {
+			low = middle + 1
+		} else {
+			high = middle
 		}
 	}
-	return nil
+	return low, low < len(n.indices) && n.indices[low] == c
+}
+
+func (n *RouteNode) findChild(c byte) *RouteNode {
+	index := n.childIndex(c)
+	if index < 0 {
+		return nil
+	}
+	return n.children[index]
 }
 
 // addChild 按首字节有序插入静态子节点
 func (n *RouteNode) addChild(child *RouteNode) {
 	c := child.path[0]
-
-	// 找到插入位置（保持 indices 有序）
-	pos := 0
-	for pos < len(n.indices) && n.indices[pos] < c {
-		pos++
+	pos, found := n.childPosition(c)
+	if found {
+		panic("route tree contains duplicate static child index")
 	}
 
-	// 扩容并插入
-	newIndices := make([]byte, len(n.indices)+1)
-	copy(newIndices, n.indices[:pos])
-	newIndices[pos] = c
-	copy(newIndices[pos+1:], n.indices[pos:])
-	n.indices = string(newIndices)
+	var indices strings.Builder
+	indices.Grow(len(n.indices) + 1)
+	indices.WriteString(n.indices[:pos])
+	indices.WriteByte(c)
+	indices.WriteString(n.indices[pos:])
+	n.indices = indices.String()
 
 	newChildren := make([]*RouteNode, len(n.children)+1)
 	copy(newChildren, n.children[:pos])
@@ -81,22 +103,27 @@ func (n *RouteNode) addChild(child *RouteNode) {
 
 // replaceChild 替换首字节为 c 的子节点
 func (n *RouteNode) replaceChild(c byte, child *RouteNode) {
-	for i := 0; i < len(n.indices); i++ {
-		if n.indices[i] == c {
-			n.children[i] = child
-			return
-		}
+	index := n.childIndex(c)
+	if index >= 0 {
+		n.children[index] = child
 	}
 }
 
 // removeChild 移除首字节为 c 的静态子节点
 func (n *RouteNode) removeChild(c byte) {
-	for i := 0; i < len(n.indices); i++ {
-		if n.indices[i] == c {
-			n.indices = n.indices[:i] + n.indices[i+1:]
-			n.children = append(n.children[:i], n.children[i+1:]...)
-			return
-		}
+	index := n.childIndex(c)
+	if index < 0 {
+		return
+	}
+
+	n.indices = n.indices[:index] + n.indices[index+1:]
+	last := len(n.children) - 1
+	copy(n.children[index:], n.children[index+1:])
+	n.children[last] = nil
+	n.children = n.children[:last]
+	if last == 0 {
+		n.indices = ""
+		n.children = nil
 	}
 }
 
@@ -169,7 +196,10 @@ func (n *RouteNode) addRouteSegments(segments []string, idx int, handlers Handle
 
 	if isCatchAll {
 		if n.catchChild != nil {
-			return n.catchChild
+			if n.catchChild.path != seg {
+				panic("conflicting catch-all parameter names: " + n.catchChild.path + " and " + seg)
+			}
+			return n.catchChild.addRouteSegments(segments, idx+1, handlers)
 		}
 		child := &RouteNode{path: seg, nType: catchAll}
 		n.catchChild = child
@@ -187,9 +217,8 @@ func (n *RouteNode) addRouteSegments(segments []string, idx int, handlers Handle
 		}
 
 		if n.paramChild != nil {
-			// 已存在 param 子节点，继续向下
-			if idx == len(segments)-1 && handlers != nil {
-				n.paramChild.handlers = handlers
+			if n.paramChild.path != cleanSeg || n.paramChild.nType != nt {
+				panic("conflicting route parameters: " + n.paramChild.path + " and " + seg)
 			}
 			return n.paramChild.addRouteSegments(segments, idx+1, handlers)
 		}
@@ -215,23 +244,76 @@ func (n *RouteNode) addRouteSegments(segments []string, idx int, handlers Handle
 	return child.addRouteSegments(segments, idx+1, handlers)
 }
 
-// splitPath 将路径按 "/" 分割为 segments
+// splitPath 将连续静态路径压缩为一个 segment，并保留参数边界。
 func splitPath(path string) []string {
+	if strings.Contains(path, "//") {
+		panic("invalid route path with empty segment: " + path)
+	}
 	trimmed := strings.Trim(path, "/")
 	if trimmed == "" {
 		return nil
 	}
-	segments := strings.Split(trimmed, "/")
-	for i := 0; i < len(segments)-1; i++ {
-		next := segments[i+1]
-		if !strings.HasPrefix(segments[i], ":") &&
-			!strings.HasPrefix(segments[i], "*") &&
-			!strings.HasPrefix(next, ":") &&
-			!strings.HasPrefix(next, "*") {
-			segments[i] += "/"
+
+	segments := make([]string, 0, strings.Count(trimmed, "/")+1)
+	staticStart := -1
+	for start := 0; start < len(trimmed); {
+		relativeEnd := strings.IndexByte(trimmed[start:], '/')
+		end := len(trimmed)
+		if relativeEnd >= 0 {
+			end = start + relativeEnd
 		}
+		seg := trimmed[start:end]
+		last := end == len(trimmed)
+		isParam := strings.HasPrefix(seg, ":")
+		isCatchAll := strings.HasPrefix(seg, "*")
+
+		if isParam {
+			cleanSeg := strings.TrimSuffix(seg, "?")
+			name := cleanSeg[1:]
+			if name == "" || strings.ContainsAny(name, ":*?") {
+				panic("invalid route parameter: " + seg)
+			}
+			if strings.HasSuffix(seg, "?") && !last {
+				panic("optional route parameter must be the final segment: " + seg)
+			}
+		}
+		if isCatchAll {
+			name := seg[1:]
+			if strings.ContainsAny(name, ":*?") {
+				panic("invalid catch-all parameter: " + seg)
+			}
+			if !last {
+				panic("catch-all route parameter must be the final segment: " + seg)
+			}
+		}
+
+		if isParam || isCatchAll {
+			if staticStart >= 0 {
+				segments = append(segments, trimmed[staticStart:start-1])
+				staticStart = -1
+			}
+			segments = append(segments, seg)
+		} else if staticStart < 0 {
+			staticStart = start
+		}
+
+		if last {
+			break
+		}
+		start = end + 1
+	}
+	if staticStart >= 0 {
+		segments = append(segments, trimmed[staticStart:])
 	}
 	return segments
+}
+
+func routeParamName(path string) string {
+	name := path[1:]
+	if path[0] == '*' && name == "" {
+		return "*"
+	}
+	return name
 }
 
 // match 匹配路径，返回 handler 链和是否匹配成功。
@@ -241,29 +323,11 @@ func (n *RouteNode) match(path string, ctx Ctx) (HandlerFuncs, bool) {
 	if baseCtx, ok := ctx.(*BaseCtx); ok {
 		chain = baseCtx.handlers[:0]
 	}
-	// 预处理：去掉首尾 /
-	trimmed := strings.Trim(path, "/")
-	if trimmed == "" && path == "/" {
-		// 根路径：检查根节点 handler、可选参数、通配符
-		if len(n.handlers) > 0 {
-			return append(chain, n.handlers...), true
-		}
-		if n.paramChild != nil && n.paramChild.nType == params {
-			c := append(chain, n.paramChild.middlewares...)
-			if len(n.paramChild.handlers) > 0 {
-				return append(c, n.paramChild.handlers...), true
-			}
-		}
-		if n.catchChild != nil {
-			paramName := n.catchChild.path[1:]
-			ctx.SetParams(paramName, "")
-			c := append(chain, n.catchChild.middlewares...)
-			c = append(c, n.catchChild.handlers...)
-			return c, true
-		}
+	matched, ok := n.matchPath(strings.Trim(path, "/"), ctx, chain)
+	if !ok {
 		return nil, false
 	}
-	return n.matchPath(trimmed, ctx, chain)
+	return matched, true
 }
 
 // matchPath 递归路径匹配
@@ -281,13 +345,13 @@ func (n *RouteNode) matchPath(path string, ctx Ctx, chain HandlerFuncs) (Handler
 			}
 		}
 		if n.catchChild != nil {
-			paramName := n.catchChild.path[1:]
+			paramName := routeParamName(n.catchChild.path)
 			ctx.SetParams(paramName, "")
 			c := append(childChain, n.catchChild.middlewares...)
 			c = append(c, n.catchChild.handlers...)
 			return c, true
 		}
-		return nil, false
+		return childChain, false
 	}
 
 	// param/catchAll 节点：自身不匹配路径段，直接匹配子节点
@@ -302,7 +366,7 @@ func (n *RouteNode) matchPath(path string, ctx Ctx, chain HandlerFuncs) (Handler
 		if n.path != "" {
 			commonLen := lcp(path, n.path)
 			if commonLen < len(n.path) {
-				return nil, false
+				return chain, false
 			}
 			remaining := path[commonLen:]
 			childChain := chain
@@ -311,7 +375,7 @@ func (n *RouteNode) matchPath(path string, ctx Ctx, chain HandlerFuncs) (Handler
 			}
 			// 完全匹配当前节点
 			if remaining == "" {
-				return n.matchFallback(n.path, ctx, childChain)
+				return n.matchFallback(ctx, childChain)
 			}
 			return n.matchChildren(remaining, ctx, childChain)
 		}
@@ -320,11 +384,11 @@ func (n *RouteNode) matchPath(path string, ctx Ctx, chain HandlerFuncs) (Handler
 		return n.matchChildren(path, ctx, childChain)
 	}
 
-	return nil, false
+	return chain, false
 }
 
 // matchFallback 当前节点前缀完全匹配后检查 handlers 和特殊子节点
-func (n *RouteNode) matchFallback(_ string, ctx Ctx, chain HandlerFuncs) (HandlerFuncs, bool) {
+func (n *RouteNode) matchFallback(ctx Ctx, chain HandlerFuncs) (HandlerFuncs, bool) {
 	if len(n.handlers) > 0 {
 		return append(chain, n.handlers...), true
 	}
@@ -335,25 +399,28 @@ func (n *RouteNode) matchFallback(_ string, ctx Ctx, chain HandlerFuncs) (Handle
 		}
 	}
 	if n.catchChild != nil {
-		paramName := n.catchChild.path[1:]
+		paramName := routeParamName(n.catchChild.path)
 		ctx.SetParams(paramName, "")
 		c := append(chain, n.catchChild.middlewares...)
 		c = append(c, n.catchChild.handlers...)
 		return c, true
 	}
-	return nil, false
+	return chain, false
 }
 
 // matchChildren 在当前节点的所有子节点中匹配路径
 func (n *RouteNode) matchChildren(path string, ctx Ctx, chain HandlerFuncs) (HandlerFuncs, bool) {
+	fallbackChain := chain
+
 	// 3a. 先匹配静态子节点（优先级最高）
-	if n.indices != "" {
-		c := path[0]
-		child := n.findChild(c)
+	if len(path) > 0 {
+		child := n.findChild(path[0])
 		if child != nil {
-			if matched, ok := child.matchPath(path, ctx, chain); ok {
+			matched, ok := child.matchPath(path, ctx, chain)
+			if ok {
 				return matched, true
 			}
+			fallbackChain = matched
 		}
 	}
 
@@ -371,12 +438,11 @@ func (n *RouteNode) matchChildren(path string, ctx Ctx, chain HandlerFuncs) (Han
 			rest = after
 		}
 
-		paramName := n.paramChild.path[1:] // 去掉 ":"
+		paramName := routeParamName(n.paramChild.path)
 		oldVal, hadParam := saveParam(ctx, paramName)
 		ctx.SetParams(paramName, paramVal)
 
-		childChain := append(chain, n.paramChild.middlewares...)
-		matched, ok := n.paramChild.matchPath(rest, ctx, childChain)
+		matched, ok := n.paramChild.matchPath(rest, ctx, fallbackChain)
 		if ok {
 			return matched, true
 		}
@@ -385,18 +451,18 @@ func (n *RouteNode) matchChildren(path string, ctx Ctx, chain HandlerFuncs) (Han
 
 	// 3c. 匹配通配符子节点（兜底）
 	if dynamicAllowed && n.catchChild != nil {
-		paramName := n.catchChild.path[1:] // 去掉 "*"
+		paramName := routeParamName(n.catchChild.path)
 		oldVal, hadParam := saveParam(ctx, paramName)
 		ctx.SetParams(paramName, dynamicPath)
 
-		childChain := append(chain, n.catchChild.middlewares...)
+		childChain := append(fallbackChain, n.catchChild.middlewares...)
 		if len(n.catchChild.handlers) > 0 {
 			return append(childChain, n.catchChild.handlers...), true
 		}
 		restoreParam(ctx, paramName, oldVal, hadParam)
 	}
 
-	return nil, false
+	return fallbackChain, false
 }
 
 // removeRoute 从基数树中删除路由及其 handler
@@ -418,7 +484,7 @@ func (n *RouteNode) removeRouteRecursive(segments []string, idx int) bool {
 
 	// catch-all
 	if strings.HasPrefix(seg, "*") {
-		if n.catchChild == nil {
+		if n.catchChild == nil || n.catchChild.path != seg {
 			return false
 		}
 		removed := n.catchChild.removeRouteRecursive(segments, idx+1)
@@ -430,7 +496,12 @@ func (n *RouteNode) removeRouteRecursive(segments []string, idx int) bool {
 
 	// param
 	if strings.HasPrefix(seg, ":") {
-		if n.paramChild == nil {
+		cleanSeg := strings.TrimSuffix(seg, "?")
+		nType := param
+		if strings.HasSuffix(seg, "?") {
+			nType = params
+		}
+		if n.paramChild == nil || n.paramChild.path != cleanSeg || n.paramChild.nType != nType {
 			return false
 		}
 		removed := n.paramChild.removeRouteRecursive(segments, idx+1)
@@ -459,8 +530,29 @@ func (n *RouteNode) removeStaticRoute(segments []string, idx int, remaining stri
 	}
 	if removed && child.empty() {
 		n.removeChild(remaining[0])
+	} else if removed {
+		child.compactStaticChain()
 	}
 	return removed
+}
+
+// compactStaticChain 合并删除后无路由语义边界的单静态子链。
+func (n *RouteNode) compactStaticChain() {
+	for n.nType == static &&
+		len(n.middlewares) == 0 &&
+		len(n.handlers) == 0 &&
+		n.paramChild == nil &&
+		n.catchChild == nil &&
+		len(n.children) == 1 {
+		child := n.children[0]
+		n.path += child.path
+		n.indices = child.indices
+		n.children = child.children
+		n.paramChild = child.paramChild
+		n.catchChild = child.catchChild
+		n.middlewares = child.middlewares
+		n.handlers = child.handlers
+	}
 }
 
 // empty 检查节点是否可被清理

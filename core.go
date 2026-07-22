@@ -45,7 +45,8 @@ type Core struct {
 	h3    *http3.Server
 	mutex sync.Mutex
 
-	trees []*RouteNode
+	trees      []*RouteNode
+	routeLocks []sync.RWMutex
 
 	Conf           Options
 	assets         Options
@@ -205,6 +206,7 @@ func New(options ...Options) *Core {
 	// methods 只控制自动路由扫描哪些方法；路由树本身必须保持固定下标，否则
 	// methods: [POST] 会让 POST 的固定下标 1 越界，表现为注册日志存在但请求 404。
 	app.trees = make([]*RouteNode, len(Methods)-1)
+	app.routeLocks = make([]sync.RWMutex, len(app.trees))
 	for i := range app.trees {
 		app.trees[i] = &RouteNode{nType: root}
 	}
@@ -555,16 +557,7 @@ func (app *Core) Use(fn ...any) Router {
 	prefixes, handlers := anyToHandlers(app, fn...)
 	if len(handlers) > 0 {
 		for _, prefix := range prefixes {
-			if prefix == "/" || prefix == "" { // 全局中间件
-				for _, root := range app.trees {
-					root.middlewares = append(handlers, root.middlewares...)
-				}
-			} else {
-				for _, root := range app.trees {
-					node := root.addRouteNode(prefix)
-					node.middlewares = append(node.middlewares, handlers...)
-				}
-			}
+			app.AddHandle([]string{MethodUse}, prefix, nil, nil, handlers...)
 		}
 	}
 	return app

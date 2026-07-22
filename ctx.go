@@ -1514,11 +1514,26 @@ func (c *BaseCtx) init(app *Core, w http.ResponseWriter, r *http.Request) {
 	c.vars = nil
 }
 func (c *BaseCtx) release() {
-
-	c.handlers = c.handlers[:0]
+	const maxRetainedHandlerCapacity = 64
+	if cap(c.handlers) > maxRetainedHandlerCapacity {
+		c.handlers = nil
+	} else {
+		clear(c.handlers[:cap(c.handlers)])
+		c.handlers = c.handlers[:0]
+	}
+	c.R = nil
+	c.W = nil
+	c.wm.ResponseWriter = nil
+	c.app = nil
 	c.ctx = nil
 	c.querys = nil
 	c.vars = nil
+	c.path = ""
+	c.pathOriginal = ""
+	c.method = ""
+	c.baseURI = ""
+	c.theme = ""
+	c.respJsonKeys = nil
 	utils.ClearMap(c.params)
 }
 

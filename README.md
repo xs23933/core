@@ -260,6 +260,12 @@ _Params 是可选关键词 即:params?_
 框架内置默认路由 `GET /health`，返回 `204 No Content`。如果业务代码再次注册
 `GET /health`，业务 handler 会覆盖框架默认 handler。
 
+手动路由的动态 segment 必须有明确且无歧义的定义：同一结构位置不能混用不同参数名，
+也不能混用必选 `:id` 与可选 `:id?`。可选参数和 catch-all 只能位于最后一段，
+路径中不允许空 segment（`//`）。违反这些规则会在注册时 panic，避免由注册顺序决定匹配结果。
+`/*` 仍是有效的根 catch-all，捕获值通过 `c.Params("*")` 读取。
+通过 `Core` 的 `AddHandle`/`RemoveHandle` 进行的运行期路由更新可与请求匹配并发执行。
+
 #### 路由注释
 
 ```go

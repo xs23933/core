@@ -6,70 +6,82 @@ import (
 	"testing"
 )
 
-// BenchmarkRouteMatchStatic 基准测试静态路由匹配
-func BenchmarkRouteMatchStatic(b *testing.B) {
-	app := New()
-	app.GET("/api/v1/users", func(c Ctx) error {
-		return c.SendString("ok")
-	})
+var benchmarkServeHTTPParam string
+
+type benchmarkResponseWriter struct {
+	header http.Header
+}
+
+func newBenchmarkResponseWriter() *benchmarkResponseWriter {
+	return &benchmarkResponseWriter{header: make(http.Header)}
+}
+
+func (w *benchmarkResponseWriter) Header() http.Header            { return w.header }
+func (w *benchmarkResponseWriter) WriteHeader(int)                {}
+func (w *benchmarkResponseWriter) Write(body []byte) (int, error) { return len(body), nil }
+
+// BenchmarkServeHTTPStatic 测量完整请求链，但排除每轮构造 httptest Request/Recorder 的成本。
+func BenchmarkServeHTTPStatic(b *testing.B) {
+	app := New(Options{"debug": false})
+	app.GET("/api/v1/users", func(Ctx) error { return nil })
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/users", nil)
+	writer := newBenchmarkResponseWriter()
 
 	b.ReportAllocs()
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/users", nil)
-		rec := httptest.NewRecorder()
-		app.ServeHTTP(rec, req)
+		app.ServeHTTP(writer, request)
 	}
 }
 
-// BenchmarkRouteMatchOneParam 基准测试单参数路由匹配
-func BenchmarkRouteMatchOneParam(b *testing.B) {
-	app := New()
+func BenchmarkServeHTTPOneParam(b *testing.B) {
+	app := New(Options{"debug": false})
 	app.GET("/users/:id", func(c Ctx) error {
-		return c.SendString(c.Params("id"))
+		benchmarkServeHTTPParam = c.Params("id")
+		return nil
 	})
+	request := httptest.NewRequest(http.MethodGet, "/users/12345", nil)
+	writer := newBenchmarkResponseWriter()
 
 	b.ReportAllocs()
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		req := httptest.NewRequest(http.MethodGet, "/users/12345", nil)
-		rec := httptest.NewRecorder()
-		app.ServeHTTP(rec, req)
+		app.ServeHTTP(writer, request)
 	}
 }
 
-// BenchmarkRouteMatchMultiParam 基准测试多参数路由匹配
-func BenchmarkRouteMatchMultiParam(b *testing.B) {
-	app := New()
-	app.POST("/items/:category/list", func(c Ctx) error {
-		return c.SendString(c.Params("category"))
+func BenchmarkServeHTTPMultiParam(b *testing.B) {
+	app := New(Options{"debug": false})
+	app.POST("/orgs/:orgId/teams/:teamId/users/:userId", func(c Ctx) error {
+		benchmarkServeHTTPParam = c.Params("userId")
+		return nil
 	})
+	request := httptest.NewRequest(http.MethodPost, "/orgs/acme/teams/eng/users/alice", nil)
+	writer := newBenchmarkResponseWriter()
 
 	b.ReportAllocs()
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		req := httptest.NewRequest(http.MethodPost, "/items/electronics/list", nil)
-		rec := httptest.NewRecorder()
-		app.ServeHTTP(rec, req)
+		app.ServeHTTP(writer, request)
 	}
 }
 
-// BenchmarkRouteMatchDeep 基准测试深层嵌套路由
-func BenchmarkRouteMatchDeep(b *testing.B) {
-	app := New()
+func BenchmarkServeHTTPDeep(b *testing.B) {
+	app := New(Options{"debug": false})
 	app.GET("/api/v1/orgs/:orgId/teams/:teamId/users/:userId", func(c Ctx) error {
-		return c.SendString(c.Params("userId"))
+		benchmarkServeHTTPParam = c.Params("userId")
+		return nil
 	})
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/orgs/acme/teams/eng/users/alice", nil)
+	writer := newBenchmarkResponseWriter()
 
 	b.ReportAllocs()
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/orgs/acme/teams/eng/users/alice", nil)
-		rec := httptest.NewRecorder()
-		app.ServeHTTP(rec, req)
+		app.ServeHTTP(writer, request)
 	}
 }

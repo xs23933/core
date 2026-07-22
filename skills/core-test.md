@@ -298,4 +298,4 @@ func TestCORSMiddleware(t *testing.T) {
 4. **`httptest.NewRecorder()`** 的 `rec.Code`/`rec.Body`/`rec.Header()` 直接断言响应
 5. **JSON 响应断言**可用 `sonic.Unmarshal(rec.Body.Bytes(), &result)` 解析
 6. **大文件测试**用 `io.LimitReader` 控制大小，避免内存溢出
-7. **并发测试**用 `t.Run` 并行 + `sync.WaitGroup`，注意 `app` 不要并发写路由
+7. **并发测试**用 `t.Run` 并行 + `sync.WaitGroup`；通过 `Core.AddHandle`/`RemoveHandle` 的路由更新可与 `ServeHTTP` 并发，但不要绕过 `Core` 直接并发修改 `RouteNode`

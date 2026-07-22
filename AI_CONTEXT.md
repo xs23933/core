@@ -48,6 +48,8 @@ AI 在生成 Handler 时必须严格遵守以下命名约定，禁止手动配�
     | `func (h *H) GetUser__Create` | `GET /user-create` (双下划线转连字符) | - |
     | `func (h *H) GetUser__dot__Html` | `GET /user.html` | - |
 - **⚠️ 警告**: `GetId` (大写 I) 生成 `/id` (静态路由)，不是动态参数。动态参数必须使用下划线 `_id`。
+- **路由歧义限制**: 同一结构位置不能使用不同参数名，也不能混用必选/可选参数；可选参数和 catch-all 必须是最后一段，且路径不得包含 `//`。违规路由会在注册时 panic。
+- **Catch-all**: 具名 catch-all 如 `/*path` 用 `c.Params("path")` 读取；裸 `/*` 用 `c.Params("*")` 读取。
 
 ### 2.2 项目结构规范
 AI 推荐使用以下 DDD 分层结构：

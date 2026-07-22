@@ -4,7 +4,15 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
+)
+
+var (
+	benchmarkRouteHandlers HandlerFuncs
+	benchmarkRouteMatched  bool
+	benchmarkRouteNode     *RouteNode
 )
 
 // helper: 创建请求，验证响应码和 body
@@ -180,8 +188,8 @@ func TestRouteCatchAllRoot(t *testing.T) {
 	app := New()
 	app.GET("/*", func(c Ctx) error { return c.SendString("catch:" + c.Params("*")) })
 
-	assertRoute(t, app, "GET", "/", 200, "catch:")          // path = ""?
-	assertRoute(t, app, "GET", "/some/path", 200, "catch:") // capture varies by impl
+	assertRoute(t, app, "GET", "/", 200, "catch:")
+	assertRoute(t, app, "GET", "/some/path", 200, "catch:some/path")
 }
 
 func TestRouteCatchAllAtPrefix(t *testing.T) {
@@ -444,6 +452,81 @@ func TestRouteMiddlewareRespectsStaticSegmentBoundary(t *testing.T) {
 	}
 }
 
+func TestRouteRootRunsGlobalMiddleware(t *testing.T) {
+	app := New()
+	calls := 0
+	app.Use(func(c Ctx) error {
+		calls++
+		return c.Next()
+	})
+	app.GET("/", func(c Ctx) error {
+		return c.SendString("root")
+	})
+
+	assertRoute(t, app, http.MethodGet, "/", http.StatusOK, "root")
+	if calls != 1 {
+		t.Fatalf("global middleware calls = %d, want 1", calls)
+	}
+}
+
+func TestRouteParamMiddlewareRunsOnce(t *testing.T) {
+	for _, middlewareFirst := range []bool{true, false} {
+		t.Run(fmt.Sprintf("middleware-first=%t", middlewareFirst), func(t *testing.T) {
+			app := New()
+			calls := 0
+			middleware := func(c Ctx) error {
+				calls++
+				return c.Next()
+			}
+			handler := func(c Ctx) error {
+				return c.SendString(c.Params("id"))
+			}
+
+			if middlewareFirst {
+				app.Use("/users/:id", middleware)
+				app.GET("/users/:id", handler)
+			} else {
+				app.GET("/users/:id", handler)
+				app.Use("/users/:id", middleware)
+			}
+
+			assertRoute(t, app, http.MethodGet, "/users/42", http.StatusOK, "42")
+			if calls != 1 {
+				t.Fatalf("parameter middleware calls = %d, want 1", calls)
+			}
+		})
+	}
+}
+
+func TestRouteStaticPrefixMiddlewareSurvivesDynamicFallback(t *testing.T) {
+	for _, middlewareFirst := range []bool{true, false} {
+		t.Run(fmt.Sprintf("middleware-first=%t", middlewareFirst), func(t *testing.T) {
+			app := New()
+			calls := 0
+			middleware := func(c Ctx) error {
+				calls++
+				return c.Next()
+			}
+			handler := func(c Ctx) error {
+				return c.SendString("user:" + c.Params("id"))
+			}
+
+			if middlewareFirst {
+				app.Use("/users/admin", middleware)
+				app.GET("/users/:id", handler)
+			} else {
+				app.GET("/users/:id", handler)
+				app.Use("/users/admin", middleware)
+			}
+
+			assertRoute(t, app, http.MethodGet, "/users/admin", http.StatusOK, "user:admin")
+			if calls != 1 {
+				t.Fatalf("static prefix middleware calls = %d, want 1", calls)
+			}
+		})
+	}
+}
+
 func assertRouteTreeInvariants(t *testing.T, node *RouteNode) {
 	t.Helper()
 	if node == nil {
@@ -513,7 +596,7 @@ func TestRouteRequiredParamAndCatchAllCoexist(t *testing.T) {
 		},
 		func(app *Core) {
 			app.POST("/*", func(c Ctx) error {
-				return c.SendString("catch:" + c.Params(""))
+				return c.SendString("catch:" + c.Params("*"))
 			})
 		},
 	}
@@ -533,6 +616,178 @@ func TestRouteRequiredParamAndCatchAllCoexist(t *testing.T) {
 				assertRouteTreeInvariants(t, root)
 			}
 		})
+	}
+}
+
+func TestRouteRejectsAmbiguousOrInvalidPatterns(t *testing.T) {
+	handler := func(Ctx) error { return nil }
+	tests := []struct {
+		name     string
+		register func(*Core)
+	}{
+		{
+			name: "different parameter names at the same structural position",
+			register: func(app *Core) {
+				app.GET("/users/:id/profile", handler)
+				app.GET("/users/:slug/settings", handler)
+			},
+		},
+		{
+			name: "required and optional parameters at the same position",
+			register: func(app *Core) {
+				app.GET("/items/:id", handler)
+				app.GET("/items/:id?", handler)
+			},
+		},
+		{
+			name: "optional parameter before another segment",
+			register: func(app *Core) {
+				app.GET("/items/:id?/details", handler)
+			},
+		},
+		{
+			name: "catch-all before another segment",
+			register: func(app *Core) {
+				app.GET("/files/*path/edit", handler)
+			},
+		},
+		{
+			name: "empty path segment",
+			register: func(app *Core) {
+				app.GET("/files//edit", handler)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			defer func() {
+				if recover() == nil {
+					t.Fatal("route registration did not panic")
+				}
+			}()
+			tt.register(New())
+		})
+	}
+}
+
+func TestRouteStaticSegmentsAreCompressed(t *testing.T) {
+	root := &RouteNode{nType: root}
+	root.addRoute("/api/v1/app/save", HandlerFuncs{func(Ctx) error { return nil }})
+
+	child := root.findChild('a')
+	if child == nil {
+		t.Fatal("root static child is nil")
+	}
+	if child.path != "api/v1/app/save" {
+		t.Fatalf("compressed child path = %q, want %q", child.path, "api/v1/app/save")
+	}
+}
+
+func TestRouteRemovalClearsChildTailAndRecompresses(t *testing.T) {
+	handler := HandlerFuncs{func(Ctx) error { return nil }}
+	root := &RouteNode{nType: root}
+	root.addRoute("/a", handler)
+	root.addRoute("/aa", handler)
+	root.addRoute("/b", handler)
+
+	if !root.removeRoute("/b") {
+		t.Fatal("remove /b = false, want true")
+	}
+	children := root.children[:cap(root.children)]
+	for i := len(root.children); i < len(children); i++ {
+		if children[i] != nil {
+			t.Fatalf("removed child retained at backing slot %d: %#v", i, children[i])
+		}
+	}
+
+	if !root.removeRoute("/a") {
+		t.Fatal("remove /a = false, want true")
+	}
+	child := root.findChild('a')
+	if child == nil {
+		t.Fatal("remaining /aa child is nil")
+	}
+	if child.path != "aa" {
+		t.Fatalf("remaining child path = %q, want recompressed %q", child.path, "aa")
+	}
+	if len(child.children) != 0 {
+		t.Fatalf("remaining child has %d nested static children, want 0", len(child.children))
+	}
+	assertRouteTreeInvariants(t, root)
+}
+
+func TestBaseCtxReleaseClearsRequestReferences(t *testing.T) {
+	handlers := make(HandlerFuncs, 2, 4)
+	for i := range handlers[:cap(handlers)] {
+		handlers[:cap(handlers)][i] = func(Ctx) error { return nil }
+	}
+	request := httptest.NewRequest(http.MethodGet, "/retained", nil)
+	writer := httptest.NewRecorder()
+	app := New()
+	ctx := &BaseCtx{
+		app:      app,
+		handlers: handlers,
+		R:        request,
+		path:     request.URL.Path,
+		method:   request.Method,
+	}
+	ctx.wm.ResponseWriter = writer
+	ctx.W = &ctx.wm
+
+	ctx.release()
+
+	if ctx.R != nil || ctx.W != nil || ctx.wm.ResponseWriter != nil || ctx.app != nil {
+		t.Fatalf("release retained request references: R=%v W=%v wm=%v app=%v", ctx.R, ctx.W, ctx.wm.ResponseWriter, ctx.app)
+	}
+	for i, handler := range ctx.handlers[:cap(ctx.handlers)] {
+		if handler != nil {
+			t.Fatalf("release retained handler at backing slot %d", i)
+		}
+	}
+}
+
+func TestRouteConcurrentMutationAndMatching(t *testing.T) {
+	app := New(Options{"debug": false})
+	app.GET("/stable", func(c Ctx) error { return c.SendString("stable") })
+	dynamicHandler := func(c Ctx) error { return c.SendString(c.Params("id")) }
+
+	const iterations = 200
+	start := make(chan struct{})
+	errs := make(chan string, iterations)
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-start
+		for i := 0; i < iterations; i++ {
+			app.GET("/dynamic/:id", dynamicHandler)
+			app.RemoveHandle([]string{http.MethodGet}, "/dynamic/:id")
+		}
+	}()
+
+	for range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for i := 0; i < iterations; i++ {
+				recorder := httptest.NewRecorder()
+				app.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/stable", nil))
+				if recorder.Code != http.StatusOK || recorder.Body.String() != "stable" {
+					errs <- fmt.Sprintf("status=%d body=%q", recorder.Code, recorder.Body.String())
+					return
+				}
+			}
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
 	}
 }
 
@@ -566,7 +821,10 @@ func TestRoutePartialMatchFails(t *testing.T) {
 func TestRouteParamAllocations(t *testing.T) {
 	root := &RouteNode{nType: root}
 	root.addRoute("/users/:id/profile", HandlerFuncs{func(Ctx) error { return nil }})
-	ctx := &BaseCtx{handlers: make(HandlerFuncs, 0, 4)}
+	ctx := &BaseCtx{
+		handlers: make(HandlerFuncs, 0, 4),
+		params:   make(map[string]string, 1),
+	}
 
 	allocs := testing.AllocsPerRun(1000, func() {
 		handlers, ok := root.match("/users/42/profile", ctx)
@@ -574,13 +832,18 @@ func TestRouteParamAllocations(t *testing.T) {
 			t.Fatalf("match handlers = %d/%v, want one handler", len(handlers), ok)
 		}
 	})
-	t.Logf("param route /users/:id/profile → %v allocs per match", allocs)
+	if allocs != 0 {
+		t.Fatalf("param route allocations = %v, want 0", allocs)
+	}
 }
 
 func TestRouteDeepParamsAllocations(t *testing.T) {
 	root := &RouteNode{nType: root}
 	root.addRoute("/a/:p1/b/:p2/c/:p3", HandlerFuncs{func(Ctx) error { return nil }})
-	ctx := &BaseCtx{handlers: make(HandlerFuncs, 0, 4)}
+	ctx := &BaseCtx{
+		handlers: make(HandlerFuncs, 0, 4),
+		params:   make(map[string]string, 3),
+	}
 
 	allocs := testing.AllocsPerRun(1000, func() {
 		handlers, ok := root.match("/a/1/b/2/c/3", ctx)
@@ -588,7 +851,9 @@ func TestRouteDeepParamsAllocations(t *testing.T) {
 			t.Fatalf("match handlers = %d/%v, want one handler", len(handlers), ok)
 		}
 	})
-	t.Logf("deep param route /a/:p1/b/:p2/c/:p3 → %v allocs per match", allocs)
+	if allocs != 0 {
+		t.Fatalf("deep param route allocations = %v, want 0", allocs)
+	}
 }
 
 // ── 纯 match() 基准测试（排除中间件/context/logger 开销）──
@@ -601,7 +866,7 @@ func newMockCtx() *BaseCtx {
 func buildRouter(n int) *RouteNode {
 	root := &RouteNode{nType: root}
 	for i := 0; i < n; i++ {
-		path := "/api/v1/users/list" + string(rune('a'+i%26))
+		path := fmt.Sprintf("/api/v1/users/list/route-%03d", i)
 		root.addRoute(path, HandlerFuncs{func(Ctx) error { return nil }})
 	}
 	return root
@@ -624,9 +889,10 @@ func buildDeepStaticRouter(depth int) *RouteNode {
 func BenchmarkRouteMatchStaticSmall(b *testing.B) {
 	root := buildRouter(5)
 	ctx := newMockCtx()
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		root.match("/api/v1/users/listc", ctx)
+		benchmarkRouteHandlers, benchmarkRouteMatched = root.match("/api/v1/users/list/route-002", ctx)
 	}
 }
 
@@ -634,9 +900,10 @@ func BenchmarkRouteMatchStaticSmall(b *testing.B) {
 func BenchmarkRouteMatchStaticLarge(b *testing.B) {
 	root := buildRouter(100)
 	ctx := newMockCtx()
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		root.match("/api/v1/users/listz", ctx)
+		benchmarkRouteHandlers, benchmarkRouteMatched = root.match("/api/v1/users/list/route-099", ctx)
 	}
 }
 
@@ -644,9 +911,10 @@ func BenchmarkRouteMatchStaticLarge(b *testing.B) {
 func BenchmarkRouteMatchStaticDeep(b *testing.B) {
 	root := buildDeepStaticRouter(5)
 	ctx := newMockCtx()
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		root.match("/levela/levelb/levelc/leveld/levele", ctx)
+		benchmarkRouteHandlers, benchmarkRouteMatched = root.match("/levela/levelb/levelc/leveld/levele", ctx)
 	}
 }
 
@@ -655,9 +923,10 @@ func BenchmarkRouteMatchStaticDeep10(b *testing.B) {
 	root := buildDeepStaticRouter(10)
 	path := "/levela/levelb/levelc/leveld/levele/levelf/levelg/levelh/leveli/levelj"
 	ctx := newMockCtx()
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		root.match(path, ctx)
+		benchmarkRouteHandlers, benchmarkRouteMatched = root.match(path, ctx)
 	}
 }
 
@@ -668,9 +937,10 @@ func BenchmarkRawMatchOneParam(b *testing.B) {
 	root := &RouteNode{nType: root}
 	root.addRoute("/users/:id", HandlerFuncs{func(Ctx) error { return nil }})
 	ctx := newMockCtx()
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		root.match("/users/42", ctx)
+		benchmarkRouteHandlers, benchmarkRouteMatched = root.match("/users/42", ctx)
 		ctx.params = nil
 	}
 }
@@ -680,9 +950,10 @@ func BenchmarkRawMatchMultiParam(b *testing.B) {
 	root := &RouteNode{nType: root}
 	root.addRoute("/orgs/:orgId/teams/:teamId/users/:userId", HandlerFuncs{func(Ctx) error { return nil }})
 	ctx := newMockCtx()
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		root.match("/orgs/acme/teams/eng/users/alice", ctx)
+		benchmarkRouteHandlers, benchmarkRouteMatched = root.match("/orgs/acme/teams/eng/users/alice", ctx)
 		ctx.params = nil
 	}
 }
@@ -692,9 +963,10 @@ func BenchmarkRouteMatchCatchAll(b *testing.B) {
 	root := &RouteNode{nType: root}
 	root.addRoute("/static/*filepath", HandlerFuncs{func(Ctx) error { return nil }})
 	ctx := newMockCtx()
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		root.match("/static/css/app.css", ctx)
+		benchmarkRouteHandlers, benchmarkRouteMatched = root.match("/static/css/app.css", ctx)
 		ctx.params = nil
 	}
 }
@@ -704,9 +976,10 @@ func BenchmarkRouteMatchCatchAllRoot(b *testing.B) {
 	root := &RouteNode{nType: root}
 	root.addRoute("/*", HandlerFuncs{func(Ctx) error { return nil }})
 	ctx := newMockCtx()
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		root.match("/anything/goes/here", ctx)
+		benchmarkRouteHandlers, benchmarkRouteMatched = root.match("/anything/goes/here", ctx)
 		ctx.params = nil
 	}
 }
@@ -719,13 +992,12 @@ func BenchmarkRawMatchOneParamPooled(b *testing.B) {
 	root.addRoute("/users/:id", HandlerFuncs{func(Ctx) error { return nil }})
 	ctx := newMockCtx()
 	ctx.params = make(map[string]string, 4)
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		root.match("/users/42", ctx)
+		benchmarkRouteHandlers, benchmarkRouteMatched = root.match("/users/42", ctx)
 		// 模拟 release(): 清空 map 而非置 nil
-		for k := range ctx.params {
-			delete(ctx.params, k)
-		}
+		clear(ctx.params)
 	}
 }
 
@@ -735,12 +1007,11 @@ func BenchmarkRawMatchMultiParamPooled(b *testing.B) {
 	root.addRoute("/orgs/:orgId/teams/:teamId/users/:userId", HandlerFuncs{func(Ctx) error { return nil }})
 	ctx := newMockCtx()
 	ctx.params = make(map[string]string, 4)
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		root.match("/orgs/acme/teams/eng/users/alice", ctx)
-		for k := range ctx.params {
-			delete(ctx.params, k)
-		}
+		benchmarkRouteHandlers, benchmarkRouteMatched = root.match("/orgs/acme/teams/eng/users/alice", ctx)
+		clear(ctx.params)
 	}
 }
 
@@ -786,28 +1057,102 @@ func BenchmarkRouteMatchMixed(b *testing.B) {
 		root.addRoute(r, handler)
 	}
 	ctx := newMockCtx()
-	b.ResetTimer()
+	ctx.params = make(map[string]string, 4)
 	b.Run("static", func(b *testing.B) {
+		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {
-			root.match("/api/v1/products", ctx)
+			benchmarkRouteHandlers, benchmarkRouteMatched = root.match("/api/v1/products", ctx)
 		}
 	})
 	b.Run("param-end", func(b *testing.B) {
+		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {
-			root.match("/api/v1/users/42", ctx)
-			ctx.params = nil
+			benchmarkRouteHandlers, benchmarkRouteMatched = root.match("/api/v1/users/42", ctx)
+			clear(ctx.params)
 		}
 	})
 	b.Run("param-mid", func(b *testing.B) {
+		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {
-			root.match("/api/v1/categories/electronics/products", ctx)
-			ctx.params = nil
+			benchmarkRouteHandlers, benchmarkRouteMatched = root.match("/api/v1/categories/electronics/products", ctx)
+			clear(ctx.params)
 		}
 	})
 	b.Run("multi-param", func(b *testing.B) {
+		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {
-			root.match("/api/v1/users/42/orders/15", ctx)
-			ctx.params = nil
+			benchmarkRouteHandlers, benchmarkRouteMatched = root.match("/api/v1/users/42/orders/15", ctx)
+			clear(ctx.params)
 		}
 	})
+}
+
+func BenchmarkRouteNodeFindChildFanout(b *testing.B) {
+	for _, size := range []int{4, 26, 64} {
+		indices := make([]byte, size)
+		children := make([]*RouteNode, size)
+		for i := range size {
+			indices[i] = byte(i + 1)
+			children[i] = &RouteNode{path: string(indices[i]), nType: static}
+		}
+		node := &RouteNode{indices: string(indices), children: children}
+		target := indices[len(indices)-1]
+
+		b.Run(fmt.Sprintf("fanout-%d-hit-last", size), func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				benchmarkRouteNode = node.findChild(target)
+			}
+		})
+		b.Run(fmt.Sprintf("fanout-%d-miss", size), func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				benchmarkRouteNode = node.findChild(255)
+			}
+		})
+	}
+}
+
+func BenchmarkRouteNodeRegistration(b *testing.B) {
+	handler := HandlerFuncs{func(Ctx) error { return nil }}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		root := &RouteNode{nType: root}
+		root.addRoute("/api/v1/orgs/:orgId/teams/:teamId/users/:userId", handler)
+		benchmarkRouteNode = root
+	}
+}
+
+func BenchmarkRouteNodeAddRemoveChurn(b *testing.B) {
+	handler := HandlerFuncs{func(Ctx) error { return nil }}
+	root := &RouteNode{nType: root}
+	root.addRoute("/api/v1/stable", handler)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		root.addRoute("/api/v1/dynamic/:id", handler)
+		root.removeRoute("/api/v1/dynamic/:id")
+	}
+	benchmarkRouteNode = root
+}
+
+func BenchmarkRouteNodeMatchAfterRemovalCompaction(b *testing.B) {
+	const depth = 256
+	handler := HandlerFuncs{func(Ctx) error { return nil }}
+	root := &RouteNode{nType: root}
+	for i := 1; i <= depth; i++ {
+		root.addRoute("/"+strings.Repeat("a", i), handler)
+	}
+	for i := 1; i < depth; i++ {
+		root.removeRoute("/" + strings.Repeat("a", i))
+	}
+	path := "/" + strings.Repeat("a", depth)
+	ctx := newMockCtx()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		benchmarkRouteHandlers, benchmarkRouteMatched = root.match(path, ctx)
+	}
 }
