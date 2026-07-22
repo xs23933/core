@@ -231,16 +231,6 @@ func decodeAutomaticHTTPRouteCatalog(ownerID string, value []byte) (*routeSource
 	return &routeSourceValue{Catalog: &catalog}, nil
 }
 
-func runRouteWatchLoop(
-	ctx context.Context,
-	source routeWatchSource,
-	replace func(routeSnapshot),
-	apply func([]routeEvent),
-	wait func(context.Context, int) bool,
-) {
-	runRouteWatchLoopFrom(ctx, source, nil, replace, apply, wait)
-}
-
 func runRouteWatchLoopFrom(
 	ctx context.Context,
 	source routeWatchSource,

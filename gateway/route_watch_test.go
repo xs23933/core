@@ -34,7 +34,7 @@ func TestRouteWatchAppliesDirectEventAfterInitialSnapshot(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	current := emptyRouteSnapshot()
-	runRouteWatchLoop(ctx, source, func(snapshot routeSnapshot) {
+	runRouteWatchLoopFrom(ctx, source, nil, func(snapshot routeSnapshot) {
 		current = snapshot
 	}, func(events []routeEvent) {
 		current = current.withRouteBatch(events)
@@ -107,7 +107,7 @@ func TestRouteWatchResnapshotsAfterErrorCloseOrCompaction(t *testing.T) {
 			current := emptyRouteSnapshot()
 			var installed []routeSnapshot
 
-			runRouteWatchLoop(ctx, source, func(snapshot routeSnapshot) {
+			runRouteWatchLoopFrom(ctx, source, nil, func(snapshot routeSnapshot) {
 				current = snapshot
 				installed = append(installed, snapshot)
 			}, func(events []routeEvent) {
@@ -226,9 +226,10 @@ func TestRouteWatchBackoffIncreasesUntilHealthyProgress(t *testing.T) {
 	}}
 	var waits []int
 	applied := 0
-	runRouteWatchLoop(
+	runRouteWatchLoopFrom(
 		context.Background(),
 		source,
+		nil,
 		func(routeSnapshot) {},
 		func([]routeEvent) { applied++ },
 		func(_ context.Context, failures int) bool {

@@ -97,6 +97,40 @@ func TestServicePoolSharesSchemaAndUsesStableRoundRobin(t *testing.T) {
 	}
 }
 
+func TestServicePoolGetExceptReturnsReadyAlternate(t *testing.T) {
+	schema := &ReflectionSchema{methods: map[string]*MethodDescriptor{}}
+	connector := func(_ context.Context, _ *core.Core, _, addr string, _ *ReflectionSchema) (*ReflectionProxy, error) {
+		return &ReflectionProxy{
+			conn:    &grpc.ClientConn{},
+			schema:  schema,
+			addr:    addr,
+			ready:   func() bool { return true },
+			closeFn: func() error { return nil },
+		}, nil
+	}
+	pool := newServicePoolWithConnector(nil, "billing", connector)
+	first, _, err := pool.AddOrUpdateInstance("a", "addr-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _, err := pool.AddOrUpdateInstance("b", "addr-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := pool.GetExcept(first); got != second {
+		t.Fatalf("alternate = %p, want second proxy %p", got, second)
+	}
+	if got := pool.GetExcept(second); got != first {
+		t.Fatalf("alternate = %p, want first proxy %p", got, first)
+	}
+
+	pool.RemoveInstance("b")
+	if got := pool.GetExcept(first); got != nil {
+		t.Fatalf("alternate with one instance = %p, want nil", got)
+	}
+}
+
 func TestServicePoolAddressUpdateReusesSchemaAndClosesOnlyOldConnection(t *testing.T) {
 	var mu sync.Mutex
 	var schemaBuilds int

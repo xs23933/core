@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -242,6 +243,41 @@ func TestRouteStateMinimalEtcdReplacementTransitionsCoreRouteTree(t *testing.T) 
 	}))
 	assertMinimalRouteStateResponse(t, app, "/api/users/42", http.StatusServiceUnavailable, "service new-service unavailable")
 	assertMinimalRouteStateResponse(t, app, "/api/stale/42", http.StatusNotFound, "")
+}
+
+func TestAutoGRPCRouteRemainsAvailableAs503AfterFinalInstanceRemoval(t *testing.T) {
+	connector := func(_ context.Context, _ *core.Core, _, addr string, schema *ReflectionSchema) (*ReflectionProxy, error) {
+		if schema == nil {
+			schema = &ReflectionSchema{methods: map[string]*MethodDescriptor{}}
+		}
+		return lifecycleTestProxy(addr, schema, nil), nil
+	}
+	gw := newLifecycleTestGateway(connector)
+	t.Cleanup(func() { _ = gw.Close() })
+
+	const storageKey = "runtime:auto-grpc/billing/route"
+	definition := minimalRouteStateGRPCDefinition(
+		"route",
+		gatewayroute.SourceAutoGRPC,
+		"billing",
+		"billing",
+		"/api/billing/status",
+		"/billing.Service/GetStatus",
+	)
+	gw.grpcServiceRoutes["billing"] = map[string]bool{storageKey: true}
+	gw.applyRouteBatch([]routeEvent{{
+		StorageKey: storageKey,
+		Value:      &routeSourceValue{Definition: definition},
+	}})
+
+	pool := gw.connPool.SetDesiredInstance(gw.app, "billing", "billing-a", "addr-a")
+	if _, _, err := pool.AddOrUpdateInstanceContext(context.Background(), "billing-a", "addr-a"); err != nil {
+		t.Fatal(err)
+	}
+	pool.MarkInstanceUndesired("billing-a")
+	gw.removeGRPCInstance("billing", "billing-a")
+
+	assertMinimalRouteStateResponse(t, gw.app, "/api/billing/status", http.StatusServiceUnavailable, "service billing unavailable")
 }
 
 func minimalRouteStateDefinition(id string, source gatewayroute.Source, owner, service, path string) *gatewayroute.Definition {

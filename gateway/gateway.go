@@ -307,10 +307,6 @@ func nextServiceWatchRevision(revision int64) int64 {
 	return revision + 1
 }
 
-func runServiceWatchLoop(ctx context.Context, source serviceWatchSource, reconcile func(serviceSnapshot), wait func(context.Context, int) bool) {
-	runServiceWatchLoopFrom(ctx, source, nil, reconcile, wait)
-}
-
 func runServiceWatchLoopFrom(ctx context.Context, source serviceWatchSource, initial *serviceSnapshotRevision, reconcile func(serviceSnapshot), wait func(context.Context, int) bool) {
 	failures := 0
 	for ctx.Err() == nil {
@@ -697,14 +693,6 @@ func parseServiceInstance(data []byte) (*serviceInstance, error) {
 	return &info, nil
 }
 
-// discoverAndConnectServices 启动时发现并连接所有服务
-func (gw *EtcdGateway) discoverAndConnectServices() {
-	source := etcdServiceWatchSource{client: gw.etcdCli, serviceRoot: gw.serviceRoot, launch: gw.launchTask}
-	gw.launchTask(func() {
-		runServiceWatchLoop(gw.watchCtx, source, gw.reconcileServiceSnapshot, waitRouteWatchBackoff)
-	})
-}
-
 // connectInstance 连接单个服务实例（watch PUT 触发），带重试
 func (gw *EtcdGateway) connectInstance(serviceName, instanceID, addr string) (*ReflectionProxy, bool, error) {
 	key := connectInstanceKey(serviceName, instanceID)
@@ -808,16 +796,6 @@ func connectInstanceKey(serviceName, instanceID string) string {
 	return serviceName + "/" + instanceID
 }
 
-// handleServiceDelete preserves etcd watch order for HTTP targets while the
-// potentially slow gRPC connection cleanup remains asynchronous.
-func (gw *EtcdGateway) handleServiceDelete(serviceName, instanceID string) {
-	gw.removeHTTPInstance(serviceName, instanceID)
-	if pool := gw.connPool.Get(serviceName); pool != nil {
-		pool.MarkInstanceUndesired(instanceID)
-	}
-	gw.launchTask(func() { gw.removeGRPCInstance(serviceName, instanceID) })
-}
-
 func (gw *EtcdGateway) removeGRPCInstance(serviceName, instanceID string) {
 	pool := gw.connPool.Get(serviceName)
 	if pool == nil {
@@ -830,16 +808,8 @@ func (gw *EtcdGateway) removeGRPCInstance(serviceName, instanceID string) {
 
 	// 如果没有实例了，移除整个池
 	if gw.connPool.RemoveIfEmpty(serviceName, pool) {
-		gw.removeAutoRegisteredRoutes(serviceName)
 		core.Warn("[Gateway] service %s fully disconnected after removing instance %s", serviceName, instanceID)
 	}
-}
-
-// watchEtcdServices 监听 etcd 中的服务变化，watch channel 意外关闭时自动重试
-func (gw *EtcdGateway) watchEtcdServices(startRev int64) {
-	_ = startRev // Recovery always begins with a full authoritative snapshot.
-	source := etcdServiceWatchSource{client: gw.etcdCli, serviceRoot: gw.serviceRoot, launch: gw.launchTask}
-	runServiceWatchLoop(gw.watchCtx, source, gw.reconcileServiceSnapshot, waitRouteWatchBackoff)
 }
 
 func (gw *EtcdGateway) reconcileServiceSnapshot(snapshot serviceSnapshot) {
@@ -974,24 +944,6 @@ func (gw *EtcdGateway) autoRegisterRoutes(serviceName string, proxy *ReflectionP
 	gw.applyRouteBatchLocked(events)
 }
 
-func (gw *EtcdGateway) removeAutoRegisteredRoutes(serviceName string) {
-	gw.mu.Lock()
-	defer gw.mu.Unlock()
-	old := gw.grpcServiceRoutes[serviceName]
-	if len(old) == 0 {
-		delete(gw.grpcServiceRoutes, serviceName)
-		delete(gw.grpcServiceSchemas, serviceName)
-		return
-	}
-	events := make([]routeEvent, 0, len(old))
-	for storageKey := range old {
-		events = append(events, routeEvent{StorageKey: storageKey, Deleted: true})
-	}
-	delete(gw.grpcServiceRoutes, serviceName)
-	delete(gw.grpcServiceSchemas, serviceName)
-	gw.applyRouteBatchLocked(events)
-}
-
 // grpcToHTTP 将 gRPC 方法转换为 HTTP 路由
 // e.g. ("v1.auth", "v1.auth.UserService", "PostLogin") -> ("POST", "/v1/auth/user/login")
 func grpcToHTTP(pkg, service, method string) (httpMethod, path string) {
@@ -1057,39 +1009,6 @@ func nextRouteWatchRevision(loadedRevision int64) int64 {
 		return 0
 	}
 	return loadedRevision + 1
-}
-
-func (gw *EtcdGateway) addOrUpdateRoute(route *Route) {
-	if err := normalizeAndValidateRoute(route); err != nil {
-		core.Warn("[Gateway] ignore invalid route: %v", err)
-		return
-	}
-	if route.ID == "" {
-		route.ID = routeID(route)
-	}
-	storageKey := gw.prefix + route.ID
-	if gw.prefix == "" {
-		storageKey = route.ID
-	}
-	gw.applyRouteBatch([]routeEvent{{StorageKey: storageKey, Value: &routeSourceValue{Definition: route}}})
-}
-
-func (gw *EtcdGateway) removeRouteByID(routeID string) {
-	snapshot := gw.loadRouteSnapshot()
-	records := snapshot.recordsByID[routeID]
-	if len(records) == 0 {
-		return
-	}
-	events := make([]routeEvent, 0, len(records))
-	seen := make(map[string]struct{}, len(records))
-	for _, record := range records {
-		if _, exists := seen[record.StorageKey]; exists {
-			continue
-		}
-		seen[record.StorageKey] = struct{}{}
-		events = append(events, routeEvent{StorageKey: record.StorageKey, Deleted: true})
-	}
-	gw.applyRouteBatch(events)
 }
 
 func (gw *EtcdGateway) registerRoute(route *Route) {
@@ -1174,6 +1093,13 @@ func (gw *EtcdGateway) createProxyHandler(route *Route) core.HandlerFunc {
 		defer cancel()
 
 		jsonResp, err := proxy.Invoke(callCtx, route.GRPCMethod, jsonReq)
+		if err != nil && gatewayRequestCanRetry(ctx.Method()) && status.Code(err) == codes.Unavailable {
+			if pool := gw.connPool.Get(route.ServiceName); pool != nil {
+				if alternate := pool.GetExcept(proxy); alternate != nil {
+					jsonResp, err = alternate.Invoke(callCtx, route.GRPCMethod, jsonReq)
+				}
+			}
+		}
 		if err != nil {
 			if st, ok := status.FromError(err); ok {
 				core.Erro("[Gateway] gRPC proxy upstream error: grpc=%s code=%s message=%q",

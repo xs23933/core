@@ -363,6 +363,25 @@ func (p *ServicePool) Get() *ReflectionProxy {
 	return all[int(start%uint64(n))]
 }
 
+// GetExcept returns a ready proxy other than excluded. It is used for one
+// alternate-instance retry and never falls back to an unready connection.
+func (p *ServicePool) GetExcept(excluded *ReflectionProxy) *ReflectionProxy {
+	all := p.loadState().all
+	n := len(all)
+	if n < 2 {
+		return nil
+	}
+
+	start := p.idx.Add(1) - 1
+	for offset := 0; offset < n; offset++ {
+		proxy := all[(int(start)+offset)%n]
+		if proxy != excluded && proxy.isReady() {
+			return proxy
+		}
+	}
+	return nil
+}
+
 func (p *ServicePool) Size() int {
 	return len(p.loadState().byID)
 }
@@ -403,15 +422,6 @@ func (p *ServicePool) Close() {
 	for _, proxy := range state.byID {
 		_ = proxy.Close()
 	}
-}
-
-func (p *ServicePool) removable() bool {
-	if p == nil {
-		return true
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return len(p.loadState().byID) == 0 && len(p.desired) == 0
 }
 
 func (p *ServicePool) markClosedIfRemovable() bool {

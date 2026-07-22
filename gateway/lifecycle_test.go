@@ -316,7 +316,7 @@ func TestServiceWatchResnapshotReconcilesMissedDeleteAndUsesKeyID(t *testing.T) 
 	ctx, cancel := context.WithCancel(gw.watchCtx)
 	defer cancel()
 	installed := 0
-	runServiceWatchLoop(ctx, source, func(snapshot serviceSnapshot) {
+	runServiceWatchLoopFrom(ctx, source, nil, func(snapshot serviceSnapshot) {
 		gw.reconcileServiceSnapshot(snapshot)
 		installed++
 		if installed == 2 {
@@ -376,7 +376,7 @@ func TestServiceWatchResnapshotsAfterCloseOrError(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			var installed []serviceSnapshot
-			runServiceWatchLoop(ctx, source, func(snapshot serviceSnapshot) {
+			runServiceWatchLoopFrom(ctx, source, nil, func(snapshot serviceSnapshot) {
 				installed = append(installed, cloneServiceSnapshot(snapshot))
 				if len(installed) == 2 {
 					cancel()

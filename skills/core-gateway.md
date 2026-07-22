@@ -161,7 +161,11 @@ etcd:
 
 `service_addr` 必须是 Gateway 进程可访问的地址。在容器或跨主机部署中，不要填写只对微服务自身有效的 `127.0.0.1`。
 
+同一 `service_name` 下不同 `service_id` 会参与轮询。`GET`/`HEAD` 遇到连接失败时最多换一个实例重试一次；写请求不自动重放。对故障摘除时延敏感时可显式设置 `ttl: 5`，框架默认仍为 10 秒。
+
 gRPC 微服务不需要调用 `RegisterHTTPRoute`。它只需在 `Listen` / `Run` 前注册 protobuf service 并调用 `EnableEtcdRegistry`，Gateway 会通过 reflection 自动生成路由。
+
+gRPC 服务全部离线时，Gateway 保留已自动生成的路由并返回 `503`；任一实例恢复并重新注册后继续使用原路由。
 
 内部 gRPC 契约不得自动暴露为 HTTP。Gateway 配置 `gateway.grpc_service_excludes`，使用完整 service 名精确排除：
 

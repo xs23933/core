@@ -154,10 +154,32 @@ func routeID(route *Route) string {
 	return core.SHA256(raw)
 }
 
+func gatewayRequestCanRetry(method string) bool {
+	return method == http.MethodGet || method == http.MethodHead
+}
+
+type httpProxyRetryContextKey struct{}
+
+type httpProxyRetryState struct {
+	instanceID string
+	retried    bool
+}
+
 func (gw *EtcdGateway) createHTTPProxyHandler(route *Route) core.HandlerFunc {
-	proxy := &httputil.ReverseProxy{
+	var proxy *httputil.ReverseProxy
+	proxy = &httputil.ReverseProxy{
 		Director: func(*http.Request) {},
-		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, proxyErr error) {
+		ErrorHandler: func(w http.ResponseWriter, req *http.Request, proxyErr error) {
+			state, _ := req.Context().Value(httpProxyRetryContextKey{}).(httpProxyRetryState)
+			if gatewayRequestCanRetry(req.Method) && !state.retried && req.Context().Err() == nil {
+				if alternate := gw.getHTTPInstanceExcept(route.ServiceName, state.instanceID); alternate != nil {
+					retryState := httpProxyRetryState{instanceID: alternate.ID, retried: true}
+					retryReq := req.Clone(context.WithValue(req.Context(), httpProxyRetryContextKey{}, retryState))
+					setHTTPProxyTarget(retryReq, alternate.Target)
+					proxy.ServeHTTP(w, retryReq)
+					return
+				}
+			}
 			core.Erro("[Gateway] HTTP proxy %s failed: %v", route.ServiceName, proxyErr)
 			w.Header().Set(core.HeaderContentType, core.MIMEApplicationJSONCharsetUTF8)
 			w.WriteHeader(http.StatusBadGateway)
@@ -173,7 +195,9 @@ func (gw *EtcdGateway) createHTTPProxyHandler(route *Route) core.HandlerFunc {
 			})
 		}
 
-		req := ctx.Request().Clone(ctx.Context())
+		state := httpProxyRetryState{instanceID: instance.ID}
+		reqCtx := context.WithValue(ctx.Context(), httpProxyRetryContextKey{}, state)
+		req := ctx.Request().Clone(reqCtx)
 		setHTTPProxyTarget(req, instance.Target)
 		proxy.ServeHTTP(ctx.Response(), req)
 		return nil
@@ -387,6 +411,14 @@ func (gw *EtcdGateway) removeHTTPInstance(serviceName, instanceID string) {
 }
 
 func (gw *EtcdGateway) getHTTPInstance(serviceName string) *HTTPInstance {
+	return gw.selectHTTPInstance(serviceName, "")
+}
+
+func (gw *EtcdGateway) getHTTPInstanceExcept(serviceName, excludedID string) *HTTPInstance {
+	return gw.selectHTTPInstance(serviceName, excludedID)
+}
+
+func (gw *EtcdGateway) selectHTTPInstance(serviceName, excludedID string) *HTTPInstance {
 	serviceInstances := gw.loadHTTPInstances()[serviceName]
 	if serviceInstances == nil || len(serviceInstances.instances) == 0 {
 		return nil
@@ -396,5 +428,11 @@ func (gw *EtcdGateway) getHTTPInstance(serviceName string) *HTTPInstance {
 		return nil
 	}
 	position := index.Add(1) - 1
-	return serviceInstances.instances[int(position%uint64(len(serviceInstances.instances)))]
+	for offset := range len(serviceInstances.instances) {
+		instance := serviceInstances.instances[(int(position)+offset)%len(serviceInstances.instances)]
+		if instance.ID != excludedID {
+			return instance
+		}
+	}
+	return nil
 }

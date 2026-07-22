@@ -325,14 +325,21 @@ func TestHTTPRouteRegisteredButMissingInstanceReturnsUnavailable(t *testing.T) {
 	gw.storeHTTPInstances(make(map[string]*httpServiceInstances))
 	gw.storeHTTPIndexes(make(map[string]*atomic.Uint64))
 
-	gw.addOrUpdateRoute(&Route{
+	definition := &Route{
 		Protocol:     RouteProtocolHTTP,
 		Method:       http.MethodGet,
 		Path:         "/trace.js",
 		ServiceName:  "analytics",
 		UpstreamPath: "/trace.js",
 		Enabled:      true,
-	})
+	}
+	if err := prepareRoute(definition); err != nil {
+		t.Fatal(err)
+	}
+	gw.applyRouteBatch([]routeEvent{{
+		StorageKey: "test:" + definition.ID,
+		Value:      &routeSourceValue{Definition: definition},
+	}})
 
 	req := httptest.NewRequest(http.MethodGet, "/trace.js", nil)
 	rec := httptest.NewRecorder()
@@ -340,44 +347,6 @@ func TestHTTPRouteRegisteredButMissingInstanceReturnsUnavailable(t *testing.T) {
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503; route should match before upstream lookup", rec.Code)
-	}
-}
-
-func TestRemovingOldRouteIDKeepsReplacementForSameMethodPath(t *testing.T) {
-	app := core.New()
-	gw := &EtcdGateway{}
-	gw.app = app
-	gw.connPool = NewConnectionPool()
-	gw.storeHTTPInstances(make(map[string]*httpServiceInstances))
-	gw.storeHTTPIndexes(make(map[string]*atomic.Uint64))
-
-	gw.addOrUpdateRoute(&Route{
-		ID:           "old-trace-route",
-		Protocol:     RouteProtocolHTTP,
-		Method:       http.MethodGet,
-		Path:         "/trace.js",
-		ServiceName:  "analytics",
-		UpstreamPath: "/old-trace.js",
-		Enabled:      true,
-	})
-	gw.addOrUpdateRoute(&Route{
-		ID:           "new-trace-route",
-		Protocol:     RouteProtocolHTTP,
-		Method:       http.MethodGet,
-		Path:         "/trace.js",
-		ServiceName:  "analytics",
-		UpstreamPath: "/trace.js",
-		Enabled:      true,
-	})
-
-	gw.removeRouteByID("old-trace-route")
-
-	req := httptest.NewRequest(http.MethodGet, "/trace.js", nil)
-	rec := httptest.NewRecorder()
-	app.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want 503; replacement route should remain matched", rec.Code)
 	}
 }
 

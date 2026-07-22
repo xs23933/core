@@ -594,6 +594,7 @@ return app.Listen(":8080")
 * 某服务需要 TLS 时，在首次 dial 前调用一次 `ConfigureGRPCClient(serviceName, GRPCClientConfig{TransportCredentials: ...})`。Core 按服务隔离并克隆 credentials；配置服务禁止再传不透明旧 dial options。
 * 网关启动用 `app.EnableEtcdDiscovery(nil)` + `gateway.NewEtcdGateway(app)`。
 * Gateway 按发现到的逻辑服务名选择 `ConfigureGRPCClient` 配置；必须在 `NewEtcdGateway` 前配置。
+* 同一服务的多个 `service_id` 参与轮询；`GET`/`HEAD` 连接失败只换一个实例重试一次，写请求不重放。gRPC 全部离线时保留自动路由并返回 `503`。
 
 网关路由命名：
 

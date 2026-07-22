@@ -782,6 +782,7 @@ if !succeeded {
 注意：
 
 - `service_addr` 必须是客户端和网关能访问到的地址，不一定等于本机监听地址。
+- 对故障摘除时延敏感时可显式设置 `ttl: 5`；框架默认仍为 10 秒。
 - 使用网关自动注册路由时，优先用 `EnableEtcdRegistry`，因为它会自动开启 reflection。
 - `RegisterGRPCService` 要在 `Listen` 或 `Run` 前调用。
 - `ConfigureGRPCServer` 必须在 `RegisterGRPCService`、`GetGRPCServer` 和 `EnableEtcdRegistry` 之前调用。
@@ -868,6 +869,8 @@ app.Listen(":8080")
 ```
 
 Gateway 的每个 `ServicePool` 使用 etcd 中的逻辑服务名选择 Core 客户端配置，因此可以只为一个 TLS 服务配置 credentials，而其他未迁移服务保持现有明文连接。配置必须早于 `gateway.NewEtcdGateway(app)`。
+
+同一逻辑服务的多个 `service_id` 会参与轮询。`GET`/`HEAD` 遇到上游连接失败时，Gateway 最多改用另一个实例重试一次；写请求不会自动重放。gRPC 服务全部离线时，已自动生成的路由会保留并返回 `503`，实例恢复后继续使用原路由。
 
 当请求返回 `service <name> unavailable` 时，优先看 Gateway 日志中的 `state={...}` 诊断字段：
 

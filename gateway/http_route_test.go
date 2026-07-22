@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -83,6 +85,94 @@ func TestHTTPProxyPreservesRequest(t *testing.T) {
 	if !reflect.DeepEqual(got.header, []string{"one", "two"}) {
 		t.Fatalf("upstream X-Multi = %#v, want both original values", got.header)
 	}
+}
+
+func TestHTTPProxyRetriesReadOnlyRequestOnAnotherInstance(t *testing.T) {
+	var liveCalls atomic.Int32
+	live := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		liveCalls.Add(1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	t.Cleanup(live.Close)
+
+	dead := closedHTTPOrigin(t)
+	app := core.New()
+	gw := &EtcdGateway{app: app, connPool: NewConnectionPool()}
+	gw.storeHTTPInstances(make(map[string]*httpServiceInstances))
+	if err := gw.addHTTPInstance("files", "a-dead", dead); err != nil {
+		t.Fatal(err)
+	}
+	if err := gw.addHTTPInstance("files", "b-live", live.URL); err != nil {
+		t.Fatal(err)
+	}
+	gw.registerRoute(&Route{
+		Protocol:    RouteProtocolHTTP,
+		Method:      http.MethodGet,
+		Path:        "/api/files",
+		ServiceName: "files",
+		Enabled:     true,
+	})
+
+	response := httptest.NewRecorder()
+	app.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/files?name=a", nil))
+
+	if response.Code != http.StatusOK || response.Body.String() != "ok" {
+		t.Fatalf("response = %d %q, want 200 ok", response.Code, response.Body.String())
+	}
+	if got := liveCalls.Load(); got != 1 {
+		t.Fatalf("live upstream calls = %d, want 1", got)
+	}
+}
+
+func TestHTTPProxyDoesNotRetryWriteRequest(t *testing.T) {
+	var liveCalls atomic.Int32
+	live := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		liveCalls.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(live.Close)
+
+	dead := closedHTTPOrigin(t)
+	app := core.New()
+	gw := &EtcdGateway{app: app, connPool: NewConnectionPool()}
+	gw.storeHTTPInstances(make(map[string]*httpServiceInstances))
+	if err := gw.addHTTPInstance("files", "a-dead", dead); err != nil {
+		t.Fatal(err)
+	}
+	if err := gw.addHTTPInstance("files", "b-live", live.URL); err != nil {
+		t.Fatal(err)
+	}
+	gw.registerRoute(&Route{
+		Protocol:    RouteProtocolHTTP,
+		Method:      http.MethodPost,
+		Path:        "/api/files",
+		ServiceName: "files",
+		Enabled:     true,
+	})
+
+	response := httptest.NewRecorder()
+	app.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/files", strings.NewReader(`{"name":"a"}`)))
+
+	if response.Code != http.StatusBadGateway {
+		t.Fatalf("response status = %d, want 502; body=%s", response.Code, response.Body.String())
+	}
+	if got := liveCalls.Load(); got != 0 {
+		t.Fatalf("live upstream calls = %d, want no write retry", got)
+	}
+}
+
+func closedHTTPOrigin(t *testing.T) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return "http://" + addr
 }
 
 func TestHTTPServiceOriginValidation(t *testing.T) {
