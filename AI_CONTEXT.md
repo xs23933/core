@@ -595,6 +595,10 @@ return app.Listen(":8080")
 * 网关启动用 `app.EnableEtcdDiscovery(nil)` + `gateway.NewEtcdGateway(app)`。
 * Gateway 按发现到的逻辑服务名选择 `ConfigureGRPCClient` 配置；必须在 `NewEtcdGateway` 前配置。
 * 同一服务的多个 `service_id` 参与轮询；`GET`/`HEAD` 连接失败只换一个实例重试一次，写请求不重放。gRPC 全部离线时保留自动路由并返回 `503`。
+* HTTP Handler 自动发布默认关闭；开启 `gateway.auto_http_routes.enabled` 时必须设置 `include_prefixes`，可用 `exclude_prefixes` 排除内部路径，并配置 Gateway 可访问的 `etcd.http_addr`。
+* HTTP 自动发布只收集嵌入 `core.Handler` 后按方法名生成的路由；`app.GET/POST` 等手写路由不收集。启动时同步一次完整目录，不创建周期 worker。
+* HTTP 自动发布顺序固定为 `core.New` → `EnableEtcdRegistry` → `Listen/Run`；`RegHandle` 只登记模块，Handler 路由在启动加载阶段生成，随后写入 etcd。registry 未初始化或同步失败会使启动返回错误。
+* HTTP 手动批量注册使用 `gateway.RegisterHTTPRoutes`，单条使用 `RegisterHTTPRoute`；HTTP 路由不支持 path rewrite 或静态 Header 注入。
 
 网关路由命名：
 

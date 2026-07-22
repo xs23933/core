@@ -7,7 +7,7 @@ skills/
 ├── core-middleware.md       # 开发中间件
 ├── core-grpc.md             # gRPC 服务端（TLS/interceptor / RegisterGRPCService / EnableGRPC / EnableEtcdRegistry）
 ├── core-grpc-client.md      # gRPC 客户端（GrpcClient / GrpcClientAt / 每服务 TLS / etcd discovery）
-├── core-gateway.md          # HTTP -> gRPC 网关（自动路由、管理接口、metadata）
+├── core-gateway.md          # etcd HTTP/gRPC 网关（自动/手动路由、负载均衡、metadata）
 ├── core-websocket.md        # WebSocket 处理（连接管理/按用户推送/广播）
 ├── core-sse.md              # SSE 服务端推送（SSEWrite/SSESend/EventHub）
 ├── core-page.md             # 分页查询实现

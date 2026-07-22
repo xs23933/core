@@ -13,7 +13,9 @@ tags: [go, core-framework, gateway, grpc, etcd, http, reflection]
 - "启动网关"
 - "HTTP 转 gRPC"
 - "HTTP 微服务注册 gateway"
+- "gateway.auto_http_routes"
 - "gateway.RegisterHTTPRoute"
+- "gateway.RegisterHTTPRoutes"
 - "gRPC 自动路由"
 - "gateway.NewEtcdGateway"
 - "网关管理接口"
@@ -25,7 +27,7 @@ tags: [go, core-framework, gateway, grpc, etcd, http, reflection]
 
 1. HTTP 或 gRPC 业务服务调用 `EnableEtcdRegistry` 注册服务实例。
 2. 网关调用 `EnableEtcdDiscovery` 连接 etcd。
-3. HTTP 服务调用 `gateway.RegisterHTTPRoute` 显式发布路由定义。
+3. HTTP 服务通过 `gateway.auto_http_routes` 自动发布 Handler 路由，或调用 `gateway.RegisterHTTPRoutes` 显式发布。
 4. gRPC 服务自动开启 reflection，由网关按方法名生成 HTTP 路由。
 5. `gateway.NewEtcdGateway(app)` 读取服务实例和路由，并代理到对应协议的上游。
 
@@ -84,14 +86,92 @@ Gateway 的 gRPC `ServicePool` 使用 etcd 实例所属的逻辑服务名调用 
 
 `EtcdDiscovery` 还提供通用的 `GrantLease`、`KeepAliveLease`、`RevokeLease`、`GetRevision` 和 `CompareAndPut`。它们只接受相对逻辑 key，并固定写入当前 namespace 的 `/config/`；revision 0 表示 create-if-absent，CAS 冲突返回 `false, nil`。这些方法适合短期在线事实，不替代业务数据库权威状态；调用方必须消费 keepalive channel、处理关闭/租约丢失并在退出前主动 revoke。
 
-## 3. HTTP 微服务显式注册
+## 3. HTTP 微服务路由注册
+
+HTTP 服务必须先调用 `EnableEtcdRegistry` 注册实例，并通过 `etcd.http_addr` 提供 Gateway 可访问的 HTTP origin。路由可以自动发布，也可以显式注册。
+
+### 3.1 自动发布 Handler 路由
+
+自动发布默认关闭，只收集嵌入 `core.Handler` 后由方法名生成的路由；`app.GET`、`app.POST` 等手写路由不会进入自动目录。
+
+```go
+package main
+
+import (
+    "log"
+
+    core "github.com/xs23933/core/v3"
+)
+
+type TaskHandler struct {
+    core.Handler
+}
+
+func (h *TaskHandler) Init() {
+    h.Prefix("/api/tasks")
+}
+
+func (h *TaskHandler) Get_id(c core.Ctx) error {
+    return c.JSON(core.Map{"id": c.Params("id")})
+}
+
+func init() {
+    // 只登记 Handler，不在 init 中连接 etcd。
+    core.RegHandle(&TaskHandler{})
+}
+
+func main() {
+    app := core.New(core.LoadConfigFile("config.yaml"))
+    // 必须在 Listen/Run 之前成功初始化 registry 和 discovery。
+    if err := app.EnableEtcdRegistry(nil); err != nil {
+        log.Fatal("enable etcd registry: ", err)
+    }
+    if err := app.Run(); err != nil {
+        log.Fatal(err)
+    }
+}
+```
+
+```yaml
+gateway:
+  auto_http_routes:
+    enabled: true
+    # enabled=true 时至少配置一个；按完整路径段匹配。
+    include_prefixes:
+      - /api
+    # 排除规则优先于包含规则。
+    exclude_prefixes:
+      - /api/internal
+
+etcd:
+  namespace: xpay
+  endpoints:
+    - 127.0.0.1:2379
+  service_name: task-service
+  service_addr: 127.0.0.1:8081
+  http_addr: http://127.0.0.1:8081
+  service_id: task-service-1
+  ttl: 5
+```
+
+调用顺序固定为 `core.New` → `EnableEtcdRegistry` → `Listen/Run`：
+
+1. Go `init` 中的 `RegHandle` 只登记 Handler，不访问 etcd。
+2. `EnableEtcdRegistry` 初始化 registry/discovery，并立即写入服务实例。
+3. `Listen` / `Run` 加载 Handler，生成方法名路由。
+4. Handler、gRPC 和 TLS 准备完成后，完整目录一次写入 `/<namespace>/gateway/routes/auto_http/<owner_id>`，随后进入 HTTP Serve。
+
+配置无效、未先成功初始化 registry/discovery 或 etcd 写入失败都会使启动返回错误并清理已启动资源；框架不启动周期发布 worker。自动 HTTP 路由的 Gateway path 与上游 path 相同，不做参数转换，path、query 和 body 由目标服务处理；不支持路径改写或静态 Header。
+
+### 3.2 显式注册 HTTP 路由
 
 HTTP 微服务需要分别注册服务实例和 HTTP 路由：
 
 - `app.EnableEtcdRegistry(nil)`：把实例写入 `/<namespace>/services/<service_name>/<service_id>`，并通过租约续期；namespace 为空时仍是 `/services/...`。
-- `gateway.RegisterHTTPRoute(app, route)`：把路由写入 `/<namespace>/gateway/routes/<route_id>`；namespace 为空时仍是 `/gateway/routes/...`。
+- `gateway.RegisterHTTPRoutes(app, routes...)`：校验完整批次后，把手动路由写入 `/<namespace>/gateway/routes/manual/<slot>`。
+- `gateway.RegisterHTTPRoute(app, route)`：单条注册的兼容封装。
 
-必须先调用 `EnableEtcdRegistry`，因为 `RegisterHTTPRoute` 通过 `app.EtcdDiscovery` 写入 etcd。一个服务有多条公开路由时，逐条调用 `RegisterHTTPRoute`。
+必须先调用 `EnableEtcdRegistry`，因为注册接口通过 `app.EtcdDiscovery` 写入 etcd。多条公开路由优先一次调用 `RegisterHTTPRoutes`；它先校验整个批次再逐条写入，不启动后台 worker。`ServiceName` 为空时使用最近一次成功的 registry identity。
 
 ```go
 package main
@@ -108,7 +188,7 @@ func main() {
     app := core.New(core.LoadConfigFile("config.yaml"))
 
     // 微服务内部真实路由。
-    app.Get("/tasks/:id", func(c core.Ctx) error {
+    app.Get("/api/tasks/:id", func(c core.Ctx) error {
         return c.JSON(core.Map{"id": c.Params("id")})
     })
 
@@ -117,13 +197,10 @@ func main() {
         log.Fatal("注册服务实例失败:", err)
     }
 
-    // 注册 Gateway 对外路由；ServiceName 为空时读取 etcd.service_name。
-    if err := gateway.RegisterHTTPRoute(app, &gateway.Route{
-        Method:       http.MethodGet,
-        Path:         "/api/tasks/:id",
-        UpstreamPath: "/tasks/:id",
-        Description:  "查询任务",
-    }); err != nil {
+    // 注册 Gateway 对外路由；HTTP 上游使用相同路径。
+    if err := gateway.RegisterHTTPRoutes(app,
+        &gateway.Route{Method: http.MethodGet, Path: "/api/tasks/:id"},
+    ); err != nil {
         log.Fatal("注册 HTTP 路由失败:", err)
     }
 
@@ -144,8 +221,9 @@ etcd:
     - 127.0.0.1:2379
   service_name: task-service
   service_addr: 127.0.0.1:8081
+  http_addr: http://127.0.0.1:8081
   service_id: task-service-1
-  ttl: 10
+  ttl: 5
   version: 1.0.0
 ```
 
@@ -155,13 +233,16 @@ etcd:
 | ---- | ---- |
 | `Method` | Gateway 对外接受的 HTTP 方法 |
 | `Path` | Gateway 对外路径 |
-| `UpstreamPath` | HTTP 微服务内部真实路径；为空时使用 `Path` |
+| `UpstreamPath` | HTTP 路由必须为空或与 `Path` 相同；不支持路径改写 |
 | `ServiceName` | 对应 etcd 服务名；为空时读取 `etcd.service_name` |
-| `Headers` | Gateway 转发到上游时附加或覆盖的请求头 |
 
-`service_addr` 必须是 Gateway 进程可访问的地址。在容器或跨主机部署中，不要填写只对微服务自身有效的 `127.0.0.1`。
+`etcd.http_addr` 必须是 Gateway 进程可访问的完整 HTTP origin，包含 `http://` 或 `https://`，且不能包含 path、query 或 fragment。在容器或跨主机部署中，不要填写只对微服务自身有效的 `127.0.0.1`。
+
+相同 HTTP method 和规范化 path 的手动路由优先于自动路由；两个不同自动来源声明不同目标时会停止激活该 slot，并在管理接口中显示冲突。
 
 同一 `service_name` 下不同 `service_id` 会参与轮询。`GET`/`HEAD` 遇到连接失败时最多换一个实例重试一次；写请求不自动重放。对故障摘除时延敏感时可显式设置 `ttl: 5`，框架默认仍为 10 秒。
+
+## 4. gRPC 自动注册
 
 gRPC 微服务不需要调用 `RegisterHTTPRoute`。它只需在 `Listen` / `Run` 前注册 protobuf service 并调用 `EnableEtcdRegistry`，Gateway 会通过 reflection 自动生成路由。
 
@@ -180,7 +261,7 @@ gateway:
 
 排除只影响 HTTP 自动路由，不关闭 reflection，也不影响内部 gRPC 客户端按服务发现调用。
 
-## 4. 自动路由命名
+### 4.1 自动路由命名
 
 网关会把 proto package、service 和 method 合成 HTTP 路由。
 如果前缀未包含 Post/Get/Put/Delete，HTTP method 默认为 POST。
@@ -322,9 +403,9 @@ Content-Type: application/json
 网关发现不到方法时按顺序检查：
 
 1. 业务服务是否调用了 `EnableEtcdRegistry`。
-2. HTTP 服务是否在 `EnableEtcdRegistry` 之后调用了 `RegisterHTTPRoute`。
+2. HTTP 自动发布是否启用了 `gateway.auto_http_routes.enabled`，并配置了命中实际路径的 `include_prefixes`；显式注册是否调用了 `RegisterHTTPRoutes` / `RegisterHTTPRoute`。
 3. 路由的 `ServiceName` 是否与 `etcd.service_name` 一致。
-4. `service_addr` 是否是网关进程可访问的地址。
+4. `etcd.http_addr` 是否是网关进程可访问且不带 path 的完整 HTTP origin。
 5. proto service 是否已在 `Listen` 前注册。
 6. gRPC 方法名是否以 `Post/Get/Put/Delete` 开头。
 7. 网关与业务服务是否连接同一组 etcd endpoints。

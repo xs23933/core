@@ -602,9 +602,9 @@ func (Handler) Index(c core.Ctx) {
 
 Core 支持同时运行 HTTP 与 gRPC，并通过 etcd 做服务注册、服务发现和网关动态路由。推荐把链路拆成三类程序理解：
 
-1. 业务服务：注册 protobuf 生成的 gRPC service，启动 gRPC，必要时注册到 etcd。
+1. 业务服务：启动 HTTP 或注册 protobuf 生成的 gRPC service，并把实例及对外路由发布到 etcd。
 2. 内部客户端：通过 `app.GrpcClient("service-name")` 按服务名发现并调用 gRPC。
-3. 网关服务：监听 etcd 服务变化，通过 gRPC reflection 自动发现方法并生成 HTTP 路由。
+3. 网关服务：监听 etcd 实例和路由变化，把 HTTP 请求代理到 HTTP 或 gRPC 上游。
 
 ### 1. gRPC 服务
 
@@ -891,7 +891,146 @@ Gateway 的每个 `ServicePool` 使用 etcd 中的逻辑服务名选择 Core 客
 | `PUT`    | `/admin/gateway/routes/:id`  | 更新或禁用路由 |
 | `DELETE` | `/admin/gateway/routes/:id`  | 删除路由       |
 
-### 5. 自动注册路由规则
+### 5. HTTP Handler 路由自动注册
+
+HTTP 服务可以把框架自动生成的 Handler 路由发布到 etcd，Gateway 发现后直接反向代理到该服务。该能力默认关闭，只收集嵌入 `core.Handler` 并按方法名生成的路由；`app.GET`、`app.POST` 等手写路由不会自动发布。
+
+HTTP 服务完整 `main.go`：
+
+```go
+package main
+
+import (
+    "log"
+
+    core "github.com/xs23933/core/v3"
+)
+
+type TaskHandler struct {
+    core.Handler
+}
+
+func (h *TaskHandler) Init() {
+    h.Prefix("/api/tasks")
+}
+
+func (h *TaskHandler) Get_id(c core.Ctx) error {
+    return c.JSON(core.Map{"id": c.Params("id")})
+}
+
+func init() {
+    // 这里只登记 Handler；此时不连接 etcd，也不发布 Gateway 路由。
+    core.RegHandle(&TaskHandler{})
+}
+
+func main() {
+    app := core.New(core.LoadConfigFile("config.yaml"))
+
+    // 必须早于 Listen/Run：初始化 registry + discovery，并注册服务实例。
+    if err := app.EnableEtcdRegistry(nil); err != nil {
+        log.Fatal("enable etcd registry: ", err)
+    }
+
+    // 启动阶段加载 Handler、生成自动路由目录并写入 etcd。
+    if err := app.Run(); err != nil {
+        log.Fatal(err)
+    }
+}
+```
+
+开启自动发布时必须配置至少一个 `include_prefixes`。匹配按完整路径段判断，`exclude_prefixes` 优先排除：
+
+```yaml
+gateway:
+  auto_http_routes:
+    enabled: true
+    include_prefixes:
+      - /api
+    exclude_prefixes:
+      - /api/internal
+
+etcd:
+  namespace: xpay
+  endpoints:
+    - 127.0.0.1:2379
+  service_name: task-service
+  service_addr: 127.0.0.1:8081
+  # Gateway 可访问的 HTTP origin，必须包含 http:// 或 https://。
+  http_addr: http://127.0.0.1:8081
+  service_id: task-service-1
+  ttl: 5
+```
+
+调用顺序必须是 `core.New` → `EnableEtcdRegistry` → `Listen/Run`。具体时机如下：
+
+1. Go `init` 阶段的 `core.RegHandle` 只登记 Handler 模块，不访问 etcd。
+2. `EnableEtcdRegistry` 创建 registry 和 discovery，立即把实例写入 `/<namespace>/services/<service_name>/<service_id>`，并保存本次成功注册的 service name 与 namespace。
+3. `Listen` / `Run` 启动准备阶段加载 Handler，方法名路由在这里生成并进入自动目录。
+4. Handler、gRPC 和 TLS 准备完成后，筛选出的完整目录一次性写入 `/<namespace>/gateway/routes/auto_http/<owner_id>`；成功后 HTTP server 才进入 Serve。
+
+开启自动发布但未先成功调用 `EnableEtcdRegistry`，或者目录写入 etcd 失败，`Listen` / `Run` 会返回错误并清理已启动资源。框架不会启动周期发布 worker。HTTP 自动路由保持对外路径和上游路径一致，不做参数转换，path、query 和 body 由目标 HTTP 服务处理；不支持路径改写或静态 Header 注入。
+
+Gateway 服务完整 `main.go`：
+
+```go
+package main
+
+import (
+    "log"
+
+    core "github.com/xs23933/core/v3"
+    "github.com/xs23933/core/v3/gateway"
+)
+
+func main() {
+    app := core.New(core.LoadConfigFile("config.yaml"))
+    if err := app.EnableEtcdDiscovery(nil); err != nil {
+        log.Fatal("enable etcd discovery: ", err)
+    }
+    gw, err := gateway.NewEtcdGateway(app)
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer gw.Close()
+
+    if err := app.Run(); err != nil {
+        log.Fatal(err)
+    }
+}
+```
+
+Gateway 的 `config.yaml` 使用相同 namespace 和 endpoints，并监听 `8080`：
+
+```yaml
+listen: 8080
+etcd:
+  namespace: xpay
+  endpoints:
+    - 127.0.0.1:2379
+```
+
+启动 etcd、HTTP 服务和 Gateway 后验证：
+
+```bash
+curl http://127.0.0.1:8080/api/tasks/123
+```
+
+请求会由 Gateway 转发到 `etcd.http_addr` 对应实例的 `/api/tasks/123`。
+
+不希望自动发布时，可以显式批量注册：
+
+```go
+if err := gateway.RegisterHTTPRoutes(app,
+    &gateway.Route{Method: http.MethodGet, Path: "/api/tasks/:id"},
+    &gateway.Route{Method: http.MethodPost, Path: "/api/tasks"},
+); err != nil {
+    return err
+}
+```
+
+`RegisterHTTPRoutes` 会先校验完整批次，再逐条发布，不启动后台 worker；单条注册可使用 `RegisterHTTPRoute`。`ServiceName` 为空时使用最近一次成功的 etcd registry identity。相同 HTTP method 和规范化 path 的手动路由优先于自动路由。
+
+### 6. gRPC 自动注册路由规则
 
 网关通过 gRPC reflection 读取服务方法，并按方法名前缀自动生成 HTTP 路由。
 
@@ -946,7 +1085,7 @@ GET  /v1/auth/user/:id        -> /v1.auth.UserService/GetUserById
 
 当服务 reflection 中的方法减少，或 etcd 中的路由被删除/禁用时，网关会注销旧 HTTP 路由。
 
-### 6. 手动配置网关路由
+### 7. 手动配置网关路由
 
 除了自动注册，也可以通过管理接口写入路由配置。
 
@@ -978,7 +1117,7 @@ Content-Type: application/json
 }
 ```
 
-### 7. HTTP 到 gRPC 的请求映射
+### 8. HTTP 到 gRPC 的请求映射
 
 网关会把 HTTP 路径参数、query 参数和 JSON body 合并为一个 JSON 对象，然后按 reflection 中的请求 message 反序列化。
 
@@ -1004,7 +1143,7 @@ X-Request-Id: req-1
 - `x-user-id`
 - `Ctx.Vars()` 中的本地变量 用于前置 middleware 处理后的后传参数 例如 jwt处理的: `Ctx.Set("user_id", "123")`
 
-### 8. Demo 目录
+### 9. Demo 目录
 
 仓库内置了几个最小 demo：
 

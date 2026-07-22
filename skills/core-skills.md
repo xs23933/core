@@ -52,7 +52,7 @@ skills/
 ├── core-middleware.md       # 中间件开发（CORS/限流/Metrics/RequestID）
 ├── core-grpc.md             # gRPC 服务端（TLS/interceptor/注册/启动/etcd 注册/共用端口约束）
 ├── core-grpc-client.md      # gRPC 客户端（服务发现/明确 target/每服务 TLS/MustGrpcClient）
-├── core-gateway.md          # HTTP→gRPC 网关（自动路由/管理接口/metadata）
+├── core-gateway.md          # etcd HTTP/gRPC 网关（自动/手动路由、负载均衡、metadata）
 ├── core-websocket.md        # WebSocket 连接管理/按用户推送/广播/心跳
 ├── core-sse.md              # SSE 服务端推送（SSEWrite/SSESend/EventHub）
 ├── core-page.md             # 分页查询（经典分页/滚动分页/条件构建）
@@ -263,18 +263,20 @@ conn := app.MustGrpcClient("user-service")       // 失败 panic，适合 main �
 
 ---
 
-#### core-gateway — HTTP→gRPC 网关
+#### core-gateway — etcd HTTP/gRPC 网关
 
-**功能概述**：自动将 etcd 中的 gRPC 服务映射为 HTTP 路由，通过 gRPC reflection 读取 proto 定义，按方法名自动生成 RESTful 路由。
+**功能概述**：通过 etcd 发布和发现 HTTP/gRPC 服务路由；HTTP Handler 路由可按路径前缀自动发布，也可显式注册，gRPC 路由由 reflection 自动生成。
 
 **核心特性**：
+- HTTP Handler 自动路由目录与 `RegisterHTTPRoutes` 手动注册
 - 自动路由命名（proto package + service + method → HTTP 路径）
+- 同一 `service_name` 下多 `service_id` 轮询
 - Metadata 透传（authorization/x-request-id/x-user-id）
 - 管理接口：路由 CRUD（仅 loopback 访问）
 
 **模块调用流程**：
 ```
-业务服务 EnableEtcdRegistry → 网关 EnableEtcdDiscovery → NewEtcdGateway → 自动生成 HTTP 路由
+业务服务 EnableEtcdRegistry → 发布 HTTP 路由或开启 gRPC reflection → 网关 EnableEtcdDiscovery → NewEtcdGateway
 ```
 
 ---
