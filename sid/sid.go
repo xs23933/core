@@ -380,6 +380,18 @@ func (id *ID) Scan(value any) error {
 		*id = ID(v)
 	case int:
 		*id = ID(v)
+	case uint64:
+		if v > uint64(^uint64(0)>>1) {
+			return fmt.Errorf("sid uint64 out of int64 range: %d", v)
+		}
+		*id = ID(v)
+	case uint32:
+		*id = ID(v)
+	case uint:
+		if strconv.IntSize == 64 && uint64(v) > uint64(^uint64(0)>>1) {
+			return fmt.Errorf("sid uint out of int64 range: %d", v)
+		}
+		*id = ID(v)
 	case float64:
 		parsed, err := idFromFloat64(v)
 		if err != nil {

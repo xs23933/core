@@ -43,6 +43,7 @@ func TestIDCompatibility(t *testing.T) {
 		want  ID
 	}{
 		{name: "int", input: int(123), want: 123},
+		{name: "uint64", input: uint64(123), want: 123},
 		{name: "string", input: "123", want: 123},
 		{name: "float64", input: float64(123), want: 123},
 		{name: "float string", input: "123.0", want: 123},
@@ -81,5 +82,12 @@ func TestRejectNonIntegerFloat(t *testing.T) {
 	}
 	if _, err := ParseString("123.4"); err == nil {
 		t.Fatal("parse non-integer float string error = nil, want error")
+	}
+}
+
+func TestRejectUint64Overflow(t *testing.T) {
+	var id ID
+	if err := id.Scan(uint64(^uint64(0))); err == nil {
+		t.Fatal("scan overflowing uint64 error = nil, want error")
 	}
 }

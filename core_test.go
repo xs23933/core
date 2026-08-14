@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
@@ -93,6 +95,23 @@ func TestNewWithoutNSQConfigDoesNotInitializeProducer(t *testing.T) {
 
 	if NProducer() != nil {
 		t.Fatal("nsq producer initialized without nsq config")
+	}
+}
+
+func TestOnDemandCreatesCertificateCacheDirectory(t *testing.T) {
+	cacheDir := filepath.Join(t.TempDir(), "certmagic-cache")
+	app := New()
+
+	if err := app.onDemand("admin@example.com", cacheDir); err != nil {
+		t.Fatalf("onDemand setup: %v", err)
+	}
+
+	info, err := os.Stat(cacheDir)
+	if err != nil {
+		t.Fatalf("certificate cache directory was not created: %v", err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("certificate cache path is not a directory")
 	}
 }
 

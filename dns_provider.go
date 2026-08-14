@@ -3,7 +3,6 @@ package core
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/caddyserver/certmagic"
@@ -101,8 +100,9 @@ func (app *Core) setupCertMagic() error {
 
 	// 创建证书存储目录
 	if app.certMagicConfig.CacheDir != "" {
-		// 创建存储目录
-		os.MkdirAll(filepath.Dir(app.certMagicConfig.CacheDir), 0755)
+		if err := ensureCertMagicCacheDir(app.certMagicConfig.CacheDir); err != nil {
+			return err
+		}
 	}
 
 	// 配置 CertMagic 使用 DNS-01 挑战
@@ -208,11 +208,23 @@ func (app *Core) onDemand(email, path string) error {
 	}
 
 	if path != "" {
-		os.MkdirAll(filepath.Dir(path), 0755)
+		if err := ensureCertMagicCacheDir(path); err != nil {
+			return err
+		}
 		magic.Storage = &certmagic.FileStorage{Path: path}
 	}
 
 	app.Server.TLSConfig = magic.TLSConfig()
 
+	return nil
+}
+
+func ensureCertMagicCacheDir(path string) error {
+	if path == "" {
+		return nil
+	}
+	if err := os.MkdirAll(path, 0755); err != nil {
+		return fmt.Errorf("create certmagic cache directory %q: %w", path, err)
+	}
 	return nil
 }
