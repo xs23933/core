@@ -472,6 +472,7 @@ api := fetch.New("https://api.example.com").
 * 只需要 `FetchResult` 不需要 decode 时，使用 `Result(ctx)`。
 * 非 2xx 返回 `*fetch.FetchError`，其中也包含 `Header/Body`，例如错误响应中的 `X-Token`。
 * `Debug(true)` 会在请求结束时打印方法、URL、最终请求 Header、请求 body、响应状态、响应 Header、响应 body 和错误信息；gzip 响应 body 会先解压再输出；只在排查问题时短期开启。
+* `SetProxy(...)` 支持 `http://ip:port`、`socks5://ip:port`、`http://user:password@ip:port`、`socks5://user:password@ip:port`；传入空字符串会关闭代理。
 
 禁止：
 

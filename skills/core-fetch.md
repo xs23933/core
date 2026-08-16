@@ -1,7 +1,7 @@
 ---
 name: core-fetch
-description: 使用 Core Framework fetch 子包调用外部 HTTP API，支持公共/单次 Header、Cookie、请求签名 Hook、响应解包 Hook 和响应 Header 提取
-tags: [go, core-framework, fetch, http-client, api, hook, header, cookie]
+description: 使用 Core Framework fetch 子包调用外部 HTTP API，支持公共/单次 Header、Cookie、HTTP/SOCKS5 代理、请求签名 Hook、响应解包 Hook 和响应 Header 提取
+tags: [go, core-framework, fetch, http-client, api, hook, header, cookie, proxy]
 ---
 
 # Core Fetch API 客户端技能
@@ -17,6 +17,7 @@ tags: [go, core-framework, fetch, http-client, api, hook, header, cookie]
 - "获取响应 header / X-Token"
 - "公共 header 和单次 header"
 - "启用 / 禁用 cookie"
+- "HTTP / SOCKS5 代理"
 
 ## 1. 导入路径
 
@@ -214,7 +215,26 @@ _, err := api.Post("/users").
 
 调试日志会包含请求和响应 body，生产环境只应在定位问题时短期开启。
 
-## 9. Cookie
+## 9. HTTP/SOCKS5 代理
+
+`SetProxy` 支持 HTTP 和 SOCKS5 代理，账号密码会从代理 URL 中解析：
+
+```go
+api := fetch.New("https://api.example.com").
+    SetProxy("http://127.0.0.1:7890")
+
+api.SetProxy("socks5://127.0.0.1:1080")
+api.SetProxy("http://user:password@127.0.0.1:7890")
+api.SetProxy("socks5://user:password@127.0.0.1:1080")
+```
+
+传入空字符串会关闭代理：
+
+```go
+api.SetProxy("")
+```
+
+## 10. Cookie
 
 默认不保存 Cookie。需要会话状态时显式开启：
 
@@ -228,13 +248,14 @@ api := fetch.New("https://api.example.com").UseCookie(true)
 api.UseCookie(false)
 ```
 
-## 10. 生成代码规则
+## 11. 生成代码规则
 
 推荐：
 
 - 业务服务中创建一个可复用 `fetch.New(baseURL)` client。
 - 公共鉴权、App 标识、Accept 等放在公共 Header。
 - 每次请求独有的 request id、trace id 放在单次 Header。
+- 需要 HTTP 或 SOCKS5 代理时使用 `SetProxy("http://...")` 或 `SetProxy("socks5://...")`，账号密码写在代理 URL 中。
 - 签名逻辑放在 `Before`。
 - 统一响应解包放在 `After`。
 - 临时排查外部 API 问题时使用 `Debug(true)`，结束后关闭。

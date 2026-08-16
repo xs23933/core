@@ -16,7 +16,7 @@ Core 是一个用于快速开发企业级 Go 应用程序的 Web 框架，包括
 - **WebSocket 支持** - 内置 WebSocket 处理
 - **SSE 推送** - SSE 服务端推送 + EventHub 连接管理
 - **模板引擎** - 支持 HTML 模板渲染
-- **Fetch 客户端** - 独立 `fetch` 包，支持 API 调用、公共/单次 Header、Cookie、请求/响应 Hook
+- **Fetch 客户端** - 独立 `fetch` 包，支持 API 调用、公共/单次 Header、Cookie、HTTP/SOCKS5 代理、请求/响应 Hook
 - **Redis Cache** - 独立 `cache` 包，支持 DB fallback、自动回填、singleflight 防击穿、空值缓存
 - **中间件系统** - 灵活的中间件扩展机制
 - **[ai-context](https://github.com/xs23933/core/blob/v3/AI_CONTEXT.md)** - AI 的工作流程指南
@@ -1683,7 +1683,26 @@ _, err := api.Post("/users").
 
 调试日志会包含请求和响应 body，生产环境只应在定位问题时短期开启。
 
-### 7. Cookie 开关
+### 7. HTTP/SOCKS5 代理
+
+`SetProxy` 支持 HTTP 和 SOCKS5 代理，账号密码会从代理 URL 中解析：
+
+```go
+api := fetch.New("https://api.example.com").
+    SetProxy("http://127.0.0.1:7890")
+
+api.SetProxy("socks5://127.0.0.1:1080")
+api.SetProxy("http://user:password@127.0.0.1:7890")
+api.SetProxy("socks5://user:password@127.0.0.1:1080")
+```
+
+传入空字符串会关闭代理：
+
+```go
+api.SetProxy("")
+```
+
+### 8. Cookie 开关
 
 默认不保存 Cookie，避免隐式状态。需要模拟浏览器会话时显式启用：
 

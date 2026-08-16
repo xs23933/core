@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/xs23933/core/v3"
+	xproxy "golang.org/x/net/proxy"
 )
 
 type FetchBeforeHook func(context.Context, *http.Request, []byte) error
@@ -159,6 +161,112 @@ func (f *Fetch) Client(client *http.Client) *Fetch {
 	}
 	f.client.Store(client)
 	return f
+}
+
+// SetProxy configures an HTTP, HTTPS, or SOCKS5 proxy for this Fetch client.
+//
+// SOCKS5 proxy URLs may include username/password credentials, for example:
+// socks5://user:password@127.0.0.1:1080. Passing an empty string disables the
+// proxy by replacing the transport with a direct default transport.
+func (f *Fetch) SetProxy(proxyURL string) *Fetch {
+	if err := f.setProxy(proxyURL); err != nil {
+		core.Erro("fetch: set proxy %q failed: %v", proxyURL, err)
+	}
+	return f
+}
+
+func (f *Fetch) setProxy(proxyURL string) error {
+	transport := defaultFetchTransport()
+	rawProxy := strings.TrimSpace(proxyURL)
+	if rawProxy == "" {
+		f.storeTransport(transport)
+		return nil
+	}
+
+	px, err := url.Parse(rawProxy)
+	if err != nil {
+		return err
+	}
+	if px.Host == "" {
+		return fmt.Errorf("proxy host is empty")
+	}
+
+	switch strings.ToLower(px.Scheme) {
+	case "http", "https":
+		transport.Proxy = http.ProxyURL(px)
+	case "socks5":
+		auth := socks5ProxyAuth(px)
+		dialer, err := xproxy.SOCKS5("tcp", px.Host, auth, xproxy.Direct)
+		if err != nil {
+			return err
+		}
+		transport.Proxy = nil
+		transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+			if d, ok := dialer.(xproxy.ContextDialer); ok {
+				return d.DialContext(ctx, network, address)
+			}
+			return dialWithContext(ctx, dialer, network, address)
+		}
+	default:
+		return fmt.Errorf("unsupported proxy scheme %q", px.Scheme)
+	}
+
+	f.storeTransport(transport)
+	return nil
+}
+
+func socks5ProxyAuth(px *url.URL) *xproxy.Auth {
+	if px == nil || px.User == nil {
+		return nil
+	}
+	password, _ := px.User.Password()
+	return &xproxy.Auth{
+		User:     px.User.Username(),
+		Password: password,
+	}
+}
+
+func defaultFetchTransport() *http.Transport {
+	if transport, ok := http.DefaultTransport.(*http.Transport); ok {
+		next := transport.Clone()
+		next.Proxy = nil
+		return next
+	}
+	return &http.Transport{}
+}
+
+func (f *Fetch) storeTransport(transport http.RoundTripper) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	client := f.httpClient()
+	if client == nil {
+		client = &http.Client{Timeout: 30 * time.Second}
+	}
+	next := *client
+	next.Transport = transport
+	f.client.Store(&next)
+}
+
+func dialWithContext(ctx context.Context, dialer xproxy.Dialer, network, address string) (net.Conn, error) {
+	type dialResult struct {
+		conn net.Conn
+		err  error
+	}
+	done := make(chan dialResult, 1)
+	go func() {
+		conn, err := dialer.Dial(network, address)
+		if conn != nil && ctx.Err() != nil {
+			_ = conn.Close()
+		}
+		done <- dialResult{conn: conn, err: err}
+	}()
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case result := <-done:
+		return result.conn, result.err
+	}
 }
 
 // UseCookie enables or disables cookie persistence for this Fetch client.

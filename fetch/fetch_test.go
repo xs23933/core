@@ -1,16 +1,22 @@
 package fetch
 
 import (
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -432,4 +438,303 @@ func TestFetchReusableConciseMethods(t *testing.T) {
 			t.Fatalf("seen[%d] = %q, want %q", i, seen[i], want[i])
 		}
 	}
+}
+
+func TestFetchSetProxySupportsHTTPWithAndWithoutCredentials(t *testing.T) {
+	tests := []struct {
+		name      string
+		proxyURL  func(string) string
+		wantAuth  string
+		targetURL string
+	}{
+		{
+			name:      "without credentials",
+			proxyURL:  func(addr string) string { return "http://" + addr },
+			targetURL: "http://example.com/proxy",
+		},
+		{
+			name:      "with credentials",
+			proxyURL:  func(addr string) string { return "http://UsEr:PaSs@" + addr },
+			wantAuth:  "Basic " + base64.StdEncoding.EncodeToString([]byte("UsEr:PaSs")),
+			targetURL: "http://example.com/proxy",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				if got := req.URL.String(); got != tt.targetURL {
+					t.Fatalf("proxied URL = %q, want %q", got, tt.targetURL)
+				}
+				if got := req.Header.Get("Proxy-Authorization"); got != tt.wantAuth {
+					t.Fatalf("proxy auth = %q, want %q", got, tt.wantAuth)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"ok":true}`)
+			}))
+			defer proxyServer.Close()
+
+			proxyAddr := strings.TrimPrefix(proxyServer.URL, "http://")
+			client := New().SetProxy(tt.proxyURL(proxyAddr))
+
+			var out struct {
+				OK bool `json:"ok"`
+			}
+			if _, err := client.Get(tt.targetURL).Result(context.Background(), &out); err != nil {
+				t.Fatal(err)
+			}
+			if !out.OK {
+				t.Fatalf("decoded OK = false, want true")
+			}
+		})
+	}
+}
+
+func TestFetchSetProxySupportsSocks5UsernamePassword(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	serverErr := make(chan error, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			serverErr <- err
+			return
+		}
+		defer conn.Close()
+		_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
+
+		if err := readSocks5AuthHandshake(conn, "UsEr", "PaSs"); err != nil {
+			serverErr <- err
+			return
+		}
+		if err := readSocks5ConnectRequest(conn); err != nil {
+			serverErr <- err
+			return
+		}
+
+		reader := bufio.NewReader(conn)
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			serverErr <- err
+			return
+		}
+		if !strings.HasPrefix(line, "GET /proxy HTTP/1.1") {
+			serverErr <- fmt.Errorf("request line = %q, want GET /proxy", line)
+			return
+		}
+		for {
+			line, err = reader.ReadString('\n')
+			if err != nil {
+				serverErr <- err
+				return
+			}
+			if line == "\r\n" {
+				break
+			}
+		}
+		_, err = io.WriteString(conn, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 11\r\n\r\n{\"ok\":true}")
+		serverErr <- err
+	}()
+
+	client := New().SetProxy("socks5://UsEr:PaSs@" + listener.Addr().String())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	var out struct {
+		OK bool `json:"ok"`
+	}
+	if _, err := client.Get("http://example.com/proxy").Result(ctx, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !out.OK {
+		t.Fatalf("decoded OK = false, want true")
+	}
+	if err := <-serverErr; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestFetchSetProxySupportsSocks5WithoutCredentials(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	serverErr := make(chan error, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			serverErr <- err
+			return
+		}
+		defer conn.Close()
+		_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
+
+		if err := readSocks5NoAuthHandshake(conn); err != nil {
+			serverErr <- err
+			return
+		}
+		if err := readSocks5ConnectRequest(conn); err != nil {
+			serverErr <- err
+			return
+		}
+
+		reader := bufio.NewReader(conn)
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			serverErr <- err
+			return
+		}
+		if !strings.HasPrefix(line, "GET /proxy HTTP/1.1") {
+			serverErr <- fmt.Errorf("request line = %q, want GET /proxy", line)
+			return
+		}
+		for {
+			line, err = reader.ReadString('\n')
+			if err != nil {
+				serverErr <- err
+				return
+			}
+			if line == "\r\n" {
+				break
+			}
+		}
+		_, err = io.WriteString(conn, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 11\r\n\r\n{\"ok\":true}")
+		serverErr <- err
+	}()
+
+	client := New().SetProxy("socks5://" + listener.Addr().String())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	var out struct {
+		OK bool `json:"ok"`
+	}
+	if _, err := client.Get("http://example.com/proxy").Result(ctx, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !out.OK {
+		t.Fatalf("decoded OK = false, want true")
+	}
+	if err := <-serverErr; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readSocks5AuthHandshake(rw io.ReadWriter, wantUser, wantPassword string) error {
+	header := make([]byte, 2)
+	if _, err := io.ReadFull(rw, header); err != nil {
+		return err
+	}
+	if header[0] != 0x05 {
+		return fmt.Errorf("socks version = %d, want 5", header[0])
+	}
+	methods := make([]byte, int(header[1]))
+	if _, err := io.ReadFull(rw, methods); err != nil {
+		return err
+	}
+	hasPasswordAuth := false
+	for _, method := range methods {
+		if method == 0x02 {
+			hasPasswordAuth = true
+			break
+		}
+	}
+	if !hasPasswordAuth {
+		return fmt.Errorf("auth methods = %v, want username/password", methods)
+	}
+	if _, err := rw.Write([]byte{0x05, 0x02}); err != nil {
+		return err
+	}
+
+	if _, err := io.ReadFull(rw, header); err != nil {
+		return err
+	}
+	if header[0] != 0x01 {
+		return fmt.Errorf("auth version = %d, want 1", header[0])
+	}
+	username := make([]byte, int(header[1]))
+	if _, err := io.ReadFull(rw, username); err != nil {
+		return err
+	}
+	if _, err := io.ReadFull(rw, header[:1]); err != nil {
+		return err
+	}
+	password := make([]byte, int(header[0]))
+	if _, err := io.ReadFull(rw, password); err != nil {
+		return err
+	}
+	if string(username) != wantUser || string(password) != wantPassword {
+		return fmt.Errorf("credentials = %q/%q, want %q/%q", username, password, wantUser, wantPassword)
+	}
+	_, err := rw.Write([]byte{0x01, 0x00})
+	return err
+}
+
+func readSocks5NoAuthHandshake(rw io.ReadWriter) error {
+	header := make([]byte, 2)
+	if _, err := io.ReadFull(rw, header); err != nil {
+		return err
+	}
+	if header[0] != 0x05 {
+		return fmt.Errorf("socks version = %d, want 5", header[0])
+	}
+	methods := make([]byte, int(header[1]))
+	if _, err := io.ReadFull(rw, methods); err != nil {
+		return err
+	}
+	hasNoAuth := false
+	for _, method := range methods {
+		if method == 0x00 {
+			hasNoAuth = true
+			break
+		}
+	}
+	if !hasNoAuth {
+		return fmt.Errorf("auth methods = %v, want no-auth", methods)
+	}
+	_, err := rw.Write([]byte{0x05, 0x00})
+	return err
+}
+
+func readSocks5ConnectRequest(rw io.ReadWriter) error {
+	header := make([]byte, 4)
+	if _, err := io.ReadFull(rw, header); err != nil {
+		return err
+	}
+	if header[0] != 0x05 || header[1] != 0x01 || header[2] != 0x00 {
+		return fmt.Errorf("connect header = %v, want version 5 connect", header)
+	}
+	switch header[3] {
+	case 0x01:
+		if _, err := io.CopyN(io.Discard, rw.(io.Reader), 4); err != nil {
+			return err
+		}
+	case 0x03:
+		length := make([]byte, 1)
+		if _, err := io.ReadFull(rw, length); err != nil {
+			return err
+		}
+		if _, err := io.CopyN(io.Discard, rw.(io.Reader), int64(length[0])); err != nil {
+			return err
+		}
+	case 0x04:
+		if _, err := io.CopyN(io.Discard, rw.(io.Reader), 16); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("address type = %d, want IPv4, domain, or IPv6", header[3])
+	}
+	if _, err := io.CopyN(io.Discard, rw.(io.Reader), 2); err != nil {
+		return err
+	}
+	_, err := rw.Write([]byte{0x05, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00})
+	return err
 }
