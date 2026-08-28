@@ -1248,9 +1248,9 @@ subQuery := core.Conn().Model(&Order{}).Select("user_id").Where("amount > ?", 10
 core.Conn().Where("id IN (?)", subQuery).Find(&users)
 ```
 
-### 4. 分页查询：FindPageBy 与 FindNextBy
+### 4. 分页查询：Finds、FindPageBy 与 FindNextBy
 
-`FindPageBy` 和 `FindNextBy` 都会读取 `core.Map` 中的分页和筛选参数，并可以接收一个已经拼好的 `*core.DB` 作为基础查询。
+`Finds`、`FindPageBy` 和 `FindNextBy` 都会读取 `core.Map` 中的分页和筛选参数，并可以接收一个已经拼好的 `*core.DB` 作为基础查询。
 
 常用参数：
 
@@ -1269,8 +1269,38 @@ core.Conn().Where("id IN (?)", subQuery).Find(&users)
 
 两者区别：
 
+- `Finds`：推荐用于新代码，通过 `FindsParams` 传递 `Where`、`DB`、`Mode` 和 `Extra`，内部创建结果 slice；默认返回带 `total` 的经典分页，`Mode: core.FindsModeNext` 时返回 `next/prev`。
 - `FindPageBy`：返回 `Page[T]`，包含 `total` 总数；适合后台管理、需要显示总页数的列表。代价是会执行 count。
 - `FindNextBy`：返回 `NextPage[T]`，包含 `next/prev`；通过查询 `limit + 1` 判断是否还有下一页，不统计总数。适合滚动加载、移动端列表、数据量较大的查询。
+
+#### Finds：推荐的新分页入口
+
+```go
+func (dao *UsersViewDAO) List(ctx context.Context, whr *core.Map, next bool) (core.FindsResult[user.UsersView], error) {
+    mode := core.FindsModePage
+    if next {
+        mode = core.FindsModeNext
+    }
+
+    if _, ok := (*whr)["asc"].(string); !ok {
+        if _, ok := (*whr)["desc"].(string); !ok {
+            (*whr)["desc"] = "created_at"
+        }
+    }
+
+    tx := dao.db.WithContext(ctx).
+        Model(&user.UsersView{}).
+        Select("users_profiles.*, users.status").
+        Joins("JOIN users ON users.id = users_profiles.user_id").
+        Joins("JOIN users_identities ON users_profiles.user_id = users_identities.user_id")
+
+    return core.Finds[user.UsersView](core.FindsParams{
+        Where: whr,
+        DB:    tx,
+        Mode:  mode,
+    })
+}
+```
 
 #### FindPageBy：带总数分页
 
@@ -1310,7 +1340,7 @@ func (dao *UsersViewDAO) ListPage(ctx context.Context, whr *core.Map) (core.Page
 
 #### FindNextBy：后推分页
 
-`FindNextBy` 会多查一条数据判断 `next`。如果 `ret.Next == true`，通常需要把多查出来的最后一条裁掉再返回。
+`FindNextBy` 会多查一条数据判断 `next`，并在返回前裁掉探针行。
 
 ```go
 func (dao *UsersViewDAO) ListNext(ctx context.Context, whr *core.Map) (core.NextPage[user.UsersView], error) {
@@ -1327,11 +1357,7 @@ func (dao *UsersViewDAO) ListNext(ctx context.Context, whr *core.Map) (core.Next
         Joins("JOIN users_identities ON users_profiles.user_id = users_identities.user_id")
 
     res := make([]user.UsersView, 0)
-    ret, err := core.FindNextBy(whr, &res, tx)
-    if ret.Next {
-        ret.Data = res[:len(res)-1]
-    }
-    return ret, err
+    return core.FindNextBy(whr, &res, tx)
 }
 ```
 
@@ -1372,11 +1398,7 @@ func (dao *UsersViewDAO) List(ctx context.Context, whr *core.Map, page bool) (an
         return core.FindPageBy(whr, &res, tx)
     }
 
-    ret, err := core.FindNextBy(whr, &res, tx)
-    if ret.Next {
-        ret.Data = res[:len(res)-1]
-    }
-    return ret, err
+    return core.FindNextBy(whr, &res, tx)
 }
 ```
 

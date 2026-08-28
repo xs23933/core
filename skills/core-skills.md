@@ -126,13 +126,13 @@ HTTP 请求 → Preload（鉴权） → Handler 方法（参数解析/调用 Ser
 - 四种基础模型：`core.Model`（uid.UID）/ `core.Models`（UUID）/ `core.SModels`（雪花ID）/ `core.IModel`（自增）
 - `BeforeCreate` 自动填充主键
 - 自定义类型：UUID（CHAR(32)）、JSON（json）、Money/IntMoney（金额）、Date（日期）
-- 分页查询：`FindPageBy`（经典分页）/ `FindNextBy`（滚动分页）
+- 分页查询：`Finds`（新代码推荐）/ `FindPageBy`（经典分页）/ `FindNextBy`（滚动分页）
 - 条件构建：`core.Map` 支持精确/模糊/比较/IN/排序查询
 - 事务：`core.WithTransaction(tx, fn)` 自动提交/回滚
 
 **模块调用流程**：
 ```
-Service → DAO → core.Conn() / core.FindPageBy(whr, &models, db) → GORM → DB
+Service → DAO → core.Conn() / core.Finds(core.FindsParams{...}) → GORM → DB
 ```
 
 **参数说明（core.Map 条件）**：
@@ -309,9 +309,10 @@ app.POST("/events/push", hub.PostData)
 
 #### core-page — 分页查询
 
-**功能概述**：提供经典分页（FindPageBy，含总数）和滚动分页（FindNextBy，无 Count）两种分页方式，通过 `core.Map` 构建灵活的筛选条件。
+**功能概述**：提供统一分页入口（Finds）、经典分页（FindPageBy，含总数）和滚动分页（FindNextBy，无 Count），通过 `core.Map` 构建灵活的筛选条件。
 
 **核心特性**：
+- `Finds`：新代码推荐，使用 `FindsParams` 统一传递 Where/DB/Mode，默认返回 total，`FindsModeNext` 返回 next/prev
 - `FindPageBy`：适用于后台管理表格，返回 total
 - `FindNextBy`：适用于移动端无限滚动，返回 next/prev
 - 丰富的筛选操作符：精确/模糊/前缀/后缀/比较/IN/Omit
@@ -1017,6 +1018,7 @@ func main() {
 | ---- | ---- |
 | `core.Conn()` | 获取默认数据库连接 |
 | `core.Conn("name")` | 获取命名数据库连接 |
+| `core.Finds[T](core.FindsParams{Where: whr, DB: db})` | 统一分页入口（推荐） |
 | `core.FindPageBy[T](whr, &list, db)` | 经典分页（泛型） |
 | `core.FindNextBy[T](whr, &list, db)` | 滚动分页（泛型） |
 | `core.Where(whr, db)` | 条件构建 |

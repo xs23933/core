@@ -21,14 +21,35 @@ tags: [go, core-framework, pagination, query]
 
 ## 核心规范
 
-### 1. 两种分页方式
+### 1. 三种分页方式
 
 | 方式          | 方法           | 适用场景           | 是否 Count |
 | ------------- | -------------- | ------------------ | ---------- |
+| 统一分页入口  | `Finds`        | 新代码、DAO 封装   | 可选       |
 | 传统分页      | `FindPageBy`   | 后台管理、表格列表 | ✅ 是      |
 | 滚动分页      | `FindNextBy`   | 移动端、无限滚动   | ❌ 否      |
 
-### 2. FindPageBy（带总数）
+### 2. Finds（推荐）
+
+```go
+func (dao *UserDAO) List(ctx context.Context, whr *core.Map, next bool) (core.FindsResult[model.User], error) {
+    mode := core.FindsModePage
+    if next {
+        mode = core.FindsModeNext
+    }
+
+    tx := dao.db.WithContext(ctx).Model(&model.User{})
+    return core.Finds[model.User](core.FindsParams{
+        Where: whr,
+        DB:    tx,
+        Mode:  mode,
+    })
+}
+```
+
+`Finds` 内部创建结果 slice，默认使用 `FindsModePage` 返回 `total`；传 `FindsModeNext` 时返回 `next/prev`，并自动裁掉 `limit + 1` 的探针行。`Finds` 会复制传入的 `Where`，不会删除调用方 `Map` 中的分页、排序特殊 key。
+
+### 3. FindPageBy（带总数）
 
 ```go
 type UserHandler struct {
@@ -60,7 +81,7 @@ func (h *UserHandler) Get(c core.Ctx) {
 }
 ```
 
-### 3. FindNextBy（滚动分页）
+### 4. FindNextBy（滚动分页）
 
 ```go
 // GET /api/v1/users/next
@@ -80,16 +101,11 @@ func (h *UserHandler) GetNext(c core.Ctx) {
         return
     }
     
-    // 如果还有下一页，需要裁剪多查的一条数据
-    if nextPage.Next {
-        nextPage.Data = users[:len(users)-1]
-    }
-    
     c.ToJSON(nextPage, nil)
 }
 ```
 
-### 4. 带复杂条件的查询
+### 5. 带复杂条件的查询
 
 ```go
 // DAO 层封装
@@ -138,7 +154,7 @@ func (dao *UserDAO) ListPage(ctx context.Context, whr *core.Map) (core.Page[vo.U
 }
 ```
 
-### 5. 筛选参数详解
+### 6. 筛选参数详解
 
 | 参数写法        | 说明           | SQL 结果                        |
 | --------------- | -------------- | ------------------------------- |
@@ -154,7 +170,7 @@ func (dao *UserDAO) ListPage(ctx context.Context, whr *core.Map) (core.Page[vo.U
 | `"asc": "name"`  | 升序排序       | `ORDER BY name ASC`             |
 | `"desc": "age"`  | 降序排序       | `ORDER BY age DESC`             |
 
-### 6. 返回值结构
+### 7. 返回值结构
 
 #### FindPageBy 返回
 
@@ -179,7 +195,32 @@ func (dao *UserDAO) ListPage(ctx context.Context, whr *core.Map) (core.Page[vo.U
 }
 ```
 
-### 7. 完整 Handler 示例
+#### Finds 返回
+
+`FindsModePage` 返回：
+
+```json
+{
+  "p": 1,
+  "l": 20,
+  "total": 128,
+  "data": [...]
+}
+```
+
+`FindsModeNext` 返回：
+
+```json
+{
+  "p": 1,
+  "l": 20,
+  "next": true,
+  "prev": false,
+  "data": [...]
+}
+```
+
+### 8. 完整 Handler 示例
 
 ```go
 package handler
@@ -231,10 +272,6 @@ func (h *ProductHandler) GetScroll(c core.Ctx) {
         return
     }
     
-    if nextPage.Next {
-        nextPage.Data = products[:len(products)-1]
-    }
-    
     c.ToJSON(nextPage, nil)
 }
 ```
@@ -244,13 +281,13 @@ func (h *ProductHandler) GetScroll(c core.Ctx) {
 - ❌ 手动拼接 `LIMIT` 和 `OFFSET`
 - ❌ 在循环中查询数据库（N+1 问题）
 - ❌ 不设置分页大小上限
-- ❌ FindNextBy 忘记裁剪数据
+- ❌ 新代码继续在 DAO 中手动维护 out slice 和分页模式分支，优先用 `Finds`
 
 ## 输出要求
 
 生成分页代码时必须包含：
 
-1. ✅ 使用 `FindPageBy` 或 `FindNextBy`
+1. ✅ 新代码优先使用 `Finds`；兼容旧代码时使用 `FindPageBy` 或 `FindNextBy`
 2. ✅ 正确的参数映射
 3. ✅ 排序字段设置
 4. ✅ 错误处理

@@ -191,6 +191,9 @@ type Schedule struct {
 ### 经典分页（总条数 + 页码）
 
 ```go
+// 新代码推荐
+result, err := core.Finds[User](core.FindsParams{Where: whr, DB: db})
+
 // 泛型版本（推荐）
 result, err := core.FindPageBy[User](whr, &users)
 // result.P, result.L, result.Total, result.Data
@@ -203,6 +206,9 @@ result, err := core.FindPage(whr, &users)
 ### 游标分页（Next/Prev）
 
 ```go
+// 新代码推荐
+result, err := core.Finds[User](core.FindsParams{Where: whr, DB: db, Mode: core.FindsModeNext})
+
 // 泛型版本（推荐）
 result, err := core.FindNextBy[User](whr, &users)
 // result.P, result.L, result.Next, result.Prev, result.Data

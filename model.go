@@ -1153,6 +1153,84 @@ type Page[T any] struct {
 	Extra any   `json:"extra,omitempty"`
 }
 
+type FindsMode string
+
+const (
+	FindsModePage FindsMode = "page"
+	FindsModeNext FindsMode = "next"
+)
+
+type FindsParams struct {
+	Where *Map
+	DB    *DB
+	Mode  FindsMode
+	Extra any
+}
+
+type FindsResult[T any] struct {
+	P     int    `json:"p"`
+	L     int    `json:"l"`
+	Total *int64 `json:"total,omitempty"`
+	Next  *bool  `json:"next,omitempty"`
+	Prev  *bool  `json:"prev,omitempty"`
+	Data  []T    `json:"data"`
+	Extra any    `json:"extra,omitempty"`
+}
+
+func (r FindsResult[T]) HasNext() bool {
+	return r.Next != nil && *r.Next
+}
+
+func Finds[T any](params FindsParams) (result FindsResult[T], err error) {
+	whr := cloneFindsWhere(params.Where)
+	var tx *DB
+	var pos, lmt int
+	if params.DB != nil {
+		tx, pos, lmt = Where(&whr, params.DB)
+	} else {
+		tx, pos, lmt = Where(&whr)
+	}
+
+	data := make([]T, 0)
+	result = FindsResult[T]{
+		P:     pos,
+		L:     lmt,
+		Data:  data,
+		Extra: params.Extra,
+	}
+
+	switch params.Mode {
+	case FindsModeNext:
+		act := tx.Limit(lmt + 1).Find(&data)
+		err = act.Error
+		next := act.RowsAffected > int64(lmt)
+		if next && len(data) > lmt {
+			data = data[:lmt]
+		}
+		prev := pos > 1
+		result.Next = &next
+		result.Prev = &prev
+		result.Data = data
+	default:
+		var total int64
+		err = tx.Find(&data).Offset(-1).Limit(-1).Count(&total).Error
+		result.Total = &total
+		result.Data = data
+	}
+	return
+}
+
+func cloneFindsWhere(whr *Map) Map {
+	if whr == nil {
+		return Map{}
+	}
+	cloned := make(Map, len(*whr))
+	for k, v := range *whr {
+		cloned[k] = v
+	}
+	return cloned
+}
+
 // FindPage Gorm find to page process whr
 func FindPageBy[T any](whr *Map, out *[]T, db ...*DB) (result Page[T], err error) {
 	var (

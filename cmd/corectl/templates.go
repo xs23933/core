@@ -28,7 +28,7 @@ func main() {
 	app := core.New(core.LoadConfigFile(*configFile))
 
 	app.Use(requestid.New())
-	app.Use(cors.New(app))
+	app.Use(cors.New())
 
 	userDAO := dao.NewUserDAO(core.Conn())
 	handler.NewHandler(userDAO)

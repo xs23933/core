@@ -16,20 +16,7 @@ type paginationItem struct {
 }
 
 func TestFindNextByTrimsProbeRow(t *testing.T) {
-	db, err := gorm.Open(sqlite.Open(":memory:"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := db.AutoMigrate(&paginationItem{}); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Create(&[]paginationItem{
-		{ID: 1, Name: "one"},
-		{ID: 2, Name: "two"},
-		{ID: 3, Name: "three"},
-	}).Error; err != nil {
-		t.Fatal(err)
-	}
+	db := newPaginationDB(t)
 
 	var out []paginationItem
 	page, err := FindNextBy[paginationItem](&Map{"p": 1, "l": 2, "asc": "id"}, &out, db)
@@ -46,6 +33,81 @@ func TestFindNextByTrimsProbeRow(t *testing.T) {
 	if page.Data[0].ID != 1 || page.Data[1].ID != 2 {
 		t.Fatalf("data IDs = %#v, want first two rows", page.Data)
 	}
+}
+
+func TestFindsDefaultsToPageMode(t *testing.T) {
+	db := newPaginationDB(t)
+	whr := &Map{"p": 1, "l": 2, "asc": "id"}
+
+	page, err := Finds[paginationItem](FindsParams{
+		Where: whr,
+		DB:    db,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if page.Total == nil || *page.Total != 3 {
+		t.Fatalf("Total = %v, want 3", page.Total)
+	}
+	if page.Next != nil || page.Prev != nil {
+		t.Fatalf("next pagination flags = %v/%v, want nil", page.Next, page.Prev)
+	}
+	if len(page.Data) != 2 {
+		t.Fatalf("data len = %d, want 2: %#v", len(page.Data), page.Data)
+	}
+	if !whr.Contains("p") || !whr.Contains("l") || !whr.Contains("asc") {
+		t.Fatalf("Finds mutated original where map: %#v", *whr)
+	}
+}
+
+func TestFindsNextModeTrimsProbeRow(t *testing.T) {
+	db := newPaginationDB(t)
+
+	page, err := Finds[paginationItem](FindsParams{
+		Where: &Map{"p": 1, "l": 2, "asc": "id"},
+		DB:    db,
+		Mode:  FindsModeNext,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if page.Total != nil {
+		t.Fatalf("Total = %v, want nil", page.Total)
+	}
+	if !page.HasNext() {
+		t.Fatalf("HasNext() = false, want true")
+	}
+	if page.Prev == nil || *page.Prev {
+		t.Fatalf("Prev = %v, want false", page.Prev)
+	}
+	if len(page.Data) != 2 {
+		t.Fatalf("data len = %d, want 2: %#v", len(page.Data), page.Data)
+	}
+	if page.Data[0].ID != 1 || page.Data[1].ID != 2 {
+		t.Fatalf("data IDs = %#v, want first two rows", page.Data)
+	}
+}
+
+func newPaginationDB(t *testing.T) *gorm.DB {
+	t.Helper()
+
+	db, err := gorm.Open(sqlite.Open(":memory:"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&paginationItem{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&[]paginationItem{
+		{ID: 1, Name: "one"},
+		{ID: 2, Name: "two"},
+		{ID: 3, Name: "three"},
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	return db
 }
 
 func TestOpenDBUsesEnvironmentDSNBeforeConfigDSN(t *testing.T) {

@@ -300,6 +300,8 @@ func (h *UserHandler) Stop(app *core.Core) error {
     }
     ```
 - **分页查询**:
+    - **新代码推荐**: `core.Finds[User](core.FindsParams{Where: whr, DB: tx})`
+        - 默认总数分页；`Mode: core.FindsModeNext` 切换为滚动分页。
     - **总数分页 (后台)**: `core.FindPageBy(whr, &users, tx)`
         - 支持参数: `p`(页码), `l`(数量), `desc`/`asc`(排序), `field*`(包含), `field IN`(范围)。
     - **滚动分页 (移动端)**: `core.FindNextBy(whr, &users, tx)`
@@ -878,13 +880,13 @@ type User struct {
 后台管理：
 
 ```go
-core.FindPageBy(...)
+core.Finds[User](core.FindsParams{Where: whr, DB: tx})
 ```
 
 移动端：
 
 ```go
-core.FindNextBy(...)
+core.Finds[User](core.FindsParams{Where: whr, DB: tx, Mode: core.FindsModeNext})
 ```
 
 禁止：
