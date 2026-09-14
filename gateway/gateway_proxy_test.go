@@ -157,6 +157,82 @@ func TestProtoJSONUnmarshalPromotesFlatPagination(t *testing.T) {
 	}
 }
 
+func TestProtoJSONUnmarshalMapsJSONObjectAliasToBytesJSONField(t *testing.T) {
+	files, err := protodesc.NewFiles(&descriptorpb.FileDescriptorSet{
+		File: []*descriptorpb.FileDescriptorProto{
+			{
+				Name:    testPtr("bytes_json.proto"),
+				Package: testPtr("api.v1"),
+				Syntax:  testPtr("proto3"),
+				MessageType: []*descriptorpb.DescriptorProto{
+					{
+						Name: testPtr("PasskeyStepUpFinishRequest"),
+						Field: []*descriptorpb.FieldDescriptorProto{
+							{Name: testPtr("challenge_id"), JsonName: testPtr("challengeId"), Number: testPtr[int32](1), Label: descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(), Type: descriptorpb.FieldDescriptorProto_TYPE_STRING.Enum()},
+							{Name: testPtr("response_json"), JsonName: testPtr("responseJson"), Number: testPtr[int32](2), Label: descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(), Type: descriptorpb.FieldDescriptorProto_TYPE_BYTES.Enum()},
+						},
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("build files: %v", err)
+	}
+	desc, err := files.FindDescriptorByName("api.v1.PasskeyStepUpFinishRequest")
+	if err != nil {
+		t.Fatalf("find request: %v", err)
+	}
+	msg := dynamicpb.NewMessage(desc.(protoreflect.MessageDescriptor))
+
+	err = protoJSONUnmarshal([]byte(`{"challenge_id":"step-up-1","response":{"id":"credential","response":{"clientDataJSON":"abc"}}}`), msg, dynamicpb.NewTypes(files))
+	if err != nil {
+		t.Fatalf("unmarshal response alias: %v", err)
+	}
+	field := msg.Descriptor().Fields().ByName("response_json")
+	got := string(msg.Get(field).Bytes())
+	if got != `{"id":"credential","response":{"clientDataJSON":"abc"}}` {
+		t.Fatalf("response_json = %s", got)
+	}
+}
+
+func TestProtoJSONUnmarshalMapsJSONObjectBytesJSONField(t *testing.T) {
+	files, err := protodesc.NewFiles(&descriptorpb.FileDescriptorSet{
+		File: []*descriptorpb.FileDescriptorProto{
+			{
+				Name:    testPtr("direct_bytes_json.proto"),
+				Package: testPtr("api.v1"),
+				Syntax:  testPtr("proto3"),
+				MessageType: []*descriptorpb.DescriptorProto{
+					{
+						Name: testPtr("PasskeyLoginFinishRequest"),
+						Field: []*descriptorpb.FieldDescriptorProto{
+							{Name: testPtr("response_json"), JsonName: testPtr("responseJson"), Number: testPtr[int32](1), Label: descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(), Type: descriptorpb.FieldDescriptorProto_TYPE_BYTES.Enum()},
+						},
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("build files: %v", err)
+	}
+	desc, err := files.FindDescriptorByName("api.v1.PasskeyLoginFinishRequest")
+	if err != nil {
+		t.Fatalf("find request: %v", err)
+	}
+	msg := dynamicpb.NewMessage(desc.(protoreflect.MessageDescriptor))
+
+	err = protoJSONUnmarshal([]byte(`{"response_json":{"id":"credential"}}`), msg, dynamicpb.NewTypes(files))
+	if err != nil {
+		t.Fatalf("unmarshal response_json object: %v", err)
+	}
+	field := msg.Descriptor().Fields().ByName("response_json")
+	if got := string(msg.Get(field).Bytes()); got != `{"id":"credential"}` {
+		t.Fatalf("response_json = %s", got)
+	}
+}
+
 func TestReflectionProxyInvokeReturnsInvalidArgumentForParseFailure(t *testing.T) {
 	files, err := protodesc.NewFiles(&descriptorpb.FileDescriptorSet{
 		File: []*descriptorpb.FileDescriptorProto{

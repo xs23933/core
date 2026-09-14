@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -251,11 +252,78 @@ func protoJSONUnmarshal(data []byte, msg proto.Message, resolver interface {
 	protoregistry.MessageTypeResolver
 	protoregistry.ExtensionTypeResolver
 }) error {
+	data = normalizeJSONBytesFields(data, msg.ProtoReflect().Descriptor())
 	data = promoteFlatMessageFields(data, msg.ProtoReflect().Descriptor())
 	return (&protojson.UnmarshalOptions{
 		DiscardUnknown: true,
 		Resolver:       resolver,
 	}).Unmarshal(data, msg)
+}
+
+func normalizeJSONBytesFields(data []byte, desc protoreflect.MessageDescriptor) []byte {
+	var values map[string]json.RawMessage
+	if err := json.Unmarshal(data, &values); err != nil {
+		return data
+	}
+
+	changed := false
+	fields := desc.Fields()
+	for i := 0; i < fields.Len(); i++ {
+		field := fields.Get(i)
+		if field.Kind() != protoreflect.BytesKind || field.IsList() || field.IsMap() {
+			continue
+		}
+
+		if key, raw, ok := rawFieldValue(values, field); ok && !rawJSONIsString(raw) {
+			values[key] = rawJSONBytesValue(raw)
+			changed = true
+			continue
+		}
+
+		fieldName := string(field.Name())
+		if !strings.HasSuffix(fieldName, "_json") {
+			continue
+		}
+		alias := strings.TrimSuffix(fieldName, "_json")
+		if _, raw, ok := rawFieldValue(values, field); ok && len(raw) > 0 {
+			continue
+		}
+		raw, ok := values[alias]
+		if !ok || len(raw) == 0 {
+			continue
+		}
+		values[field.JSONName()] = rawJSONBytesValue(raw)
+		delete(values, alias)
+		changed = true
+	}
+
+	if !changed {
+		return data
+	}
+	normalized, err := json.Marshal(values)
+	if err != nil {
+		return data
+	}
+	return normalized
+}
+
+func rawFieldValue(values map[string]json.RawMessage, field protoreflect.FieldDescriptor) (string, json.RawMessage, bool) {
+	if value, ok := values[field.JSONName()]; ok {
+		return field.JSONName(), value, true
+	}
+	name := string(field.Name())
+	value, ok := values[name]
+	return name, value, ok
+}
+
+func rawJSONIsString(raw json.RawMessage) bool {
+	var value string
+	return json.Unmarshal(raw, &value) == nil
+}
+
+func rawJSONBytesValue(raw json.RawMessage) json.RawMessage {
+	encoded, _ := json.Marshal(base64.StdEncoding.EncodeToString(raw))
+	return encoded
 }
 
 func promoteFlatMessageFields(data []byte, desc protoreflect.MessageDescriptor) []byte {
