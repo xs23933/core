@@ -140,6 +140,8 @@ app.Use(core.Logger())
 // 3. Debug 模式下输出完整堆栈 + 请求头
 ```
 
+`net/http.ErrAbortHandler`（以及包装后的同一错误）按标准库语义作为静默中止信号处理：不输出 panic 日志、不调用自定义 recovery handler，也不再尝试写入 500。这通常发生在反向代理或 SSE 客户端已经断开连接时。普通 panic 仍按上述流程处理。
+
 自定义 Recovery 行为：
 
 ```go

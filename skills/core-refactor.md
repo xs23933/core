@@ -55,6 +55,8 @@ type Enum interface { ~uint8 }  // 枚举类型约束
 type Pages / NextPages / Page[T] / NextPage[T]
 func FindPage / FindNext / FindPageBy / FindNextBy / Find
 func Where(whr *Map, db ...*DB) (*DB, int, int)
+// 真正的 keyset cursor 实现在 model_cursor.go：
+// CursorSpec / FindsModeCursor / EncodeCursorToken / DecodeCursorToken
 
 // 事务
 func WithTransaction(tx *DB, fn func(*DB) error) error
@@ -219,6 +221,24 @@ func createClickLogsTable(db *gorm.DB) error {
 
 ## 4. 分页函数迁移（旧 → 新）
 
+新建或深分页列表应直接迁移到 `FindsModeCursor`，而不是把 `FindNextBy` 当作 cursor：
+
+```go
+result, err := core.Finds[User](core.FindsParams{
+    Where: whr,
+    DB: db,
+    Mode: core.FindsModeCursor,
+    Cursor: &core.CursorSpec{
+        Token: token,
+        Direction: core.CursorDirection(direction),
+        Fields: []string{"created_at", "id"},
+        Desc: true,
+    },
+})
+```
+
+`FindsModeCursor` 不执行 `COUNT`/`OFFSET`。最后一个排序字段必须唯一；调用方改变筛选或排序时必须丢弃旧 token。
+
 ### 旧版 FindPage / FindNext
 
 ```go
@@ -232,7 +252,7 @@ var users []User
 result, err := core.FindNext(whr, &users)
 ```
 
-### 新版 FindPageBy / FindNextBy（推荐）
+### 兼容泛型 FindPageBy / FindNextBy
 
 ```go
 // 新：泛型版本，类型安全

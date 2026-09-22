@@ -893,6 +893,13 @@ func CustomRecoveryWithWriter(out io.Writer, handle RecoveryFunc) HandlerFunc {
 	return func(c Ctx) error {
 		defer func() {
 			if err := recover(); err != nil {
+				// net/http uses ErrAbortHandler to stop the current request without
+				// logging a panic. ReverseProxy raises it when an SSE client leaves;
+				// preserve the standard server behavior here as well.
+				abortErr, isError := err.(error)
+				if err == http.ErrAbortHandler || (isError && (errors.Is(abortErr, http.ErrAbortHandler) || abortErr.Error() == http.ErrAbortHandler.Error())) {
+					return
+				}
 				// Check for a broken connection, as it is not really a
 				// condition that warrants a panic stack trace.
 				var brokenPipe bool

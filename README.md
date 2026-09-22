@@ -1248,7 +1248,7 @@ subQuery := core.Conn().Model(&Order{}).Select("user_id").Where("amount > ?", 10
 core.Conn().Where("id IN (?)", subQuery).Find(&users)
 ```
 
-### 4. 分页查询：Finds、FindPageBy 与 FindNextBy
+### 4. 分页查询：Finds、游标分页与兼容 API
 
 `Finds`、`FindPageBy` 和 `FindNextBy` 都会读取 `core.Map` 中的分页和筛选参数，并可以接收一个已经拼好的 `*core.DB` 作为基础查询。
 
@@ -1267,11 +1267,11 @@ core.Conn().Where("id IN (?)", subQuery).Find(&users)
 | `^field`   | 前缀匹配，等价于 `value%`         |
 | `field$`   | 后缀匹配，等价于 `%value`         |
 
-两者区别：
+三类入口的区别：
 
-- `Finds`：推荐用于新代码，通过 `FindsParams` 传递 `Where`、`DB`、`Mode` 和 `Extra`，内部创建结果 slice；默认返回带 `total` 的经典分页，`Mode: core.FindsModeNext` 时返回 `next/prev`。
+- `Finds`：推荐用于新代码，通过 `FindsParams` 传递 `Where`、`DB`、`Mode`、`Cursor` 和 `Extra`。默认返回带 `total` 的经典分页；`FindsModeCursor` 使用真正的 keyset cursor，不执行 `COUNT` 或 `OFFSET`。
 - `FindPageBy`：返回 `Page[T]`，包含 `total` 总数；适合后台管理、需要显示总页数的列表。代价是会执行 count。
-- `FindNextBy`：返回 `NextPage[T]`，包含 `next/prev`；通过查询 `limit + 1` 判断是否还有下一页，不统计总数。适合滚动加载、移动端列表、数据量较大的查询。
+- `FindNextBy`：兼容旧代码的无 `COUNT` 页码 API，仍按 `p` 生成 `OFFSET`，不是真正的游标分页；新代码处理大列表时使用 `FindsModeCursor`。
 
 #### Finds：推荐的新分页入口
 
@@ -1301,6 +1301,53 @@ func (dao *UsersViewDAO) List(ctx context.Context, whr *core.Map, next bool) (co
     })
 }
 ```
+
+#### FindsModeCursor：真正的 keyset cursor
+
+游标模式只读取 `Where` 中的 `l` 和业务筛选条件，不读取 `p`、`asc` 或 `desc`。排序必须通过 `CursorSpec` 明确声明。字段仅允许安全的单段或一层限定标识符，例如 `id`、`orders.created_at`；使用一个唯一字段，或使用一个排序字段加一个唯一 tie-breaker：
+
+```go
+func (dao *OrderDAO) List(ctx context.Context, whr *core.Map, token, direction string) (core.FindsResult[model.Order], error) {
+    tx := dao.db.WithContext(ctx).Model(&model.Order{})
+    return core.Finds[model.Order](core.FindsParams{
+        Where: whr,
+        DB:    tx,
+        Mode:  core.FindsModeCursor,
+        Cursor: &core.CursorSpec{
+            Token:     token,
+            Direction: core.CursorDirection(direction), // "next" 或 "prev"；空值按 next
+            Fields:    []string{"created_at", "id"},
+            Desc:      true,
+        },
+    })
+}
+```
+
+首次查询传空 token。后翻传上一响应的 `next_cursor` 和 `next`，前翻传 `prev_cursor` 和 `prev`。前翻查询会临时反转 SQL 排序并在返回前恢复规范顺序，因此调用方始终收到相同的 `created_at DESC, id DESC` 顺序。
+
+```json
+{
+  "p": 1,
+  "l": 20,
+  "next_cursor": "eyJ2IjoxLC4uLn0",
+  "has_next": true,
+  "has_prev": false,
+  "data": []
+}
+```
+
+实现使用 `limit + 1` 判断当前导航方向是否还有数据，不执行 `COUNT` 或 `OFFSET`。token 是版本化的 URL-safe opaque 值，并绑定字段和升降序；它不是签名或授权凭据。排序字段应为非空，最后一个字段必须唯一且具备索引。常用组合是 `created_at,id` 或单独的 `id`。
+
+需要先合并多个数据源的列表可以复用相同 token 格式：
+
+```go
+token, err := core.EncodeCursorToken([]string{"created_at", "id"}, true, row.CreatedAt, row.ID)
+values, err := core.DecodeCursorToken(core.CursorSpec{
+    Token: token, Fields: []string{"created_at", "id"}, Desc: true,
+})
+```
+
+`DecodeCursorToken` 对版本、字段、排序和值数量进行校验，并以 `json.Number` 返回 JSON 数字，避免 64 位 ID 精度损失。聚合查询仍需自行实现各数据源的边界查询和 `limit + 1` 合并。
 
 #### FindPageBy：带总数分页
 
@@ -1338,9 +1385,9 @@ func (dao *UsersViewDAO) ListPage(ctx context.Context, whr *core.Map) (core.Page
 }
 ```
 
-#### FindNextBy：后推分页
+#### FindNextBy：兼容的无 Count 页码分页
 
-`FindNextBy` 会多查一条数据判断 `next`，并在返回前裁掉探针行。
+`FindNextBy` 会多查一条数据判断 `next`，并在返回前裁掉探针行。它仍使用 `p`/`OFFSET`，仅用于兼容现有调用方。
 
 ```go
 func (dao *UsersViewDAO) ListNext(ctx context.Context, whr *core.Map) (core.NextPage[user.UsersView], error) {
@@ -2090,6 +2137,8 @@ core.Warn("API 调用频繁: %s", ip)
 core.Erro("数据库连接失败: %v", err)
 core.D("请求参数: %v", params)
 ```
+
+`core.New()` 默认注册的 Recovery 会捕获普通 panic、记录堆栈并返回 500。对于 `net/http.ErrAbortHandler`（包括包装后的同一错误），Recovery 会按标准库语义静默终止当前请求，不记录 panic、不调用自定义 recovery handler，也不再尝试写入 500；这适用于反向代理或 SSE 客户端已断开连接的场景。
 
 #### 日志轮转
 

@@ -126,7 +126,7 @@ HTTP 请求 → Preload（鉴权） → Handler 方法（参数解析/调用 Ser
 - 四种基础模型：`core.Model`（uid.UID）/ `core.Models`（UUID）/ `core.SModels`（雪花ID）/ `core.IModel`（自增）
 - `BeforeCreate` 自动填充主键
 - 自定义类型：UUID（CHAR(32)）、JSON（json）、Money/IntMoney（金额）、Date（日期）
-- 分页查询：`Finds`（新代码推荐）/ `FindPageBy`（经典分页）/ `FindNextBy`（滚动分页）
+- 分页查询：`FindsModeCursor`（新列表推荐的 keyset cursor）/ `FindPageBy`（经典分页）/ `FindNextBy`（兼容无 Count 页码分页）
 - 条件构建：`core.Map` 支持精确/模糊/比较/IN/排序查询
 - 事务：`core.WithTransaction(tx, fn)` 自动提交/回滚
 
@@ -309,12 +309,12 @@ app.POST("/events/push", hub.PostData)
 
 #### core-page — 分页查询
 
-**功能概述**：提供统一分页入口（Finds）、经典分页（FindPageBy，含总数）和滚动分页（FindNextBy，无 Count），通过 `core.Map` 构建灵活的筛选条件。
+**功能概述**：提供统一分页入口（Finds）、真正的 keyset cursor（FindsModeCursor）、经典分页（FindPageBy，含总数）和兼容无 Count 页码分页（FindNextBy），通过 `core.Map` 构建灵活的筛选条件。
 
 **核心特性**：
-- `Finds`：新代码推荐，使用 `FindsParams` 统一传递 Where/DB/Mode，默认返回 total，`FindsModeNext` 返回 next/prev
+- `Finds`：新代码推荐，使用 `FindsParams` 统一传递 Where/DB/Mode/Cursor；`FindsModeCursor` 返回前后 cursor 和 has flags，不使用 COUNT/OFFSET
 - `FindPageBy`：适用于后台管理表格，返回 total
-- `FindNextBy`：适用于移动端无限滚动，返回 next/prev
+- `FindNextBy`：兼容旧滚动列表，返回 next/prev，但仍使用页码 OFFSET
 - 丰富的筛选操作符：精确/模糊/前缀/后缀/比较/IN/Omit
 
 ---
@@ -867,7 +867,7 @@ func main() {
 
 - **连接池配置**：`max_open_conns: 100`，`max_idle_conns: 20`，按实际负载调整
 - **避免 N+1 查询**：使用 `Preload` / `Joins` 预加载关联数据
-- **分页查询优化**：滚动分页（FindNextBy）比经典分页（FindPageBy）更适合大数据量场景，避免 COUNT 全表扫描
+- **分页查询优化**：大数据列表使用 `FindsModeCursor` 的 keyset 分页，避免 `COUNT` 和深分页 `OFFSET`；`FindNextBy` 仅避免 COUNT，仍会使用 OFFSET
 - **ClickHouse 专用**：禁止使用 `AutoMigrate`，必须手写 DDL 并确保 `ORDER BY` 匹配查询条件，查询时必须显式列名而非 `SELECT *`
 - **索引策略**：为高频查询条件创建复合索引，定期分析慢查询日志
 
@@ -1018,9 +1018,9 @@ func main() {
 | ---- | ---- |
 | `core.Conn()` | 获取默认数据库连接 |
 | `core.Conn("name")` | 获取命名数据库连接 |
-| `core.Finds[T](core.FindsParams{Where: whr, DB: db})` | 统一分页入口（推荐） |
+| `core.Finds[T](core.FindsParams{Where: whr, DB: db, Mode: core.FindsModeCursor, Cursor: spec})` | Keyset 游标分页（新列表推荐） |
 | `core.FindPageBy[T](whr, &list, db)` | 经典分页（泛型） |
-| `core.FindNextBy[T](whr, &list, db)` | 滚动分页（泛型） |
+| `core.FindNextBy[T](whr, &list, db)` | 兼容无 Count 页码分页（泛型，仍使用 OFFSET） |
 | `core.Where(whr, db)` | 条件构建 |
 | `core.WithTransaction(tx, fn)` | 事务处理 |
 | `core.Expr(sql, args...)` | 原生 SQL 表达式 |

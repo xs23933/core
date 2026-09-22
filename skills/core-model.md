@@ -203,19 +203,37 @@ result, err := core.FindPage(whr, &users)
 // result.P, result.L, result.Total, result.Data (any)
 ```
 
-### 游标分页（Next/Prev）
+### Keyset 游标分页（新列表推荐）
 
 ```go
-// 新代码推荐
+result, err := core.Finds[User](core.FindsParams{
+    Where: whr,
+    DB: db,
+    Mode: core.FindsModeCursor,
+    Cursor: &core.CursorSpec{
+        Token: token,
+        Direction: core.CursorDirectionNext,
+        Fields: []string{"created_at", "id"},
+        Desc: true,
+    },
+})
+// result.NextCursor / PrevCursor / CursorHasNext / CursorHasPrev
+```
+
+`FindsModeCursor` 使用 `(created_at,id)` 或唯一 `id` 的 keyset 比较和 `limit + 1`，不使用 `COUNT`/`OFFSET`。前翻使用 `CursorDirectionPrev`，返回数据仍保持规范排序。字段必须是安全标识符，最后一个字段必须唯一且非空。
+
+### 兼容无 Count 页码分页（非 cursor）
+
+```go
 result, err := core.Finds[User](core.FindsParams{Where: whr, DB: db, Mode: core.FindsModeNext})
 
-// 泛型版本（推荐）
 result, err := core.FindNextBy[User](whr, &users)
 // result.P, result.L, result.Next, result.Prev, result.Data
 
-// any 版本
 result, err := core.FindNext(whr, &users)
 ```
+
+`FindsModeNext` 和 `FindNextBy` 仍读取 `p` 并使用 `OFFSET`，仅用于兼容旧调用。
 
 ### Where 条件构建
 

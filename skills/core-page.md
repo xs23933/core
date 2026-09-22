@@ -21,13 +21,14 @@ tags: [go, core-framework, pagination, query]
 
 ## 核心规范
 
-### 1. 三种分页方式
+### 1. 四种分页方式
 
 | 方式          | 方法           | 适用场景           | 是否 Count |
 | ------------- | -------------- | ------------------ | ---------- |
 | 统一分页入口  | `Finds`        | 新代码、DAO 封装   | 可选       |
+| Keyset 游标   | `FindsModeCursor` | 大数据列表、前后翻页 | ❌ 否    |
 | 传统分页      | `FindPageBy`   | 后台管理、表格列表 | ✅ 是      |
-| 滚动分页      | `FindNextBy`   | 移动端、无限滚动   | ❌ 否      |
+| 兼容无 Count 页码 | `FindNextBy` | 旧移动端、旧滚动列表 | ❌ 否    |
 
 ### 2. Finds（推荐）
 
@@ -47,9 +48,32 @@ func (dao *UserDAO) List(ctx context.Context, whr *core.Map, next bool) (core.Fi
 }
 ```
 
-`Finds` 内部创建结果 slice，默认使用 `FindsModePage` 返回 `total`；传 `FindsModeNext` 时返回 `next/prev`，并自动裁掉 `limit + 1` 的探针行。`Finds` 会复制传入的 `Where`，不会删除调用方 `Map` 中的分页、排序特殊 key。
+`Finds` 内部创建结果 slice，默认使用 `FindsModePage` 返回 `total`；传 `FindsModeNext` 时保留旧的 offset/next 行为；传 `FindsModeCursor` 时使用 keyset 比较，返回 `next_cursor`、`prev_cursor`、`has_next`、`has_prev`。`Finds` 会复制传入的 `Where`，不会删除调用方 `Map` 中的分页、排序特殊 key。
 
-### 3. FindPageBy（带总数）
+### 3. FindsModeCursor（新列表推荐）
+
+```go
+result, err := core.Finds[model.Order](core.FindsParams{
+    Where: &core.Map{"l": req.PageSize, "status": req.Status},
+    DB:    dao.db.WithContext(ctx).Model(&model.Order{}),
+    Mode:  core.FindsModeCursor,
+    Cursor: &core.CursorSpec{
+        Token:     req.Cursor,
+        Direction: core.CursorDirection(req.CursorDirection),
+        Fields:    []string{"created_at", "id"},
+        Desc:      true,
+    },
+})
+```
+
+- 首次请求 token 留空；空 direction 按 `next`。
+- 后翻使用 `NextCursor` + `CursorDirectionNext`，前翻使用 `PrevCursor` + `CursorDirectionPrev`。
+- `Fields` 只允许一个唯一字段，或一个排序字段加一个唯一 tie-breaker；支持 `table.column`，不支持 SQL 表达式。
+- cursor 模式忽略 `p`、`asc`、`desc`，不执行 `COUNT` 或 `OFFSET`，始终用 `limit + 1` 探测当前方向。
+- token 会校验版本、字段、排序和值数量；它是 opaque 位置标记，不是签名或授权凭据。
+- 聚合列表使用 `EncodeCursorToken` / `DecodeCursorToken` 复用 token 格式，但自行处理各数据源的边界查询与合并。
+
+### 4. FindPageBy（带总数）
 
 ```go
 type UserHandler struct {
@@ -81,7 +105,9 @@ func (h *UserHandler) Get(c core.Ctx) {
 }
 ```
 
-### 4. FindNextBy（滚动分页）
+### 5. FindNextBy（兼容无 Count 页码分页）
+
+`FindNextBy` 仍从 `p` 计算 `OFFSET`，不是真正的 cursor，只用于兼容已有调用。
 
 ```go
 // GET /api/v1/users/next
@@ -105,7 +131,7 @@ func (h *UserHandler) GetNext(c core.Ctx) {
 }
 ```
 
-### 5. 带复杂条件的查询
+### 6. 带复杂条件的查询
 
 ```go
 // DAO 层封装
@@ -154,7 +180,7 @@ func (dao *UserDAO) ListPage(ctx context.Context, whr *core.Map) (core.Page[vo.U
 }
 ```
 
-### 6. 筛选参数详解
+### 7. 筛选参数详解
 
 | 参数写法        | 说明           | SQL 结果                        |
 | --------------- | -------------- | ------------------------------- |
@@ -170,7 +196,7 @@ func (dao *UserDAO) ListPage(ctx context.Context, whr *core.Map) (core.Page[vo.U
 | `"asc": "name"`  | 升序排序       | `ORDER BY name ASC`             |
 | `"desc": "age"`  | 降序排序       | `ORDER BY age DESC`             |
 
-### 7. 返回值结构
+### 8. 返回值结构
 
 #### FindPageBy 返回
 
@@ -220,7 +246,21 @@ func (dao *UserDAO) ListPage(ctx context.Context, whr *core.Map) (core.Page[vo.U
 }
 ```
 
-### 8. 完整 Handler 示例
+`FindsModeCursor` 返回：
+
+```json
+{
+  "p": 1,
+  "l": 20,
+  "next_cursor": "eyJ2IjoxLC4uLn0",
+  "prev_cursor": "eyJ2IjoxLC4uLn0",
+  "has_next": true,
+  "has_prev": true,
+  "data": []
+}
+```
+
+### 9. 完整 Handler 示例
 
 ```go
 package handler
@@ -282,12 +322,14 @@ func (h *ProductHandler) GetScroll(c core.Ctx) {
 - ❌ 在循环中查询数据库（N+1 问题）
 - ❌ 不设置分页大小上限
 - ❌ 新代码继续在 DAO 中手动维护 out slice 和分页模式分支，优先用 `Finds`
+- ❌ 把 `FindNextBy` / `FindsModeNext` 当作真正的 cursor
+- ❌ cursor 只按非唯一字段排序
 
 ## 输出要求
 
 生成分页代码时必须包含：
 
-1. ✅ 新代码优先使用 `Finds`；兼容旧代码时使用 `FindPageBy` 或 `FindNextBy`
+1. ✅ 新列表优先使用 `FindsModeCursor`；兼容旧代码时使用 `FindPageBy` 或 `FindNextBy`
 2. ✅ 正确的参数映射
 3. ✅ 排序字段设置
 4. ✅ 错误处理

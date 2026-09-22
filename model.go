@@ -1156,33 +1156,52 @@ type Page[T any] struct {
 type FindsMode string
 
 const (
-	FindsModePage FindsMode = "page"
-	FindsModeNext FindsMode = "next"
+	FindsModePage   FindsMode = "page"
+	FindsModeNext   FindsMode = "next"
+	FindsModeCursor FindsMode = "cursor"
 )
 
 type FindsParams struct {
-	Where *Map
-	DB    *DB
-	Mode  FindsMode
-	Extra any
+	Where  *Map
+	DB     *DB
+	Mode   FindsMode
+	Cursor *CursorSpec
+	Extra  any
 }
 
 type FindsResult[T any] struct {
-	P     int    `json:"p"`
-	L     int    `json:"l"`
-	Total *int64 `json:"total,omitempty"`
-	Next  *bool  `json:"next,omitempty"`
-	Prev  *bool  `json:"prev,omitempty"`
-	Data  []T    `json:"data"`
-	Extra any    `json:"extra,omitempty"`
+	P             int    `json:"p"`
+	L             int    `json:"l"`
+	Total         *int64 `json:"total,omitempty"`
+	Next          *bool  `json:"next,omitempty"`
+	Prev          *bool  `json:"prev,omitempty"`
+	NextCursor    string `json:"next_cursor,omitempty"`
+	PrevCursor    string `json:"prev_cursor,omitempty"`
+	CursorHasNext *bool  `json:"has_next,omitempty"`
+	CursorHasPrev *bool  `json:"has_prev,omitempty"`
+	Data          []T    `json:"data"`
+	Extra         any    `json:"extra,omitempty"`
 }
 
 func (r FindsResult[T]) HasNext() bool {
+	if r.CursorHasNext != nil {
+		return *r.CursorHasNext
+	}
 	return r.Next != nil && *r.Next
+}
+
+func (r FindsResult[T]) HasPrev() bool {
+	if r.CursorHasPrev != nil {
+		return *r.CursorHasPrev
+	}
+	return r.Prev != nil && *r.Prev
 }
 
 func Finds[T any](params FindsParams) (result FindsResult[T], err error) {
 	whr := cloneFindsWhere(params.Where)
+	if params.Mode == FindsModeCursor {
+		return findCursor[T](params, whr)
+	}
 	var tx *DB
 	var pos, lmt int
 	if params.DB != nil {

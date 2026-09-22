@@ -301,10 +301,12 @@ func (h *UserHandler) Stop(app *core.Core) error {
     ```
 - **分页查询**:
     - **新代码推荐**: `core.Finds[User](core.FindsParams{Where: whr, DB: tx})`
-        - 默认总数分页；`Mode: core.FindsModeNext` 切换为滚动分页。
+        - 默认总数分页；大列表使用 `Mode: core.FindsModeCursor` + `CursorSpec` 做真正的 keyset cursor。
+        - `CursorSpec.Fields` 使用一个唯一字段，或“排序字段 + 唯一 tie-breaker”，例如 `[]string{"created_at", "id"}`；通过 `Desc` 固定方向。
     - **总数分页 (后台)**: `core.FindPageBy(whr, &users, tx)`
         - 支持参数: `p`(页码), `l`(数量), `desc`/`asc`(排序), `field*`(包含), `field IN`(范围)。
-    - **滚动分页 (移动端)**: `core.FindNextBy(whr, &users, tx)`
+    - **兼容的无 Count 页码分页**: `core.FindNextBy(whr, &users, tx)`
+        - 仍使用 `p`/`OFFSET`，不是真正的 cursor；不要用于新建的大数据列表。
 
 - **钩子**: 支持 GORM 钩子 (`BeforeSave`, `AfterFind` 等)。
 
@@ -711,6 +713,8 @@ log.Println(...)
 * 不记录敏感信息
 * 不打印密码/token
 * `RotatingLogWriter.RedirectStdout` 后轮转固定使用 copy-truncate，保持 `os.Stdout` 指针/文件描述符稳定；不要在业务代码中自行替换全局 `os.Stdout`
+* `core.New()` 已注册 Recovery；普通 panic 会记录并返回 500
+* `net/http.ErrAbortHandler` 是标准库的静默中止信号，Recovery 不记录堆栈、不调用自定义 recovery handler，也不再写 500；反向代理或 SSE 客户端断开时不要把它当作业务 panic
 
 推荐：
 
@@ -877,27 +881,48 @@ type User struct {
 
 ### 3.16 分页规范
 
-后台管理：
+需要总数的兼容后台管理：
 
 ```go
 core.Finds[User](core.FindsParams{Where: whr, DB: tx})
 ```
 
-移动端：
+所有大数据列表和新列表：
 
 ```go
-core.Finds[User](core.FindsParams{Where: whr, DB: tx, Mode: core.FindsModeNext})
+core.Finds[User](core.FindsParams{
+    Where: whr,
+    DB: tx,
+    Mode: core.FindsModeCursor,
+    Cursor: &core.CursorSpec{
+        Token: req.Cursor,
+        Direction: core.CursorDirection(req.CursorDirection),
+        Fields: []string{"created_at", "id"},
+        Desc: true,
+    },
+})
 ```
+
+游标模式规则：
+
+* 请求使用 `cursor`、`cursor_direction`（`next|prev`）和 `page_size`；DAO 映射到 `CursorSpec.Token`、`Direction` 与 `Where["l"]`。
+* 响应使用 `next_cursor`、`prev_cursor`、`has_next`、`has_prev`；Go 结果字段为 `NextCursor`、`PrevCursor`、`CursorHasNext`、`CursorHasPrev`。
+* `Fields` 只接受一到两个安全标识符，可用 `table.column`；最后字段必须唯一，排序字段必须非空并建立匹配索引。
+* `FindsModeCursor` 使用 keyset 比较和 `limit + 1`，不执行 `COUNT` 或 `OFFSET`。`Where` 中的 `p`、`asc`、`desc` 在此模式被忽略。
+* token 是版本化 opaque 值，会校验字段和排序，但不是授权凭据。聚合列表使用 `EncodeCursorToken` / `DecodeCursorToken` 复用格式，自行完成跨数据源边界合并。
 
 禁止：
 
 * 手写 limit/offset
 * 返回无限数据
+* 把 `FindsModeNext` 或 `FindNextBy` 称为真正的 cursor
+* 只按非唯一时间字段分页，导致同值记录丢失或重复
 
 推荐：
 
 * 默认分页
 * 最大限制 limit
+* cursor 使用 `created_at,id` 或单独唯一 `id` 的稳定排序
 
 ## 4. 代码生成模板
 
