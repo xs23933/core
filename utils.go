@@ -896,33 +896,96 @@ type iGet interface {
 	Get(key string) string
 }
 
+// RemoteIP 按头优先级解析客户端 IP（向后兼容，不校验可信代理）。
 func RemoteIP(h iGet, ip string) net.IP {
-	// 按照优先级检查各个HTTP头
+	return remoteIP(h, ip, nil, false)
+}
+
+// remoteIP 是 RemoteIP 的通用实现。
+// checkTrust 为 true 时，仅当 TCP 对端 IP 命中可信代理（Cloudflare 回源段或 trusted）才采信转发头；
+// 为 false 时按头优先级解析（保持 RemoteIP 的旧行为）。
+func remoteIP(h iGet, remoteAddr string, trusted []*net.IPNet, checkTrust bool) net.IP {
+	remote := parseIPFromAddr(remoteAddr)
+	if checkTrust && !isTrustedProxy(remote, trusted) {
+		return remote
+	}
+
 	for _, header := range ipHeaders {
-		ip := strings.TrimSpace(h.Get(header))
-		if ip == "" {
+		v := strings.TrimSpace(h.Get(header))
+		if v == "" {
 			continue
 		}
 		// 多个 IP 时取第一个（用户真实 IP）
 		if header == "X-Forwarded-For" {
-			parts := strings.Split(ip, ",")
-			ip = strings.TrimSpace(parts[0])
+			parts := strings.Split(v, ",")
+			v = strings.TrimSpace(parts[0])
 		}
-		if realIP := net.ParseIP(ip); realIP != nil {
+		if realIP := net.ParseIP(v); realIP != nil {
 			return realIP
 		}
 	}
+	return remote
+}
 
-	// 最后 RemoteAddr
-	ip = strings.TrimSpace(ip)
-	if host, _, err := net.SplitHostPort(ip); err == nil {
-		ip = host
+// parseIPFromAddr 解析 RemoteAddr（可能带端口），返回 IP。
+func parseIPFromAddr(addr string) net.IP {
+	addr = strings.TrimSpace(addr)
+	if host, _, err := net.SplitHostPort(addr); err == nil {
+		addr = host
 	}
-	if realIP := net.ParseIP(ip); realIP != nil {
-		return realIP
-	}
+	return net.ParseIP(addr)
+}
 
-	return nil
+// cloudflareIPv4Ranges 是 Cloudflare 官方回源 IP 段（IPv4），
+// 用于判断请求是否确实来自 Cloudflare 边缘，防止伪造 CF-Connecting-IP。
+var cloudflareIPv4Ranges = []string{
+	"173.245.48.0/20",
+	"103.21.244.0/22",
+	"103.22.200.0/22",
+	"103.31.4.0/22",
+	"141.101.64.0/18",
+	"108.162.192.0/18",
+	"190.93.240.0/20",
+	"188.114.96.0/20",
+	"197.234.240.0/22",
+	"198.41.128.0/17",
+	"162.158.0.0/15",
+	"104.16.0.0/13",
+	"104.24.0.0/14",
+	"172.64.0.0/13",
+	"131.0.72.0/22",
+}
+
+// parseCIDRs 将 CIDR 字符串列表解析为 *net.IPNet，忽略非法项。
+func parseCIDRs(cidrs []string) []*net.IPNet {
+	nets := make([]*net.IPNet, 0, len(cidrs))
+	for _, cidr := range cidrs {
+		if _, ipNet, err := net.ParseCIDR(strings.TrimSpace(cidr)); err == nil {
+			nets = append(nets, ipNet)
+		}
+	}
+	return nets
+}
+
+// cloudflareNets 是 Cloudflare 回源 IP 段的解析结果，进程启动时解析一次。
+var cloudflareNets = parseCIDRs(cloudflareIPv4Ranges)
+
+// isTrustedProxy 判断 ip 是否属于可信代理（Cloudflare 回源段或配置的 trusted）。
+func isTrustedProxy(ip net.IP, trusted []*net.IPNet) bool {
+	if ip == nil {
+		return false
+	}
+	for _, n := range trusted {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	for _, n := range cloudflareNets {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 type mda struct {

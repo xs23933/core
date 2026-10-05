@@ -61,6 +61,7 @@ type Core struct {
 	routeLocks []sync.RWMutex
 
 	Conf           Options
+	trustedProxies []*net.IPNet
 	assets         Options
 	Debug          bool
 	addr           string
@@ -222,6 +223,8 @@ func New(options ...Options) *Core {
 		app.MaxMultipartMemory = app.Conf.GetInt64("max_multipart_memory", defaultMultipartMemory)
 	}
 	Conf = app.Conf
+
+	app.trustedProxies = parseCIDRs(app.Conf.GetStrings("trusted_proxies"))
 
 	app.RequestMethods = Conf.GetStrings("methods", Methods[:len(Methods)-1])
 

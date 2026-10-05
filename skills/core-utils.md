@@ -139,6 +139,11 @@ ua := core.GrpcHeader(ctx, "user-agent")
 3. `X-Forwarded-For` 的第一个 IP
 4. `RemoteAddr`
 
+> 安全提示：HTTP 上下文 `c.RemoteIP()` 会先校验请求是否来自可信代理
+> （Cloudflare 回源 IP 段或配置项 `trusted_proxies` 中的 CIDR），只有可信代理才
+> 采信上述转发头，否则直接返回 `RemoteAddr`，防止客户端伪造 IP。
+> 包级函数 `core.RemoteIP(header, addr)` 为兼容旧调用方，不做可信代理校验。
+
 ## 6. 错误工具
 
 ```go

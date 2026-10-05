@@ -89,6 +89,8 @@ debug: true # 调试模式
 network: tcp4 # 网络协议
 listen: 8080 # 监听端口
 prefork: false # 是否启用 prefork 模式
+# 可信代理 CIDR 列表，仅当请求来自这些 IP 时才采信 X-Forwarded-For 等转发头
+trusted_proxies: [] # 例如: ["10.0.0.0/8", "192.168.0.0/16"]
 log: /var/log/myapp/app.log # 可选：日志文件路径
 log_rotate:
   - size: 300M # 文件达到 300MB 后切割
@@ -2047,6 +2049,7 @@ app := core.New(core.Options{
 | `max_body_size` | string | `"1MB"`   | 最大请求体大小   |
 | `read_timeout`  | string | `"5s"`    | 读取超时         |
 | `write_timeout` | string | `"10s"`   | 写入超时         |
+| `trusted_proxies` | []string | `[]`   | 可信代理 CIDR 列表，请求来自这些 IP 时 RemoteIP 才采信转发头 |
 
 ## 最佳实践
 
