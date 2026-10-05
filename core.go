@@ -224,7 +224,12 @@ func New(options ...Options) *Core {
 	}
 	Conf = app.Conf
 
-	app.trustedProxies = parseCIDRs(app.Conf.GetStrings("trusted_proxies"))
+	app.trustedProxies = parseCIDRs(app.Conf.GetStrings("trusted_proxies", []string{
+		"127.0.0.1/32",
+		"10.0.0.0/8",
+		"172.16.0.0/12",
+		"192.168.0.0/16",
+	}))
 
 	app.RequestMethods = Conf.GetStrings("methods", Methods[:len(Methods)-1])
 

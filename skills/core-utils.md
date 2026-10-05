@@ -132,16 +132,15 @@ info := core.ExtractClientInfo(ctx)
 ua := core.GrpcHeader(ctx, "user-agent")
 ```
 
-`RemoteIP` 的优先级：
+`RemoteIP` 的取值顺序：
 
-1. `Cf-Connecting-Ip`
-2. `X-Real-Ip`
-3. `X-Forwarded-For` 的第一个 IP
-4. `RemoteAddr`
+1. 可信代理校验通过后，`X-Forwarded-For` 的第一个 IP
+2. `RemoteAddr`
 
-> 安全提示：HTTP 上下文 `c.RemoteIP()` 会先校验请求是否来自可信代理
-> （Cloudflare 回源 IP 段或配置项 `trusted_proxies` 中的 CIDR），只有可信代理才
-> 采信上述转发头，否则直接返回 `RemoteAddr`，防止客户端伪造 IP。
+> 安全提示：`c.RemoteIP()` 会先校验请求是否来自可信代理
+> （Cloudflare 回源 IP 段、默认的本机回环与私有网段，或配置项 `trusted_proxies` 中的 CIDR），
+> 只有可信代理才采信 `X-Forwarded-For`，否则直接返回 `RemoteAddr`，防止客户端伪造 IP。
+> 可信代理必须覆盖 `X-Forwarded-For` 写入真实客户端 IP。
 > 包级函数 `core.RemoteIP(header, addr)` 为兼容旧调用方，不做可信代理校验。
 
 ## 6. 错误工具

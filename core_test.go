@@ -44,8 +44,8 @@ func Test_reomoteIP(t *testing.T) {
 		t.Fatalf("forwarded header = %q, want %q", got, "127.0.0.1")
 	}
 
-	if got := ctx.RemoteIP(); !got.Equal(net.ParseIP("192.168.1.2")) {
-		t.Fatalf("remote ip = %v, want %v", got, "192.168.1.2")
+	if got := ctx.RemoteIP(); !got.Equal(net.ParseIP("127.0.0.1")) {
+		t.Fatalf("remote ip = %v, want %v", got, "127.0.0.1")
 	}
 }
 
@@ -79,9 +79,9 @@ func TestRemoteIPTrustedProxy(t *testing.T) {
 		t.Fatalf("untrusted proxy = %v, want 203.0.113.10", got)
 	}
 
-	// Cloudflare 回源 IP 可信 → 采信 CF-Connecting-IP
+	// Cloudflare 回源 IP 可信 → 采信 X-Forwarded-For
 	cf := http.Header{}
-	cf.Set("CF-Connecting-IP", "8.8.8.8")
+	cf.Set("X-Forwarded-For", "8.8.8.8")
 	ctx = app.AcquireCtx(nil, &http.Request{
 		URL:        &url.URL{},
 		RemoteAddr: "173.245.48.1:12345",

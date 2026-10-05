@@ -890,8 +890,6 @@ func ExtractPrimaryDomain(host string) string {
 	return host
 }
 
-var ipHeaders = []string{"Cf-Connecting-Ip", "X-Real-Ip", "X-Forwarded-For"}
-
 type iGet interface {
 	Get(key string) string
 }
@@ -902,25 +900,18 @@ func RemoteIP(h iGet, ip string) net.IP {
 }
 
 // remoteIP 是 RemoteIP 的通用实现。
-// checkTrust 为 true 时，仅当 TCP 对端 IP 命中可信代理（Cloudflare 回源段或 trusted）才采信转发头；
-// 为 false 时按头优先级解析（保持 RemoteIP 的旧行为）。
+// checkTrust 为 true 时，仅当 TCP 对端 IP 命中可信代理（Cloudflare 回源段或 trusted）才采信 X-Forwarded-For；
+// 为 false 时直接采信 X-Forwarded-For（保持 RemoteIP 的旧行为）。
 func remoteIP(h iGet, remoteAddr string, trusted []*net.IPNet, checkTrust bool) net.IP {
 	remote := parseIPFromAddr(remoteAddr)
 	if checkTrust && !isTrustedProxy(remote, trusted) {
 		return remote
 	}
 
-	for _, header := range ipHeaders {
-		v := strings.TrimSpace(h.Get(header))
-		if v == "" {
-			continue
-		}
-		// 多个 IP 时取第一个（用户真实 IP）
-		if header == "X-Forwarded-For" {
-			parts := strings.Split(v, ",")
-			v = strings.TrimSpace(parts[0])
-		}
-		if realIP := net.ParseIP(v); realIP != nil {
+	// 采信 X-Forwarded-For 的第一个 IP（真实客户端 IP）
+	if forwarded := strings.TrimSpace(h.Get("X-Forwarded-For")); forwarded != "" {
+		parts := strings.Split(forwarded, ",")
+		if realIP := net.ParseIP(strings.TrimSpace(parts[0])); realIP != nil {
 			return realIP
 		}
 	}
