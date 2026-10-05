@@ -155,10 +155,55 @@ restful:
 
 prefork: false
 
+# 可信反向代理 CIDR 列表，请求来自这些 IP 时才采信 X-Forwarded-For 获取真实客户端 IP
+# 默认信任本机回环与私有网段(10/8、172.16/12、192.168/16)，可按需覆盖
+trusted_proxies: [] # 例如: ["10.0.0.0/8"]
+
 database:
     type: sqlite3
     dsn: dat
 ```
+
+### 反向代理与真实客户端 IP
+
+应用部署在反向代理（caddy、nginx 等）之后时，`c.RemoteIP()` 看到的 TCP 对端是代理的 IP。
+只有把代理加入 `trusted_proxies`，才会采信 `X-Forwarded-For` 的第一个 IP；
+否则直接返回 TCP 对端地址，防止客户端伪造 IP。
+
+未配置 `trusted_proxies` 时，默认信任本机回环与私有网段（`127.0.0.1`、`10.0.0.0/8`、
+`172.16.0.0/12`、`192.168.0.0/16`），内网反向代理开箱即用；如需只信任 Cloudflare
+回源段，可显式配置 `trusted_proxies: []`。
+
+以 `client -> caddy -> core` 为例：
+
+```yaml
+# config.yaml
+trusted_proxies: ["10.0.0.0/8"] # caddy 出口 IP 所在网段
+```
+
+caddy 侧必须覆盖 `X-Forwarded-For` 写入真实客户端 IP，避免透传客户端伪造的值：
+
+```caddyfile
+example.com {
+    reverse_proxy 127.0.0.1:8080 {
+        header_up X-Forwarded-For {remote_host}
+    }
+}
+```
+
+若上游还有 Cloudflare（`client -> cloudflare -> caddy -> core`），由 caddy 从
+`Cf-Connecting-Ip` 取真实 IP 写入 `X-Forwarded-For`：
+
+```caddyfile
+example.com {
+    reverse_proxy 127.0.0.1:8080 {
+        header_up X-Forwarded-For {http.request.header.CF-Connecting-IP}
+    }
+}
+```
+
+core 只信任 `X-Forwarded-For`；Cloudflare 回源 IP 段也已内置为可信代理，
+因此 Cloudflare 直连 core（无 caddy）时同样能采信其写入的 `X-Forwarded-For`。
 
 # rust-client test file
 ```sh

@@ -744,3 +744,64 @@ func ContainsAny(elems Array, v any) bool {
 	}
 	return false
 }
+
+// parseIPFromAddr 解析 RemoteAddr（可能带端口），返回 IP。
+func parseIPFromAddr(addr string) net.IP {
+	addr = strings.TrimSpace(addr)
+	if host, _, err := net.SplitHostPort(addr); err == nil {
+		addr = host
+	}
+	return net.ParseIP(addr)
+}
+
+// cloudflareIPv4Ranges 是 Cloudflare 官方回源 IP 段（IPv4），
+// 用于判断请求是否确实来自 Cloudflare 边缘，防止伪造 CF-Connecting-IP。
+var cloudflareIPv4Ranges = []string{
+	"173.245.48.0/20",
+	"103.21.244.0/22",
+	"103.22.200.0/22",
+	"103.31.4.0/22",
+	"141.101.64.0/18",
+	"108.162.192.0/18",
+	"190.93.240.0/20",
+	"188.114.96.0/20",
+	"197.234.240.0/22",
+	"198.41.128.0/17",
+	"162.158.0.0/15",
+	"104.16.0.0/13",
+	"104.24.0.0/14",
+	"172.64.0.0/13",
+	"131.0.72.0/22",
+}
+
+// parseCIDRs 将 CIDR 字符串列表解析为 *net.IPNet，忽略非法项。
+func parseCIDRs(cidrs []string) []*net.IPNet {
+	nets := make([]*net.IPNet, 0, len(cidrs))
+	for _, cidr := range cidrs {
+		if _, ipNet, err := net.ParseCIDR(strings.TrimSpace(cidr)); err == nil {
+			nets = append(nets, ipNet)
+		}
+	}
+	return nets
+}
+
+// cloudflareNets 是 Cloudflare 回源 IP 段的解析结果，进程启动时解析一次。
+var cloudflareNets = parseCIDRs(cloudflareIPv4Ranges)
+
+// isTrustedProxy 判断 ip 是否属于可信代理（Cloudflare 回源段或配置的 trusted）。
+func isTrustedProxy(ip net.IP, trusted []*net.IPNet) bool {
+	if ip == nil {
+		return false
+	}
+	for _, n := range trusted {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	for _, n := range cloudflareNets {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}

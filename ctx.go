@@ -414,27 +414,18 @@ func (c *BaseCtx) Cookies(name string) (string, error) {
 	return val, nil
 }
 
-// RemoteIP parses the IP from Request.RemoteAddr, normalizes and returns the IP (without the port).
-// It also checks if the remoteIP is a trusted proxy or not.
-// In order to perform this validation, it will see if the IP is contained within at least one of the CIDR blocks
+// RemoteIP 返回客户端真实 IP。
+// 仅当请求来自可信代理（Cloudflare 回源 IP 段或配置项 trusted_proxies 中的 CIDR）时，
+// 才采信 X-Forwarded-For 的第一个 IP；否则直接返回 TCP 层对端 RemoteAddr，防止客户端伪造 IP。
+// 可信代理必须覆盖 X-Forwarded-For 写入真实客户端 IP。
 func (c *BaseCtx) RemoteIP() net.IP {
-	// 1. Cloudflare 官方真实 IP（最优先）
-	if ip := strings.TrimSpace(c.GetHeader("Cf-Connecting-Ip")); ip != "" {
-		if realIP := net.ParseIP(ip); realIP != nil {
-			return realIP
-		}
+	remote := parseIPFromAddr(c.R.RemoteAddr)
+	if !isTrustedProxy(remote, c.app.trustedProxies) {
+		return remote
 	}
 
-	// 其次 X-Real-IP
-	if real := c.GetHeader("X-Real-Ip"); real != "" {
-		if realIP := net.ParseIP(strings.TrimSpace(real)); realIP != nil {
-			return realIP
-		}
-	}
-
-	// 优先 X-Forwarded-For
+	// 可信代理：采信 X-Forwarded-For 的第一个 IP（真实客户端 IP）
 	if forwarded := c.GetHeader("X-Forwarded-For"); forwarded != "" {
-		// 有多个 IP 时取第一个（用户真实 IP）
 		parts := strings.Split(forwarded, ",")
 		ip := strings.TrimSpace(parts[0])
 		if realIP := net.ParseIP(ip); realIP != nil {
@@ -442,14 +433,7 @@ func (c *BaseCtx) RemoteIP() net.IP {
 		}
 	}
 
-	// 最后 RemoteAddr
-	if host, _, err := net.SplitHostPort(strings.TrimSpace(c.R.RemoteAddr)); err == nil {
-		if realIP := net.ParseIP(host); realIP != nil {
-			return realIP
-		}
-	}
-
-	return nil
+	return remote
 }
 
 // set locals var
