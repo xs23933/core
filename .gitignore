@@ -11,3 +11,10 @@ dat
 *_test.go
 *.http
 *debug*
+bin/corectl_macos_arm64
+.gitignore
+darwin/arm64/corectl_arm64
+darwin/amd64/corectl_amd64
+2026-07-22*
+2026-07-23*
+
