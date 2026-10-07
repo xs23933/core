@@ -50,9 +50,9 @@ skills/
 ├── core-model.md            # 数据模型定义、GORM 类型、分页查询、事务
 ├── core-service.md          # 业务逻辑层编写（兼容 HTTP/gRPC）
 ├── core-middleware.md       # 中间件开发（CORS/限流/Metrics/RequestID）
-├── core-grpc.md             # gRPC 服务端（TLS/interceptor/注册/启动/etcd 注册/共用端口约束）
+├── core-grpc.md             # gRPC 服务端（TLS/interceptor/注册/启动/etcd 注册/共用端口约束/响应 Header/Cookie）
 ├── core-grpc-client.md      # gRPC 客户端（服务发现/明确 target/每服务 TLS/MustGrpcClient）
-├── core-gateway.md          # etcd HTTP/gRPC 网关（自动/手动路由、负载均衡、metadata）
+├── core-gateway.md          # etcd HTTP/gRPC 网关（自动/手动路由、负载均衡、请求 metadata/响应 Header/Cookie）
 ├── core-websocket.md        # WebSocket 连接管理/按用户推送/广播/心跳
 ├── core-sse.md              # SSE 服务端推送（SSEWrite/SSESend/EventHub）
 ├── core-page.md             # 分页查询（经典分页/滚动分页/条件构建）
@@ -233,6 +233,7 @@ HTTP 请求 → Middleware1 → Middleware2 → ... → Handler → Response
 - HTTP/gRPC 同端口分流（基于 HTTP/2 + Content-Type）
 - `EnableEtcdRegistry()` 一站式 etcd 注册 + discovery + reflection
 - `errorWrapInterceptor` 自动将非 status.Error 包装为 Internal
+- `GrpcSetHeader` / `GrpcSetCookie` / `GrpcRemoveCookie` / `GrpcCookie` 声明 HTTP 响应；cookie 默认值与变参复用 BaseCtx，必须处理 error
 
 **模块调用流程**：
 ```
@@ -271,7 +272,8 @@ conn := app.MustGrpcClient("user-service")       // 失败 panic，适合 main �
 - HTTP Handler 自动路由目录与 `RegisterHTTPRoutes` 手动注册
 - 自动路由命名（proto package + service + method → HTTP 路径）
 - 同一 `service_name` 下多 `service_id` 轮询
-- Metadata 透传（authorization/x-request-id/x-user-id）
+- 请求 Metadata 透传（authorization/x-request-id/x-user-id）
+- 专用 initial response metadata → HTTP Header/多个 Set-Cookie（错误响应支持，保留 header 过滤）
 - 管理接口：路由 CRUD（仅 loopback 访问）
 
 **模块调用流程**：

@@ -726,52 +726,11 @@ func (c *BaseCtx) ReadBodyAndValidate(out any) error {
 // The provided cookie must have a valid Name. Invalid cookies may be
 // silently dropped.
 func (c *BaseCtx) SetCookie(name, value string, exp time.Time, path string, args ...any) {
-	if path == "" {
-		path = "/"
-	}
-	cookie := &http.Cookie{
-		Name:     name,
-		Value:    url.QueryEscape(value),
-		Expires:  exp,
-		Path:     path,
-		SameSite: http.SameSiteLaxMode,
-	}
-
-	for _, arg := range args {
-		switch a := arg.(type) {
-		case string:
-			if strings.EqualFold(a, "httponly") {
-				cookie.HttpOnly = true
-				continue
-			}
-			cookie.Domain = a
-		case bool:
-			cookie.Secure = a
-		}
-	}
-
-	if cookie.Domain == "" { // read config domain
-		cookie.Domain = c.Core().Conf.GetString("domain")
-	}
-
-	http.SetCookie(c.W, cookie)
+	http.SetCookie(c.W, newCookie(name, value, exp, path, c.Core().Conf.GetString("domain"), args...))
 }
 
 func (c *BaseCtx) RemoveCookie(name, path string, dom ...string) {
-	exp := time.Now().Add(-time.Hour)
-	cookie := &http.Cookie{
-		Name:    name,
-		Value:   "",
-		Expires: exp,
-		Path:    path,
-	}
-	if len(dom) > 0 {
-		cookie.Domain = dom[0]
-	}
-	if cookie.Domain == "" { // read config domain
-		cookie.Domain = c.Core().Conf.GetString("domain")
-	}
-	http.SetCookie(c.W, cookie)
+	http.SetCookie(c.W, removedCookie(name, path, c.Core().Conf.GetString("domain"), dom...))
 }
 
 // Cookie sets a cookie by passing a cookie struct.

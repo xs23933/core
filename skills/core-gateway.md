@@ -20,6 +20,7 @@ tags: [go, core-framework, gateway, grpc, etcd, http, reflection]
 - "gateway.NewEtcdGateway"
 - "网关管理接口"
 - "网关 metadata / x-user-id"
+- "gRPC 响应 header / Set-Cookie"
 
 ## 1. 核心链路
 
@@ -380,6 +381,14 @@ c.Set("user_id", "123")
 ```
 
 后端 gRPC handler 从 metadata 中读取。
+
+### 6.1 gRPC 响应 Header 与 Cookie
+
+业务 gRPC Handler 使用 `core.GrpcSetHeader(ctx, key, values...)`、`core.GrpcSetCookie(ctx, name, value, exp, path, args...)`、`core.GrpcRemoveCookie(ctx, name, path, dom...)` 或 `core.GrpcCookie(ctx, *http.Cookie)`（均返回 error），自动路由即支持写入浏览器 cookie；无需按业务解析 token JSON 或增加登录 adapter。
+
+Gateway 通过 `ReflectionProxy.InvokeWithHeaders` 收集 initial response metadata，仅转换 `core-http-<小写 header 名>-bin`，header 名须符合字母、数字、`-_.` 的 metadata 字符集。多值与多个 Set-Cookie 逐条追加；成功/错误响应都转换，GET/HEAD 重试只转换最终尝试。普通 metadata、trailer、非法 header/value、Content-Type、Content-Length、Content-Encoding、hop-by-hop/proxy/grpc-* header 不转换，JSON 响应类型仍由 Gateway 管理。现有 `Invoke` JSON-only API 保持兼容。
+
+`GrpcSetCookie` 默认值/可变参数与 BaseCtx.SetCookie 一致，Domain 默认取当前服务 Core 配置；与 Gateway 的 domain 配置无关。详细参数规则见 [core-grpc.md](core-grpc.md)。Gateway 认证 middleware 仍需读取验证请求 cookie，登录入口等免认证配置仍由 `gateway/public_routes` 管理；该能力不改变认证策略。
 
 ## 7. 管理接口
 

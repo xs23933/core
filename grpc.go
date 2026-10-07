@@ -99,18 +99,19 @@ func (app *Core) getOrCreateGRPCServer() *grpc.Server {
 }
 
 func (app *Core) newGRPCServer() *grpc.Server {
-	unaryInterceptors := []grpc.UnaryServerInterceptor{errorWrapInterceptor}
+	unaryInterceptors := []grpc.UnaryServerInterceptor{app.grpcResponseContext, errorWrapInterceptor}
+	streamInterceptors := []grpc.StreamServerInterceptor{app.grpcStreamResponseContext}
 	serverOptions := make([]grpc.ServerOption, 0, 3)
 	if app.grpcConfig != nil {
 		unaryInterceptors = append(unaryInterceptors, app.grpcConfig.UnaryInterceptors...)
 		if len(app.grpcConfig.StreamInterceptors) > 0 {
-			serverOptions = append(serverOptions, grpc.ChainStreamInterceptor(app.grpcConfig.StreamInterceptors...))
+			streamInterceptors = append(streamInterceptors, app.grpcConfig.StreamInterceptors...)
 		}
 		if app.grpcConfig.TransportCredentials != nil {
 			serverOptions = append(serverOptions, grpc.Creds(app.grpcConfig.TransportCredentials))
 		}
 	}
-	serverOptions = append(serverOptions, grpc.ChainUnaryInterceptor(unaryInterceptors...))
+	serverOptions = append(serverOptions, grpc.ChainUnaryInterceptor(unaryInterceptors...), grpc.ChainStreamInterceptor(streamInterceptors...))
 	return grpc.NewServer(serverOptions...)
 }
 

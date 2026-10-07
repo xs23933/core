@@ -1143,14 +1143,15 @@ func (gw *EtcdGateway) createProxyHandler(route *Route) core.HandlerFunc {
 		callCtx, cancel := context.WithTimeout(grpcCtx, 10*time.Second)
 		defer cancel()
 
-		jsonResp, err := proxy.Invoke(callCtx, route.GRPCMethod, jsonReq)
+		jsonResp, responseHeaders, err := proxy.InvokeWithHeaders(callCtx, route.GRPCMethod, jsonReq)
 		if err != nil && gatewayRequestCanRetry(ctx.Method()) && status.Code(err) == codes.Unavailable {
 			if pool := gw.connPool.Get(route.ServiceName); pool != nil {
 				if alternate := pool.GetForMethod(route.GRPCMethod, proxy); alternate != nil {
-					jsonResp, err = alternate.Invoke(callCtx, route.GRPCMethod, jsonReq)
+					jsonResp, responseHeaders, err = alternate.InvokeWithHeaders(callCtx, route.GRPCMethod, jsonReq)
 				}
 			}
 		}
+		appendGRPCResponseHeaders(ctx.Response().Header(), responseHeaders)
 		if err != nil {
 			if st, ok := status.FromError(err); ok {
 				core.Erro("[Gateway] gRPC proxy upstream error: grpc=%s code=%s message=%q",

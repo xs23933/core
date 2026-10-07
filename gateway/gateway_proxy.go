@@ -18,6 +18,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/reflection/grpc_reflection_v1alpha"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -224,7 +225,15 @@ func collectMessages(messages protoreflect.MessageDescriptors, idx map[string]pr
 	}
 }
 
+// Invoke preserves the JSON-only API. Use InvokeWithHeaders to collect response metadata.
 func (p *ReflectionProxy) Invoke(ctx context.Context, fullMethod string, jsonReq []byte) ([]byte, error) {
+	body, _, err := p.InvokeWithHeaders(ctx, fullMethod, jsonReq)
+	return body, err
+}
+
+// InvokeWithHeaders returns initial response metadata even when the RPC fails.
+// Trailers are intentionally not bridged to HTTP response headers.
+func (p *ReflectionProxy) InvokeWithHeaders(ctx context.Context, fullMethod string, jsonReq []byte) ([]byte, metadata.MD, error) {
 	var cached *MethodDescriptor
 	if p != nil && p.schema != nil {
 		cached = p.schema.methods[fullMethod]
@@ -232,9 +241,9 @@ func (p *ReflectionProxy) Invoke(ctx context.Context, fullMethod string, jsonReq
 	ok := cached != nil
 	if !ok {
 		if p != nil && p.app != nil && p.app.Debug {
-			return nil, fmt.Errorf("method not found: %s", fullMethod)
+			return nil, nil, fmt.Errorf("method not found: %s", fullMethod)
 		}
-		return nil, core.ErrNotFound
+		return nil, nil, core.ErrNotFound
 	}
 
 	desc := cached
@@ -242,15 +251,17 @@ func (p *ReflectionProxy) Invoke(ctx context.Context, fullMethod string, jsonReq
 	req := desc.NewRequest()
 	if err := protoJSONUnmarshal(jsonReq, req, desc.Resolver); err != nil {
 		core.Erro("[Gateway] gRPC request parse failed: grpc=%s json_bytes=%d err=%v", fullMethod, len(jsonReq), err)
-		return nil, status.Errorf(codes.InvalidArgument, "parse request failed: %v", err)
+		return nil, nil, status.Errorf(codes.InvalidArgument, "parse request failed: %v", err)
 	}
 
 	resp := desc.NewResponse()
-	if err := p.conn.Invoke(ctx, fullMethod, req, resp); err != nil {
-		return nil, err
+	var headers metadata.MD
+	if err := p.conn.Invoke(ctx, fullMethod, req, resp, grpc.Header(&headers)); err != nil {
+		return nil, headers, err
 	}
 
-	return protoJSONMarshal(resp, desc.Resolver)
+	body, err := protoJSONMarshal(resp, desc.Resolver)
+	return body, headers, err
 }
 
 func protoJSONUnmarshal(data []byte, msg proto.Message, resolver interface {

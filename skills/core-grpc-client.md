@@ -141,3 +141,14 @@ conn, err := app.GrpcClientAt("user-service", "127.0.0.1:9001")
 - 不要忘记关闭长期不用的 `ClientConn`；应用级连接通常随进程生命周期释放。
 - 不要把 `InsecureSkipVerify` 作为 TLS 配置的便利选项。
 - 不要在该服务首次 dial 后再配置 credentials，也不要向已配置服务额外传 transport dial option。
+
+## 7. 读取服务声明的响应 Header/Cookie
+
+```go
+var md metadata.MD
+resp, err := client.PostLogin(ctx, req, grpc.Header(&md))
+// 即使 RPC 返回错误也可收到 initial metadata（例如清理失效 cookie）。
+cookies := md.Get("core-http-set-cookie-bin")
+```
+
+Core helper 使用 `core-http-<小写 header 名>-bin` 声明 HTTP 响应；md 中 value 为原始字符串，grpc-go 已处理 wire 编码。原生 gRPC 客户端不自动保存 cookie。经 Core Gateway 调用时，网关在响应 body 前转换这些 initial metadata；普通 metadata 和 trailer 不转换。`resp`/`err`/`cookies` 由调用方按业务处理，不能记录完整 token/cookie。

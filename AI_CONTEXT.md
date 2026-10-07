@@ -631,6 +631,24 @@ return app.Listen(":8080")
 
 需要有期限的 etcd KV 时，使用 `EtcdDiscovery.GrantLease`、`KeepAliveLease`、`RevokeLease`、`GetRevision` 和 `CompareAndPut`。这些 API 只接受相对 key，并放入当前 namespace 的 `/config/` 前缀；revision 0 是 create-if-absent，CAS 冲突返回 `false, nil`。调用方负责消费 keepalive channel、识别租约丢失并在关闭前主动 revoke。
 
+### 3.8.1 gRPC 响应 Header/Cookie
+
+在 gRPC Handler 中使用 `core.GrpcSetHeader(ctx, key, values...)`、`core.GrpcSetCookie(ctx, name, value, exp, path, args...)`、`core.GrpcRemoveCookie(ctx, name, path, dom...)` 或 `core.GrpcCookie(ctx, *http.Cookie)`；都返回 error，必须处理。`ctx` 必须是当前 RPC server context，在 initial headers 发送前调用。业务 Service 仍只处理认证与会话签发。
+
+`GrpcSetCookie` 与 `BaseCtx.SetCookie` 共享构造规则：空 path 为 `/`，value URL 编码，SameSite=Lax；字符串 `"httponly"`（大小写无关）开启 HttpOnly，其他字符串设置 Domain，bool 设置 Secure，Domain/Secure 重复参数以后者为准，未知类型忽略；空 Domain 回退当前 Core 的 `domain`。默认 Secure/HttpOnly 为 false，登录时显式传 `"httponly", true`。Core unary/stream interceptor 提供每应用配置；自建 grpc.Server 没有配置域名回退。
+
+`GrpcCookie` 不补默认值、不编码 value，可设置 host-only/MaxAge/SameSite；非法 cookie 返回错误。`GrpcRemoveCookie` 与 BaseCtx 一样用过去的 Expires 删除，首个可选 Domain 生效、空值回退配置，空 path 不补 `/`，必须匹配原 Path/Domain。
+
+Gateway 仅桥接 `core-http-<小写 header 名>-bin` initial metadata，支持多值和多个 Set-Cookie；helper 重复调用追加。header 名仅接受字母、数字、`-_.`，不支持其他 HTTP token 符号。错误响应也桥接，重试只取最终尝试。普通 metadata、trailer、非法 header/value、Content-Type/Content-Length/Content-Encoding/hop-by-hop/proxy/grpc-* header 不桥接。使用标准 grpc.Header 可在原生客户端收集 metadata；它不会保存浏览器 cookie。原有 `ReflectionProxy.Invoke` 兼容，`InvokeWithHeaders` 返回 body、initial metadata、error。
+
+```go
+if err := core.GrpcSetCookie(ctx, "session", token, expires, "", "httponly", true); err != nil {
+    return nil, err
+}
+```
+
+认证中间件仍需验证请求 cookie，`gateway/public_routes` 只控制免认证路径；该能力不改变认证/CSRF/CORS 策略。详见 README 的 gRPC 响应 Header 与 Cookie，以及 `example/grpc-cookie/session.go`。
+
 ### 3.9 事务规范
 
 事务必须在 service 层处理：

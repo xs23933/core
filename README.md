@@ -1152,6 +1152,67 @@ X-Request-Id: req-1
 - `x-user-id`
 - `Ctx.Vars()` 中的本地变量 用于前置 middleware 处理后的后传参数 例如 jwt处理的: `Ctx.Set("user_id", "123")`
 
+### gRPC 响应 Header 与 Cookie
+
+服务的 gRPC Handler 可以直接调用 Core helper，Gateway 自动将声明的响应 metadata 写入 HTTP Header，不需要专用登录 adapter：
+
+```go
+func GrpcSetHeader(ctx context.Context, key string, values ...string) error
+func GrpcSetCookie(ctx context.Context, name, value string, exp time.Time, path string, args ...any) error
+func GrpcRemoveCookie(ctx context.Context, name, path string, dom ...string) error
+func GrpcCookie(ctx context.Context, cookie *http.Cookie) error
+```
+
+上面列出的是 core 包导出签名。实际登录响应示例（token/expires 来自业务 Service）：
+
+```go
+if err := core.GrpcSetHeader(ctx, "Cache-Control", "no-store"); err != nil {
+    return nil, err
+}
+if err := core.GrpcSetCookie(ctx, "session", token, expires, "", "httponly", true); err != nil {
+    return nil, err
+}
+// 返回业务 proto response；浏览器通过 Set-Cookie 保存 token。
+```
+
+`GrpcSetCookie` 与 `BaseCtx.SetCookie` 使用同一套默认值和可变参数：
+
+| 参数/属性 | 行为 |
+| --- | --- |
+| 空 `path` | 默认 `/` |
+| `value` | `url.QueryEscape` 编码 |
+| `SameSite` | 默认 `http.SameSiteLaxMode` |
+| 字符串 `"httponly"` | 不区分大小写，启用 HttpOnly |
+| 其他字符串参数 | 设置 Domain；重复参数以后者为准 |
+| bool 参数 | 设置 Secure；重复参数以后者为准 |
+| 未指定/空 Domain | 读取当前服务 Core 的 `domain` 配置 |
+| 未指定 HttpOnly/Secure | 默认 false，登录场景显式传 `"httponly", true` |
+| 其他类型参数 | 与 BaseCtx 一样忽略 |
+
+例如指定域名：`core.GrpcSetCookie(ctx, "session", token, expires, "/", "example.com", "httponly", true)`。`GrpcRemoveCookie(ctx, "session", "/", "example.com")` 使用过去的 Expires 删除；与 BaseCtx 一致，删除时空 path 不补 `/`，首个可选 Domain 生效，其为空时回退配置。Path/Domain 必须与写入时匹配。
+
+需要 MaxAge、自定义 SameSite 或 host-only cookie 时用完整属性入口；它与 `BaseCtx.Cookie` 一样不补默认值、不编码 value：
+
+```go
+if err := core.GrpcCookie(ctx, &http.Cookie{
+    Name: "__Host-session", Value: token, Path: "/",
+    HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode,
+    MaxAge: 3600,
+}); err != nil {
+    return nil, err
+}
+```
+
+helper 校验非法 header/cookie 并返回错误，不静默丢弃。header 名只接受字母、数字、`-_.`，避免生成不合法的 gRPC metadata key；`!`、`+` 等其他 HTTP token 符号不支持。必须使用当前 RPC context，并在 initial headers 发送前调用；Core 的 unary/stream interceptor 自动绑定当前应用配置，多个 Core 实例不会串用默认域名。自建 `grpc.NewServer()` 可使用 helper，但没有 Core 配置回退，需显式传 Domain 或完整 cookie。
+
+响应协议固定为 `core-http-<小写 header 名>-bin` initial metadata，grpc-go 自动处理 wire 编码，value 不需手工 base64。`GrpcSetHeader` 的多值与重复调用都追加；Gateway 逐值追加 HTTP Header，多个 Set-Cookie 不合并。错误响应同样保留声明的 metadata，GET/HEAD 重试只使用最终尝试的响应。普通 metadata、trailer、非法值以及传输层 header（包括 Content-Type、Content-Length、Content-Encoding、Connection、TE、Trailer、Upgrade、Proxy-Authenticate、Proxy-Authorization 和 grpc-*）不桥接，JSON Content-Type 仍由 Gateway 管理。
+
+原生客户端使用 `grpc.Header(&md)` 读取，例如 `md.Get("core-http-set-cookie-bin")`；原生 gRPC 不会自动操作浏览器 cookie。现有 `ReflectionProxy.Invoke` 保持 JSON-only 签名，新增 `InvokeWithHeaders` 返回 `(body, initialMetadata, error)`。
+
+业务 Service 负责认证和签发会话，gRPC Handler 负责 cookie；Gateway 认证中间件仍需读取并验证后续请求的 cookie。登录等免认证路径使用应用的认证中间件及 `gateway/public_routes`；该能力不改变认证策略。登录 cookie 使用 HTTPS，跨站调用的 CORS/credentials 与 CSRF 策略由应用配置。
+
+可复制、可编译的登录/退出响应脚手架见 [`example/grpc-cookie`](example/grpc-cookie/README.md)。
+
 ### 9. Demo 目录
 
 仓库内置了几个最小 demo：

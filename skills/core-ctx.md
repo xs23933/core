@@ -300,3 +300,6 @@ func (h *OrderHandler) Post(c core.Ctx) {
     c.ToJSON(order, err)
 }
 ```
+## gRPC 场景的 Cookie 对应接口
+
+HTTP Handler 使用 `c.SetCookie`/`c.RemoveCookie`/`c.Cookie`；gRPC Handler 使用 `core.GrpcSetCookie(ctx, name, value, exp, path, args...)`/`core.GrpcRemoveCookie(ctx, name, path, dom...)`/`core.GrpcCookie(ctx, *http.Cookie)` 并处理 error。设置/删除共享 BaseCtx 默认值、value 编码与可变参数；完整 cookie 入口不补默认值、不编码 value。Core 托管 RPC 的默认 Domain 取当前应用配置，不能依赖全局 Conf。详见 [core-grpc.md](core-grpc.md)。

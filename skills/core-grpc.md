@@ -11,6 +11,7 @@ tags: [go, core-framework, grpc, protobuf, tls, interceptor, etcd, reflection]
 当用户请求以下内容时激活此 Skill：
 
 - "添加 gRPC 服务"
+- "gRPC 服务写 cookie / 响应 header / metadata"
 - "配置 gRPC mTLS 或 interceptor"
 - "注册 proto service"
 - "EnableGRPC 怎么用"
@@ -192,3 +193,28 @@ func NewAuthHandler(app *core.Core, userService *service.UserService) {
 `GrpcClient("service-name")` 的 resolver 每连接绑定 Discovery；相同配置复用，改变 namespace/endpoints/etcd 身份返回 `ErrEtcdDiscoveryConfigurationChanged`，应新建 Core 实例迁移。直接 `etcd.NewRegistry` 默认没有 ready 字段、兼容立即可服务。
 
 `ShutdownWithTimeout` 使用独立 deadline，先撤注册，再同时排空 HTTP/HTTP3/gRPC，最后关闭业务依赖与 Discovery；超时强制关闭 transport。信号退出默认 10 秒，可配置 `shutdown_timeout: "10s"`。重复调用共享首个退出任务，后来短期限只停止该调用等待。无 context 的旧 shutdown hook 无法强制取消，后台清理需它自行返回，但不延长调用方期限。
+
+## 8. 响应 Header/Cookie 脚手架
+
+优先用 Core helper，不在业务 Service 中保存 HTTP Ctx，也不为自动 gRPC 路由另写 cookie adapter：
+
+```go
+if err := core.GrpcSetHeader(ctx, "Cache-Control", "no-store"); err != nil {
+    return nil, err
+}
+if err := core.GrpcSetCookie(ctx, "session", token, expires, "", "httponly", true); err != nil {
+    return nil, err
+}
+// 退出：业务撤销会话后调用；原路径为 /。
+if err := core.GrpcRemoveCookie(ctx, "session", "/"); err != nil {
+    return nil, err
+}
+```
+
+`GrpcSetCookie(ctx, name, value, exp, path, args...)` 复用 BaseCtx 的默认值/变参：path 空为 `/`、value URL 编码、SameSite=Lax；`"httponly"` 不区分大小写，其他 string 设置 Domain，bool 设置 Secure，重复 Domain/Secure 取最后值，未知类型忽略。Domain 空时回退当前 Core `domain`，默认 HttpOnly/Secure 为 false。Core unary/stream interceptor 注入当前应用配置；原生 grpc.Server 无域名配置回退，显式传 Domain 或完整 cookie。
+
+`GrpcRemoveCookie(ctx, name, path, dom...)` 使用过去 Expires，空 path 不补 `/`，第一个 Domain 生效、空值回退配置。`GrpcCookie(ctx, *http.Cookie)` 不补默认值、不编码，可配置 host-only、MaxAge、SameSite。helper 都返回 error，非法 cookie/header 必须处理；不要用 context.Background 替代当前 RPC ctx，也不要在 initial headers 发送后调用。
+
+响应 metadata 协议为 `core-http-<小写 header 名>-bin`，grpc-go 处理 wire 编码。header 名仅接受字母、数字、`-_.`，其他 HTTP token 符号返回错误，避免非法 metadata key。Gateway 只桥接这些 initial headers，包括 RPC 错误；多值、重复调用和多个 Set-Cookie 追加，重试只取最终尝试。普通 metadata 和 trailer 不转发，Content-Type、Content-Length、Content-Encoding、hop-by-hop/proxy/grpc-* 等保留 header 禁止设置。原生客户端用 grpc.Header 收集，不会自动保存 cookie。
+
+认证、CSRF、CORS 策略由应用负责。完整属性与原生读取示例见 [README](../README.md)，可复制响应代码见 [example/grpc-cookie/session.go](../example/grpc-cookie/session.go)。
