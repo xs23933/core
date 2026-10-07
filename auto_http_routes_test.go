@@ -329,6 +329,9 @@ func (h *automaticHTTPRouteStartupHandler) Stop(*Core) error {
 }
 
 func TestAutomaticHTTPRouteStartupSyncRunsAfterModuleLoading(t *testing.T) {
+	previousReady := markCoreEtcdRegistryReadyForServe
+	markCoreEtcdRegistryReadyForServe = func(*Core, context.Context) error { return nil }
+	t.Cleanup(func() { markCoreEtcdRegistryReadyForServe = previousReady })
 	discovery := startAutomaticHTTPRouteDiscovery(t, "startup")
 	app := newAutomaticHTTPRouteSyncApp([]string{"/startup"}, nil)
 	setAutomaticHTTPRouteRegistry(app, discovery, "startup", "startup-service")

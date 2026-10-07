@@ -88,12 +88,6 @@ func TestGatewayConnectRetryDelayCapsAtFiveSeconds(t *testing.T) {
 	}
 }
 
-func TestGatewayConnectRetryAttemptsAllowsServiceStartupWindow(t *testing.T) {
-	if gatewayConnectRetryAttempts < 10 {
-		t.Fatalf("gatewayConnectRetryAttempts = %d, want at least 10", gatewayConnectRetryAttempts)
-	}
-}
-
 func TestGRPCServiceExcludedFromAutoRoutes(t *testing.T) {
 	config := &Config{GRPCServiceExcludes: []string{
 		"payment.provider.v1.PaymentProviderService",

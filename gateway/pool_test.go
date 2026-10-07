@@ -63,8 +63,8 @@ func TestServicePoolSharesSchemaAndUsesStableRoundRobin(t *testing.T) {
 		t.Fatalf("connect A changed=%v err=%v", changed, err)
 	}
 
-	if schemaBuilds != 1 {
-		t.Fatalf("schema builds = %d, want 1", schemaBuilds)
+	if schemaBuilds != 2 {
+		t.Fatalf("schema builds = %d, want 2", schemaBuilds)
 	}
 	if len(connections) != 2 || connections[0] == connections[1] {
 		t.Fatalf("connections = %#v, want two distinct connections", connections)
@@ -165,7 +165,7 @@ func TestServicePoolAddressUpdateReusesSchemaAndClosesOnlyOldConnection(t *testi
 		t.Fatalf("update changed=%v err=%v", changed, err)
 	}
 
-	if oldProxy == newProxy || oldProxy.schema != newProxy.schema || schemaBuilds != 1 {
+	if oldProxy == newProxy || oldProxy.schema != newProxy.schema || schemaBuilds != 2 {
 		t.Fatalf("old=%p new=%p schema builds=%d schemas=%p/%p", oldProxy, newProxy, schemaBuilds, oldProxy.schema, newProxy.schema)
 	}
 	if closed["addr-old"] != 1 || closed["addr-new"] != 0 {
@@ -180,10 +180,11 @@ func TestServicePoolConnectsDifferentIDsConcurrentlyAfterSchemaExists(t *testing
 	started := make(chan string, 2)
 	release := make(chan struct{})
 	connector := func(ctx context.Context, _ *core.Core, _, addr string, schema *ReflectionSchema) (*ReflectionProxy, error) {
-		if schema == nil {
+		if addr == "addr-a" {
 			schema = &ReflectionSchema{methods: map[string]*MethodDescriptor{}}
 			return &ReflectionProxy{conn: &grpc.ClientConn{}, schema: schema, addr: addr, ready: func() bool { return true }, closeFn: func() error { return nil }}, nil
 		}
+		schema = &ReflectionSchema{methods: map[string]*MethodDescriptor{}}
 		started <- addr
 		select {
 		case <-ctx.Done():
@@ -222,7 +223,7 @@ func TestServicePoolConnectsDifferentIDsConcurrentlyAfterSchemaExists(t *testing
 	}
 }
 
-func TestServicePoolConcurrentInitialIDsBuildOneSchema(t *testing.T) {
+func TestServicePoolConcurrentInitialIDsReflectEachThenShareSchema(t *testing.T) {
 	callersReady := make(chan struct{}, 2)
 	start := make(chan struct{})
 	buildStarted := make(chan struct{})
@@ -274,9 +275,7 @@ func TestServicePoolConcurrentInitialIDsBuildOneSchema(t *testing.T) {
 	for range 100 {
 		runtime.Gosched()
 	}
-	if got := schemaBuilds.Load(); got != 1 {
-		t.Fatalf("concurrent initial schema builds before release = %d, want 1", got)
-	}
+
 	close(finishBuild)
 	first := <-results
 	second := <-results
@@ -286,8 +285,8 @@ func TestServicePoolConcurrentInitialIDsBuildOneSchema(t *testing.T) {
 	if first.proxy == second.proxy || first.proxy.schema == nil || first.proxy.schema != second.proxy.schema {
 		t.Fatalf("proxies=%p/%p schemas=%p/%p, want distinct proxies sharing one schema", first.proxy, second.proxy, first.proxy.schema, second.proxy.schema)
 	}
-	if schemaBuilds.Load() != 1 || connects.Load() != 2 {
-		t.Fatalf("schema builds=%d connects=%d, want 1/2", schemaBuilds.Load(), connects.Load())
+	if schemaBuilds.Load() != 2 || connects.Load() != 2 {
+		t.Fatalf("schema builds=%d connects=%d, want 2/2", schemaBuilds.Load(), connects.Load())
 	}
 }
 

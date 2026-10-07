@@ -1,11 +1,14 @@
 package core
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/sync/errgroup"
 )
@@ -109,8 +112,8 @@ func (app *Core) loadMods() {
 		}
 	}
 	app.eg.Go(func() error {
-		defer app.Server.Shutdown(app.Ctx)
 		<-app.Ctx.Done()
+		app.shutdown()
 		return nil
 	})
 }
@@ -120,49 +123,136 @@ func (app *Core) ErrGroup() *errgroup.Group {
 }
 
 func (app *Core) shutdown() {
+	timeout := app.Conf.GetDuration("shutdown_timeout", 10*time.Second)
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	if err := app.ShutdownWithTimeout(timeout); err != nil {
+		Warn("shutdown incomplete: %v", err)
+	}
+}
+
+func (app *Core) shutdownWithContext(ctx context.Context) error {
 	app.shutdownOnce.Do(func() {
 		app.mutex.Lock()
 		app.shutdownStarted = true
+		app.shutdownDone = make(chan struct{})
+		app.shutdownContext = ctx
 		app.mutex.Unlock()
-
-		if app.stop != nil {
-			app.stop()
-		}
-
-		// 执行关闭钩子
-		for _, hook := range app.shutdownHooks {
-			hook()
-		}
-
+		go app.performShutdown(ctx)
+	})
+	app.mutex.Lock()
+	done, startedContext := app.shutdownDone, app.shutdownContext
+	app.mutex.Unlock()
+	select {
+	case <-done:
 		app.mutex.Lock()
-		loadedModules := append([]Module(nil), app.loadedModules...)
+		err := app.shutdownErr
 		app.mutex.Unlock()
-		for _, mo := range loadedModules {
-			if mod, ok := mo.(canShutdown); ok {
-				_ = mod.Stop(app)
+		return err
+	default:
+	}
+	select {
+	case <-done:
+		app.mutex.Lock()
+		err := app.shutdownErr
+		app.mutex.Unlock()
+		return err
+	case <-ctx.Done():
+		if startedContext.Err() != nil {
+			app.forceCloseTransports()
+		}
+		return ctx.Err()
+	case <-startedContext.Done():
+		app.forceCloseTransports()
+		return startedContext.Err()
+	}
+}
+
+func (app *Core) forceCloseTransports() {
+	if app.Server != nil {
+		_ = app.Server.Close()
+	}
+	app.forceStopGRPC()
+	if app.h3 != nil {
+		go func() { _ = app.h3.Close() }()
+	}
+}
+
+func (app *Core) performShutdown(ctx context.Context) {
+	defer close(app.shutdownDone)
+	app.mutex.Lock()
+	registryCleanup := app.etcdRegistryCleanup
+	discoveryCleanup := app.etcdDiscoveryCleanup
+	app.etcdRegistryCleanup = nil
+	app.etcdDiscoveryCleanup = nil
+	app.etcdRegistry = nil
+	app.etcdRegistryServiceName = ""
+	app.etcdRegistryNamespace = ""
+	hooks := append([]func(){}, app.shutdownHooks...)
+	loadedModules := append([]Module(nil), app.loadedModules...)
+	app.mutex.Unlock()
+
+	// Withdraw before closing business dependencies. The caller deadline closes
+	// transports even when etcd or a legacy cleanup callback does not return.
+	if registryCleanup != nil {
+		registryCleanup()
+	}
+	if app.stop != nil {
+		app.stop()
+	}
+
+	var drainErr error
+	var drainMu sync.Mutex
+	var drains sync.WaitGroup
+	drains.Add(3)
+	go func() {
+		defer drains.Done()
+		if app.Server != nil {
+			if err := app.Server.Shutdown(ctx); err != nil {
+				drainMu.Lock()
+				drainErr = errors.Join(drainErr, err)
+				drainMu.Unlock()
 			}
 		}
-
-		app.mutex.Lock()
-		registryCleanup := app.etcdRegistryCleanup
-		discoveryCleanup := app.etcdDiscoveryCleanup
-		app.etcdRegistryCleanup = nil
-		app.etcdDiscoveryCleanup = nil
-		app.etcdRegistry = nil
-		app.EtcdDiscovery = nil
-		app.etcdRegistryServiceName = ""
-		app.etcdRegistryNamespace = ""
-		app.mutex.Unlock()
-		if registryCleanup != nil {
-			registryCleanup()
+	}()
+	go func() {
+		defer drains.Done()
+		app.shutdownGRPCContext(ctx)
+	}()
+	go func() {
+		defer drains.Done()
+		if app.h3 != nil {
+			if err := app.h3.Shutdown(ctx); err != nil {
+				drainMu.Lock()
+				drainErr = errors.Join(drainErr, err)
+				drainMu.Unlock()
+			}
 		}
-		if discoveryCleanup != nil {
-			discoveryCleanup()
+	}()
+	drains.Wait()
+	if ctx.Err() != nil {
+		app.forceCloseTransports()
+		drainErr = errors.Join(drainErr, ctx.Err())
+	}
+	for _, hook := range hooks {
+		hook()
+	}
+	for _, mo := range loadedModules {
+		if mod, ok := mo.(canShutdown); ok {
+			if err := mod.Stop(app); err != nil {
+				drainErr = errors.Join(drainErr, err)
+			}
 		}
-
-		// 关闭 gRPC
-		app.shutdownGRPC()
-	})
+	}
+	if discoveryCleanup != nil {
+		discoveryCleanup()
+	}
+	drainErr = errors.Join(drainErr, ctx.Err())
+	app.mutex.Lock()
+	app.EtcdDiscovery = nil
+	app.shutdownErr = drainErr
+	app.mutex.Unlock()
 }
 
 func (app *Core) getModules(scope string) []ModuleInfo {

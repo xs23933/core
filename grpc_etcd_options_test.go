@@ -136,7 +136,7 @@ func TestEnableEtcdRegistryFirstFailureLeavesNoInstalledState(t *testing.T) {
 	}
 }
 
-func TestEnableEtcdRegistryLaterFailurePreservesPriorSuccessfulState(t *testing.T) {
+func TestEnableEtcdRegistryLaterConfigurationFailurePreservesPriorSuccessfulState(t *testing.T) {
 	registries := []*etcd.Registry{new(etcd.Registry), new(etcd.Registry)}
 	discoveries := []*etcd.Discovery{new(etcd.Discovery), new(etcd.Discovery)}
 	registryIndex := 0
@@ -178,8 +178,8 @@ func TestEnableEtcdRegistryLaterFailurePreservesPriorSuccessfulState(t *testing.
 		t.Fatalf("first EnableEtcdRegistry: %v", err)
 	}
 	err := app.EnableEtcdRegistry(&etcd.Options{ServiceName: "failed", Namespace: "failed-ns"})
-	if err == nil || !errors.Is(err, errCoreEtcdRegisterForTest) {
-		t.Fatalf("second EnableEtcdRegistry error = %v, want register failure", err)
+	if err == nil || !errors.Is(err, ErrEtcdDiscoveryConfigurationChanged) {
+		t.Fatalf("second EnableEtcdRegistry error = %v, want configuration rejection", err)
 	}
 	if app.etcdRegistry != registries[0] || app.EtcdDiscovery != discoveries[0] {
 		t.Fatalf("failed replacement changed active resources: registry=%p discovery=%p", app.etcdRegistry, app.EtcdDiscovery)
@@ -194,8 +194,8 @@ func TestEnableEtcdRegistryLaterFailurePreservesPriorSuccessfulState(t *testing.
 	if deregisterCalls[registries[0]] != 0 || closeDiscoveryCalls[discoveries[0]] != 0 {
 		t.Fatal("failed replacement closed the prior successful resources")
 	}
-	if deregisterCalls[registries[1]] != 1 || closeDiscoveryCalls[discoveries[1]] != 1 {
-		t.Fatalf("failed replacement cleanup = registry %d discovery %d, want 1/1",
+	if deregisterCalls[registries[1]] != 1 || closeDiscoveryCalls[discoveries[1]] != 0 {
+		t.Fatalf("failed replacement cleanup = registry %d discovery %d, want 1/0",
 			deregisterCalls[registries[1]], closeDiscoveryCalls[discoveries[1]])
 	}
 

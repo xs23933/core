@@ -31,6 +31,15 @@ tags: [go, core-framework, gateway, grpc, etcd, http, reflection]
 4. gRPC 服务自动开启 reflection，由网关按方法名生成 HTTP 路由。
 5. `gateway.NewEtcdGateway(app)` 读取服务实例和路由，并代理到对应协议的上游。
 
+### 实例生命周期与协议更新
+
+- Core `EnableEtcdRegistry` 先发布 `ready:false` 的准备状态；监听器绑定、启动钩子和依赖准备成功后，发布 `ready:true`。Gateway 保留准备中的注册事实，但不安装 HTTP 或 gRPC 上游。历史注册没有 `ready` 时继续视为可接入。
+- 每个 Registry 具有随机 `generation`。同一实例 ID、同一地址的新进程也会让 Gateway 撤换旧连接，并重新 reflection。租约变化和版本变化也触发重新核验；仅续租不产生变更事件。
+- 每个期望实例只有一个持续接入任务。单次 reflection 超时、暂时不可达和服务熔断期间会退避重试，熔断冷却结束后自动探测；实例删除、被新代替换或 Gateway 关闭会取消任务。晚返回的旧连接不能覆盖新代。
+- 每个进程独立 reflection 后，只有完整协议指纹相同才共享不可变 schema。请求/响应指纹覆盖传递引用的嵌套 message、enum 和 streaming 标志。请求热路径只读取预建的实例快照，不执行 reflection 或 dial。
+- 滚动发布时自动路由使用已接入实例的方法并集；新增方法只选择支持它的实例。相同 RPC 的协议指纹不一致时，该 RPC 暂时返回 503，避免混用 codec；其它无冲突 RPC 继续服务。不兼容升级应使用新的 RPC/服务版本，或等待旧代全部退出。
+- 删除部分实例会更新方法并集；全部实例离线保留最后的路由并返回 503。手工路由仍优先于自动路由；`gateway.grpc_service_excludes` 和 `gateway/public_routes` 的既有职责不变。
+
 ## 2. 网关启动模板
 
 ```go

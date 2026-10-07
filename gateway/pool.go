@@ -25,26 +25,26 @@ func defaultReflectionProxyConnector(ctx context.Context, app *core.Core, servic
 	return newReflectionProxyForServiceContext(ctx, app, serviceName, addr, schema)
 }
 
-// ServicePool owns the connection-bearing proxies and the one immutable
-// reflection schema for a logical service. The request hot path reads a sorted
-// copy-on-write snapshot without taking locks or allocating.
+// ServicePool owns connection-bearing proxies and shares immutable codecs
+// only after each process has reflected an identical protocol fingerprint.
+// The request hot path reads a sorted copy-on-write snapshot without locks or allocation.
 type ServicePool struct {
-	name           string
-	state          atomic.Value // servicePoolState, copy-on-write
-	idx            atomic.Uint64
-	mu             sync.Mutex
-	app            *core.Core
-	connector      reflectionProxyConnector
-	desired        map[string]string
-	schema         *ReflectionSchema
-	schemaBuilding bool
-	schemaWait     chan struct{}
-	closed         bool
+	name        string
+	state       atomic.Value // servicePoolState, copy-on-write
+	idx         atomic.Uint64
+	mu          sync.Mutex
+	app         *core.Core
+	connector   reflectionProxyConnector
+	desired     map[string]string
+	generations map[string]string
+	schema      *ReflectionSchema
+	closed      bool
 }
 
 type servicePoolState struct {
-	byID map[string]*ReflectionProxy
-	all  []*ReflectionProxy
+	byID    map[string]*ReflectionProxy
+	all     []*ReflectionProxy
+	methods map[string][]*ReflectionProxy
 }
 
 // NewServicePool creates a service connection pool.
@@ -57,10 +57,11 @@ func newServicePoolWithConnector(app *core.Core, name string, connector reflecti
 		connector = defaultReflectionProxyConnector
 	}
 	p := &ServicePool{
-		name:      name,
-		app:       app,
-		connector: connector,
-		desired:   make(map[string]string),
+		name:        name,
+		app:         app,
+		connector:   connector,
+		desired:     make(map[string]string),
+		generations: make(map[string]string),
 	}
 	p.storeState(servicePoolState{byID: make(map[string]*ReflectionProxy)})
 	return p
@@ -89,7 +90,22 @@ func sortedServicePoolState(byID map[string]*ReflectionProxy) servicePoolState {
 	for _, id := range ids {
 		all = append(all, byID[id])
 	}
-	return servicePoolState{byID: byID, all: all}
+	methods := make(map[string][]*ReflectionProxy)
+	contracts := make(map[string]string)
+	conflicts := make(map[string]bool)
+	for _, proxy := range all {
+		for name, desc := range proxy.schema.methods {
+			if contract, seen := contracts[name]; seen && contract != desc.Contract {
+				conflicts[name] = true
+			}
+			contracts[name] = desc.Contract
+			methods[name] = append(methods[name], proxy)
+		}
+	}
+	for name := range conflicts {
+		methods[name] = nil
+	}
+	return servicePoolState{byID: byID, all: all, methods: methods}
 }
 
 func copyServicePoolByID(state servicePoolState, extra int) map[string]*ReflectionProxy {
@@ -131,7 +147,8 @@ func (p *ServicePool) MarkInstanceUndesired(instanceID string) {
 	}
 	p.mu.Lock()
 	delete(p.desired, instanceID)
-	if len(p.desired) == 0 && len(p.loadState().byID) == 0 && !p.schemaBuilding {
+	delete(p.generations, instanceID)
+	if len(p.desired) == 0 && len(p.loadState().byID) == 0 {
 		p.schema = nil
 	}
 	p.mu.Unlock()
@@ -153,38 +170,74 @@ func (p *ServicePool) AddOrUpdateInstance(instanceID, addr string) (*ReflectionP
 	return p.AddOrUpdateInstanceContext(context.Background(), instanceID, addr)
 }
 
-// AddOrUpdateInstanceContext builds at most one schema per service and keeps
-// candidate construction off the request hot path. Connections for a service
-// are serialized only during connect/update; Get remains lock-free.
+// SetDesiredGeneration invalidates an installed previous process immediately.
+func (p *ServicePool) SetDesiredGeneration(instanceID, addr, generation string) bool {
+	if p == nil || instanceID == "" || addr == "" {
+		return false
+	}
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return false
+	}
+	p.desired[instanceID] = addr
+	p.generations[instanceID] = generation
+	state := p.loadState()
+	old := state.byID[instanceID]
+	if old != nil && (old.addr != addr || old.generation != generation) {
+		next := copyServicePoolByID(state, 0)
+		delete(next, instanceID)
+		p.storeState(sortedServicePoolState(next))
+	} else {
+		old = nil
+	}
+	p.mu.Unlock()
+	if old != nil {
+		_ = old.Close()
+	}
+	return true
+}
+
+// Every candidate reflects its own process before codecs can be shared.
 func (p *ServicePool) AddOrUpdateInstanceContext(ctx context.Context, instanceID, addr string) (*ReflectionProxy, bool, error) {
 	if p == nil {
 		return nil, false, errors.New("gateway: service pool is nil")
 	}
+	p.mu.Lock()
+	generation := p.generations[instanceID]
+	p.mu.Unlock()
+	return p.addOrUpdateGeneration(ctx, instanceID, addr, generation)
+}
+func (p *ServicePool) addOrUpdateGeneration(ctx context.Context, instanceID, addr, generation string) (*ReflectionProxy, bool, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, false, err
 	}
-
 	p.mu.Lock()
-	if p.closed || p.desired[instanceID] != addr {
+	if p.closed || p.desired[instanceID] != addr || p.generations[instanceID] != generation {
 		p.mu.Unlock()
 		return nil, false, errServiceInstanceNotDesired
 	}
-	if old := p.loadState().byID[instanceID]; old != nil && old.addr == addr && old.isReady() {
+	if old := p.loadState().byID[instanceID]; old != nil && old.addr == addr && old.generation == generation && old.isReady() {
 		p.mu.Unlock()
 		return old, false, nil
 	}
 	p.mu.Unlock()
-
-	proxy, err := p.connectCandidate(ctx, instanceID, addr)
+	proxy, err := p.connector(ctx, p.app, p.name, addr, nil)
 	if err != nil {
 		return nil, false, err
 	}
-
+	if proxy == nil || proxy.schema == nil {
+		if proxy != nil {
+			_ = proxy.Close()
+		}
+		return nil, false, errors.New("gateway: connector returned a proxy without reflection schema")
+	}
+	proxy.generation = generation
 	p.mu.Lock()
-	if p.closed || p.desired[instanceID] != addr {
+	if p.closed || ctx.Err() != nil || p.desired[instanceID] != addr || p.generations[instanceID] != generation {
 		p.mu.Unlock()
 		_ = proxy.Close()
 		if err := ctx.Err(); err != nil {
@@ -193,105 +246,63 @@ func (p *ServicePool) AddOrUpdateInstanceContext(ctx context.Context, instanceID
 		return nil, false, errServiceInstanceNotDesired
 	}
 	state := p.loadState()
-	if old := state.byID[instanceID]; old != nil && old.addr == addr && old.isReady() {
+	if old := state.byID[instanceID]; old != nil && old.addr == addr && old.generation == generation && old.isReady() {
 		p.mu.Unlock()
 		_ = proxy.Close()
 		return old, false, nil
 	}
-	if p.schema == nil {
-		p.schema = proxy.schema
-	} else if proxy.schema != p.schema {
-		p.mu.Unlock()
-		_ = proxy.Close()
-		return nil, false, errors.New("gateway: connector returned a different reflection schema")
+	fingerprint := proxy.schema.fingerprint
+	if fingerprint == "" {
+		fingerprint = reflectionFingerprint(proxy.schema.methods)
 	}
-
-	nextByID := copyServicePoolByID(state, 1)
-	old := nextByID[instanceID]
-	nextByID[instanceID] = proxy
-	p.storeState(sortedServicePoolState(nextByID))
+	for _, existing := range state.all {
+		other := existing.schema.fingerprint
+		if other == "" {
+			other = reflectionFingerprint(existing.schema.methods)
+		}
+		if other == fingerprint {
+			proxy.schema = existing.schema
+			break
+		}
+	}
+	next := copyServicePoolByID(state, 1)
+	old := next[instanceID]
+	next[instanceID] = proxy
+	p.storeState(sortedServicePoolState(next))
+	p.schema = proxy.schema
 	p.mu.Unlock()
-
 	if old != nil {
 		_ = old.Close()
 	}
 	return proxy, true, nil
 }
 
-// connectCandidate lets exactly one initial connection build the shared
-// schema. Once published, different instance IDs dial concurrently using that
-// immutable schema; no service-wide dial lock remains on the steady path.
-func (p *ServicePool) connectCandidate(ctx context.Context, instanceID, addr string) (*ReflectionProxy, error) {
-	for {
-		p.mu.Lock()
-		if p.closed || p.desired[instanceID] != addr {
-			p.mu.Unlock()
-			return nil, errServiceInstanceNotDesired
+// Methods returns the union of installed process schemas. Conflicting codecs
+// retain a route but have no eligible upstream until the rolling overlap ends.
+func (p *ServicePool) Methods() map[string]*MethodDescriptor {
+	result := make(map[string]*MethodDescriptor)
+	for _, proxy := range p.loadState().all {
+		for name, desc := range proxy.schema.methods {
+			result[name] = desc
 		}
-		if schema := p.schema; schema != nil {
-			p.mu.Unlock()
-			proxy, err := p.connector(ctx, p.app, p.name, addr, schema)
-			if err != nil {
-				return nil, err
-			}
-			if proxy == nil || proxy.schema != schema {
-				if proxy != nil {
-					_ = proxy.Close()
-				}
-				return nil, errors.New("gateway: connector returned a proxy with a different reflection schema")
-			}
-			return proxy, nil
-		}
-		if p.schemaBuilding {
-			wait := p.schemaWait
-			p.mu.Unlock()
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-wait:
-				continue
-			}
-		}
-
-		p.schemaBuilding = true
-		p.schemaWait = make(chan struct{})
-		wait := p.schemaWait
-		p.mu.Unlock()
-
-		proxy, err := p.connector(ctx, p.app, p.name, addr, nil)
-		if err == nil && (proxy == nil || proxy.schema == nil) {
-			if proxy != nil {
-				_ = proxy.Close()
-			}
-			proxy = nil
-			err = errors.New("gateway: connector returned a proxy without reflection schema")
-		}
-
-		p.mu.Lock()
-		p.schemaBuilding = false
-		if err == nil && !p.closed && len(p.desired) > 0 {
-			p.schema = proxy.schema
-		}
-		close(wait)
-		p.schemaWait = nil
-		desired := !p.closed && p.desired[instanceID] == addr
-		published := p.schema != nil
-		p.mu.Unlock()
-
-		if err != nil {
-			return nil, err
-		}
-		if !desired || !published {
-			_ = proxy.Close()
-			if err := ctx.Err(); err != nil {
-				return nil, err
-			}
-			return nil, errServiceInstanceNotDesired
-		}
-		return proxy, nil
 	}
+	return result
 }
-
+func (p *ServicePool) GetForMethod(method string, excluded *ReflectionProxy) *ReflectionProxy {
+	all := p.loadState().methods[method]
+	n := len(all)
+	if n == 0 {
+		return nil
+	}
+	start := p.idx.Add(1) - 1
+	for offset := 0; offset < n; offset++ {
+		proxy := all[(int(start)+offset)%n]
+		if proxy != excluded && proxy.isReady() {
+			return proxy
+		}
+	}
+	return nil
+}
 func (p *ServicePool) removeInstance(instanceID string, clearDesired bool) bool {
 	if p == nil {
 		return false
@@ -299,6 +310,7 @@ func (p *ServicePool) removeInstance(instanceID string, clearDesired bool) bool 
 	p.mu.Lock()
 	if clearDesired {
 		delete(p.desired, instanceID)
+		delete(p.generations, instanceID)
 	} else if _, desired := p.desired[instanceID]; desired {
 		p.mu.Unlock()
 		return false
@@ -315,8 +327,10 @@ func (p *ServicePool) removeInstance(instanceID string, clearDesired bool) bool 
 	nextByID := copyServicePoolByID(state, 0)
 	delete(nextByID, instanceID)
 	p.storeState(sortedServicePoolState(nextByID))
-	if len(nextByID) == 0 && len(p.desired) == 0 {
-		p.schema = nil
+	p.schema = nil
+	for _, remaining := range nextByID {
+		p.schema = remaining.schema
+		break
 	}
 	p.mu.Unlock()
 	_ = proxy.Close()
@@ -417,6 +431,7 @@ func (p *ServicePool) Close() {
 	state := p.loadState()
 	p.storeState(servicePoolState{byID: make(map[string]*ReflectionProxy)})
 	p.desired = make(map[string]string)
+	p.generations = make(map[string]string)
 	p.schema = nil
 	p.mu.Unlock()
 	for _, proxy := range state.byID {

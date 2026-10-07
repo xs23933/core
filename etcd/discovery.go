@@ -29,7 +29,8 @@ type Discovery struct {
 	// serviceName -> subscriberID -> callback
 	subscribers map[string]map[uint64]func()
 
-	subID atomic.Uint64
+	subID  atomic.Uint64
+	closed bool
 }
 
 var errWatchClosed = errors.New("etcd watch closed")
@@ -39,6 +40,7 @@ func NewDiscovery(opts *Options) (*Discovery, error) {
 		opts = DefaultOptions()
 	}
 
+	opts = cloneOptions(opts)
 	client, err := clientv3.New(clientv3.Config{
 		Endpoints:   opts.Endpoints,
 		Username:    opts.Username,
@@ -112,6 +114,10 @@ func parseServiceKey(key, serviceRoot string) (serviceName, instanceID string, o
 
 func (d *Discovery) Watch(serviceName string) error {
 	d.mu.Lock()
+	if d.closed {
+		d.mu.Unlock()
+		return errors.New("etcd discovery is closed")
+	}
 	if _, ok := d.watchers[serviceName]; ok {
 		d.mu.Unlock()
 		return nil
@@ -339,6 +345,11 @@ func (d *Discovery) notify(serviceName string) {
 
 func (d *Discovery) Close() error {
 	d.mu.Lock()
+	if d.closed {
+		d.mu.Unlock()
+		return nil
+	}
+	d.closed = true
 	for _, cancel := range d.watchers {
 		cancel()
 	}
@@ -346,4 +357,18 @@ func (d *Discovery) Close() error {
 	d.mu.Unlock()
 
 	return d.client.Close()
+}
+
+// MatchesOptions reports whether the immutable client/discovery configuration
+// matches opts. Service registration identity is intentionally ignored.
+func (d *Discovery) MatchesOptions(opts *Options) bool {
+	if d == nil || d.opts == nil || opts == nil {
+		return false
+	}
+	d.mu.Lock()
+	closed := d.closed
+	d.mu.Unlock()
+	return !closed && NamespacePrefix(d.opts.Namespace, "") == NamespacePrefix(opts.Namespace, "") &&
+		reflect.DeepEqual(d.opts.Endpoints, opts.Endpoints) && d.opts.Username == opts.Username &&
+		d.opts.Password == opts.Password && d.opts.DialTimeout == opts.DialTimeout
 }

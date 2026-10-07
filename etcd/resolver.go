@@ -26,6 +26,8 @@ type etcdResolver struct {
 	wg          sync.WaitGroup
 }
 
+// InitEtcdResolver registers a legacy process-wide resolver. Core uses a
+// connection-local builder via DialDiscovery instead.
 func InitEtcdResolver(discovery *Discovery) {
 	resolver.Register(&EtcdResolverBuilder{discovery: discovery})
 }
@@ -39,6 +41,9 @@ func (b *EtcdResolverBuilder) Build(
 	cc resolver.ClientConn,
 	opts resolver.BuildOptions,
 ) (resolver.Resolver, error) {
+	if b.discovery == nil {
+		return nil, fmt.Errorf("etcd resolver discovery required")
+	}
 	serviceName := target.Endpoint()
 
 	if err := b.discovery.Watch(serviceName); err != nil {
@@ -88,6 +93,9 @@ func (r *etcdResolver) resolve() {
 
 	addrs := make([]resolver.Address, 0, len(services))
 	for _, svc := range services {
+		if svc.Ready != nil && !*svc.Ready {
+			continue
+		}
 		addrs = append(addrs, resolver.Address{Addr: svc.Addr})
 	}
 
@@ -119,4 +127,14 @@ func Dial(serviceName string, opts ...grpc.DialOption) (*grpc.ClientConn, error)
 	opts = append(defaultOpts, opts...)
 
 	return grpc.NewClient(target, opts...)
+}
+
+// DialDiscovery binds the resolver to this Discovery for the connection's
+// lifetime, independently of other Core instances or global resolver state.
+func DialDiscovery(discovery *Discovery, serviceName string, opts ...grpc.DialOption) (*grpc.ClientConn, error) {
+	if discovery == nil {
+		return nil, fmt.Errorf("etcd resolver discovery required")
+	}
+	opts = append(opts, grpc.WithResolvers(&EtcdResolverBuilder{discovery: discovery}))
+	return Dial(serviceName, opts...)
 }

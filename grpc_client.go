@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/xs23933/core/v3/etcd"
@@ -12,8 +11,6 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 )
-
-var resolverInitOnce sync.Once
 
 var (
 	ErrGRPCClientAlreadyInitialized  = errors.New("grpc client service already initialized")
@@ -72,19 +69,22 @@ func (app *Core) GrpcClient(serviceName string, opts ...grpc.DialOption) (*grpc.
 	if err != nil {
 		return nil, err
 	}
-	if app.EtcdDiscovery == nil {
+	app.mutex.Lock()
+	discovery := app.EtcdDiscovery
+	app.mutex.Unlock()
+	if discovery == nil {
 		if err := app.enableEtcdDiscoveryFromConf(); err != nil {
 			return nil, err
 		}
 	}
 
-	resolverInitOnce.Do(func() {
-		etcd.InitEtcdResolver(app.EtcdDiscovery)
-	})
+	app.mutex.Lock()
+	discovery = app.EtcdDiscovery
+	app.mutex.Unlock()
 
 	opts = append(opts, credentialOption)
 
-	return etcd.Dial(serviceName, opts...)
+	return etcd.DialDiscovery(discovery, serviceName, opts...)
 }
 
 // GrpcClientAt 使用明确 target 建立连接，并与服务发现连接共用同一份每服务安全配置。
@@ -136,6 +136,8 @@ func (app *Core) enableEtcdDiscoveryFromConf() error {
 		Endpoints:   etcdConf.GetStrings("endpoints", []string{"127.0.0.1:2379"}),
 		DialTimeout: time.Duration(etcdConf.GetInt64("dialTimeout", 5)) * time.Second,
 		Namespace:   etcdConf.GetString("namespace", ""),
+		Username:    etcdConf.GetString("username", ""),
+		Password:    etcdConf.GetString("password", ""),
 	}
 
 	return app.EnableEtcdDiscovery(opts)

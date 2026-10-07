@@ -23,6 +23,9 @@ type Options struct {
 	TTL         int64 // 租约时间（秒）
 	Version     string
 
+	// RegistrationReady is omitted for legacy callers; Core starts with false.
+	RegistrationReady *bool
+
 	// 元数据
 	Metadata map[string]string
 }
@@ -75,4 +78,18 @@ func (o *Options) ServiceKey() string {
 // 服务前缀（用于发现）
 func (o *Options) ServicePrefix() string {
 	return fmt.Sprintf("%s%s/", o.ServiceRoot(), o.ServiceName)
+}
+
+func cloneOptions(opts *Options) *Options {
+	snapshot := *opts
+	snapshot.Endpoints = append([]string(nil), opts.Endpoints...)
+	snapshot.Metadata = make(map[string]string, len(opts.Metadata))
+	for key, value := range opts.Metadata {
+		snapshot.Metadata[key] = value
+	}
+	if opts.RegistrationReady != nil {
+		ready := *opts.RegistrationReady
+		snapshot.RegistrationReady = &ready
+	}
+	return &snapshot
 }

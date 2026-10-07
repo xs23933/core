@@ -2,10 +2,13 @@ package gateway
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -27,24 +30,27 @@ import (
 )
 
 type ReflectionProxy struct {
-	conn      *grpc.ClientConn
-	schema    *ReflectionSchema
-	addr      string
-	app       *core.Core
-	ready     func() bool
-	closeFn   func() error
-	closeOnce sync.Once
-	closeErr  error
+	generation string
+	conn       *grpc.ClientConn
+	schema     *ReflectionSchema
+	addr       string
+	app        *core.Core
+	ready      func() bool
+	closeFn    func() error
+	closeOnce  sync.Once
+	closeErr   error
 }
 
-// ReflectionSchema is the immutable reflected method set shared by all
-// connections for one logical service. The map is built completely before the
+// ReflectionSchema is an immutable reflected method set shared by connections
+// only after their process protocols have been independently verified. The map is built completely before the
 // schema is published to a ServicePool.
 type ReflectionSchema struct {
-	methods map[string]*MethodDescriptor
+	fingerprint string
+	methods     map[string]*MethodDescriptor
 }
 
 type MethodDescriptor struct {
+	Contract    string // deterministic fingerprint of reachable request/response types
 	FullMethod  string
 	Package     string // proto package, e.g. "v1.auth"
 	Service     string // service name, e.g. "UserService"
@@ -104,7 +110,7 @@ func discoverReflectionSchema(parent context.Context, conn *grpc.ClientConn) (*R
 	if err := discoverReflectionMethods(ctx, conn, methods); err != nil {
 		return nil, err
 	}
-	return &ReflectionSchema{methods: methods}, nil
+	return &ReflectionSchema{methods: methods, fingerprint: reflectionFingerprint(methods)}, nil
 }
 
 func discoverReflectionMethods(ctx context.Context, conn *grpc.ClientConn, methodsByName map[string]*MethodDescriptor) error {
@@ -128,8 +134,7 @@ func discoverReflectionMethods(ctx context.Context, conn *grpc.ClientConn, metho
 
 		svcDesc, err := refClient.ResolveService(serviceName)
 		if err != nil {
-			core.Erro("[ReflectionProxy] resolve service %s failed: %v", serviceName, err)
-			continue
+			return fmt.Errorf("resolve service %s: %w", serviceName, err)
 		}
 
 		// 递归收集文件及其所有依赖（包括 google/protobuf/timestamp.proto 等 well-known types）
@@ -159,8 +164,7 @@ func discoverReflectionMethods(ctx context.Context, conn *grpc.ClientConn, metho
 
 		files, err := protodesc.NewFiles(fdSet)
 		if err != nil {
-			core.Erro("[ReflectionProxy] build file descriptor set failed: %v", err)
-			continue
+			return fmt.Errorf("build file descriptor set: %w", err)
 		}
 
 		msgDescMap := buildMessageIndex(files)
@@ -176,6 +180,7 @@ func discoverReflectionMethods(ctx context.Context, conn *grpc.ClientConn, metho
 			pkg := svcDesc.GetFile().GetPackage()
 			req, resp := reqDesc, respDesc
 			methodsByName[fullMethod] = &MethodDescriptor{
+				Contract:    fmt.Sprintf("%t/%t/%s", method.IsClientStreaming(), method.IsServerStreaming(), methodContract(req, resp)),
 				FullMethod:  fullMethod,
 				Package:     pkg,
 				Service:     serviceName,
@@ -435,4 +440,55 @@ func (p *ReflectionProxy) Close() error {
 		}
 	})
 	return p.closeErr
+}
+
+// Fingerprint codecs by reachable types rather than the entire proto file, so
+// adding an unrelated RPC does not make an unchanged method incompatible.
+func methodContract(req, resp protoreflect.MessageDescriptor) string {
+	types := map[string][]byte{}
+	var collect func(protoreflect.MessageDescriptor)
+	collect = func(md protoreflect.MessageDescriptor) {
+		name := string(md.FullName())
+		if _, seen := types[name]; seen {
+			return
+		}
+		data, _ := (proto.MarshalOptions{Deterministic: true}).Marshal(protodesc.ToDescriptorProto(md))
+		types[name] = append([]byte(md.ParentFile().Syntax().String()), data...)
+		for i := 0; i < md.Fields().Len(); i++ {
+			field := md.Fields().Get(i)
+			if field.Message() != nil {
+				collect(field.Message())
+			}
+			if enum := field.Enum(); enum != nil {
+				data, _ := (proto.MarshalOptions{Deterministic: true}).Marshal(protodesc.ToEnumDescriptorProto(enum))
+				types[string(enum.FullName())] = data
+			}
+		}
+	}
+	collect(req)
+	collect(resp)
+	names := make([]string, 0, len(types))
+	for name := range types {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	hash := sha256.New()
+	hash.Write([]byte(string(req.FullName()) + "\x00" + string(resp.FullName()) + "\x00"))
+	for _, name := range names {
+		hash.Write([]byte(name + "\x00"))
+		hash.Write(types[name])
+	}
+	return hex.EncodeToString(hash.Sum(nil))
+}
+func reflectionFingerprint(methods map[string]*MethodDescriptor) string {
+	names := make([]string, 0, len(methods))
+	for name := range methods {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	hash := sha256.New()
+	for _, name := range names {
+		hash.Write([]byte(name + "\x00" + methods[name].Contract + "\x00"))
+	}
+	return hex.EncodeToString(hash.Sum(nil))
 }

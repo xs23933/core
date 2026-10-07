@@ -122,6 +122,10 @@ app.Listen(":8080")
 
 需要被网关自动发现时，优先使用 `EnableEtcdRegistry`。它会创建/复用 gRPC server、注册服务实例、开启 discovery，并自动注册 gRPC reflection。
 
+Core 初次注册携带 `ready=false`；`Listen` / `Run` 完成 Handler、gRPC、TLS 和路由目录准备后发布 `ready=true`。准备失败会清理注册；Gateway 和 gRPC resolver 不选择未就绪实例。直接使用 `etcd.NewRegistry` 的旧调用方默认不写 ready，兼容旧就绪语义；可设置 `Options.RegistrationReady` 并调用 `Registry.SetReady(ctx, ready)`。
+
+每个 Registry 自动生成唯一 `generation`，租约恢复保留该代标识和 readiness。恢复使用 etcd CAS，已被后继代替换的旧进程停止重注册；新 Registry 初次注册仍允许同固定 key 接管。并存副本使用不同 `service_id`。注销先取消并等待续租/恢复任务停止，再撤销自身租约，避免晚写或删除后继注册；注册和 readiness 写入均有截止时间。
+
 ```go
 app := core.New(core.LoadConfigFile("config.yaml"))
 
@@ -181,3 +185,10 @@ func NewAuthHandler(app *core.Core, userService *service.UserService) {
 - 不要手动维护重复的 reflection 注册；网关场景使用 `EnableEtcdRegistry`。
 - 不要把 proto service 实现直接写进 HTTP handler；建议 service 层复用业务逻辑，HTTP handler 和 gRPC handler 只做协议适配。
 - 不要把 `service_addr` 写成其它进程无法访问的地址。
+
+
+服务注册携带每进程唯一 `generation`，同 ID/地址重启也重新 reflection。每个期望实例保留一个恢复任务，连接/reflection 超时后以 0.5 秒递增、最多 5 秒的间隔重试，熔断冷却后继续尝试；删除、换代或关闭取消任务。Registry 丢租恢复通过 CAS 防旧代覆盖，正常退出先撤注册，异常退出由 TTL 摘除。滚动升级采用方法并集，RPC descriptor 冲突返回 503，写请求不自动重放。
+
+`GrpcClient("service-name")` 的 resolver 每连接绑定 Discovery；相同配置复用，改变 namespace/endpoints/etcd 身份返回 `ErrEtcdDiscoveryConfigurationChanged`，应新建 Core 实例迁移。直接 `etcd.NewRegistry` 默认没有 ready 字段、兼容立即可服务。
+
+`ShutdownWithTimeout` 使用独立 deadline，先撤注册，再同时排空 HTTP/HTTP3/gRPC，最后关闭业务依赖与 Discovery；超时强制关闭 transport。信号退出默认 10 秒，可配置 `shutdown_timeout: "10s"`。重复调用共享首个退出任务，后来短期限只停止该调用等待。无 context 的旧 shutdown hook 无法强制取消，后台清理需它自行返回，但不延长调用方期限。

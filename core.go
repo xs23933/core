@@ -50,12 +50,16 @@ var syncCoreAutomaticHTTPRoutesForServe = func(app *Core, ctx context.Context) e
 
 type Core struct {
 	*http.Server
-	h3              *http3.Server
-	mutex           sync.Mutex
-	shutdownOnce    sync.Once
-	shutdownStarted bool
-	startupOnce     sync.Once
-	startupErr      error
+	h3                *http3.Server
+	mutex             sync.Mutex
+	shutdownOnce      sync.Once
+	shutdownStarted   bool
+	shutdownDone      chan struct{}
+	shutdownContext   context.Context
+	shutdownErr       error
+	grpcForceStopOnce sync.Once
+	startupOnce       sync.Once
+	startupErr        error
 
 	trees      []*RouteNode
 	routeLocks []sync.RWMutex
@@ -97,6 +101,7 @@ type Core struct {
 	grpcClientInitialized map[string]struct{}
 
 	// etcd 相关
+	etcdRegistryMu            sync.Mutex
 	etcdRegistry              *etcd.Registry
 	EtcdDiscovery             *etcd.Discovery
 	etcdRegistryServiceName   string
@@ -265,10 +270,13 @@ func New(options ...Options) *Core {
 	signal.Notify(c, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM,
 		syscall.SIGQUIT, SIGUSR2)
 	go func() {
-		s := <-c
-		Info("Received signal: %v, shutting down...", s)
-		app.shutdown()
-		cancel()
+		defer signal.Stop(c)
+		select {
+		case s := <-c:
+			Info("Received signal: %v, shutting down...", s)
+			app.shutdown()
+		case <-ctx.Done():
+		}
 	}()
 
 	configureLogger(LoggerConfig{ForceColor: colorful, Debug: app.Debug, Output: out})
@@ -511,7 +519,7 @@ func (app *Core) prepareServeOnce() error {
 	if err := syncCoreAutomaticHTTPRoutesForServe(app, app.Ctx); err != nil {
 		return err
 	}
-	return nil
+	return markCoreEtcdRegistryReadyForServe(app, app.Ctx)
 }
 
 func (app *Core) prepareTLSForServe() error {
@@ -587,25 +595,23 @@ func CheckHealth() map[string]string {
 	return result
 }
 
-// ShutdownWithTimeout 带超时时间的优雅关闭。
-// 调用 app.shutdown() 后等待所有连接排空，超时则强制退出。
+// ShutdownWithTimeout bounds service withdrawal, transport drain, and cleanup.
+// Legacy OnShutdown hooks cannot be forcibly canceled; a deadline still closes
+// HTTP/gRPC transports and returns while an uncooperative hook finishes later.
 func (app *Core) ShutdownWithTimeout(timeout time.Duration) error {
-	app.shutdown()
-
-	ctx, cancel := context.WithTimeout(app.Ctx, timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
+	return app.shutdownWithContext(ctx)
+}
 
-	done := make(chan error, 1)
-	go func() {
-		done <- app.Server.Shutdown(ctx)
-	}()
-
-	select {
-	case err := <-done:
-		return err
-	case <-ctx.Done():
-		return app.Server.Close()
+var markCoreEtcdRegistryReadyForServe = func(app *Core, ctx context.Context) error {
+	app.mutex.Lock()
+	registry := app.etcdRegistry
+	app.mutex.Unlock()
+	if registry == nil {
+		return nil
 	}
+	return registry.SetReady(ctx, true)
 }
 
 func (app *Core) Use(fn ...any) Router {

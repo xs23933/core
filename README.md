@@ -882,7 +882,11 @@ Gateway 的每个 `ServicePool` 使用 etcd 中的逻辑服务名选择 Core 客
 - `discovery_instances=0`：fallback discovery 中也没有该服务实例，通常需要检查业务服务是否仍在 `/<namespace>/services/<service_name>/` 下注册；未配置 namespace 时检查 `/services/<service_name>/`。
 - `circuit_state=1`：该服务 proxy 连续失败后进入熔断冷却期。
 
-休眠、网络切换或 etcd 短暂不可用后，还应检查 Gateway 是否输出了 `etcd service watch error`、`etcd service watch stopped unexpectedly`、`watch: <service>/<id> deregistered` 和后续 `watch: <service>/<id> registered`。如果只看到注销没有看到重新注册，问题更接近 Gateway watch 或服务注册续约链路；如果重新注册存在但仍不可用，则继续看 `connect discovered instance` 或 `connect instance` 的连接错误。
+服务注册携带每进程唯一 `generation`，同 ID/地址重启也重新 reflection。每个期望实例保留一个恢复任务，连接/reflection 超时后以 0.5 秒递增、最多 5 秒的间隔重试，熔断冷却后继续尝试；删除、换代或关闭取消任务。Registry 丢租恢复通过 CAS 防旧代覆盖，正常退出先撤注册，异常退出由 TTL 摘除。滚动升级采用方法并集，RPC descriptor 冲突返回 503，写请求不自动重放。
+
+`GrpcClient("service-name")` 的 resolver 每连接绑定 Discovery；相同配置复用，改变 namespace/endpoints/etcd 身份返回 `ErrEtcdDiscoveryConfigurationChanged`，应新建 Core 实例迁移。直接 `etcd.NewRegistry` 默认没有 ready 字段、兼容立即可服务。
+
+`ShutdownWithTimeout` 使用独立 deadline，先撤注册，再同时排空 HTTP/HTTP3/gRPC，最后关闭业务依赖与 Discovery；超时强制关闭 transport。信号退出默认 10 秒，可配置 `shutdown_timeout: "10s"`。重复调用共享首个退出任务，后来短期限只停止该调用等待。无 context 的旧 shutdown hook 无法强制取消，后台清理需它自行返回，但不延长调用方期限。
 
 网关内置本地管理接口，仅允许 loopback 地址访问：
 
@@ -967,9 +971,9 @@ etcd:
 调用顺序必须是 `core.New` → `EnableEtcdRegistry` → `Listen/Run`。具体时机如下：
 
 1. Go `init` 阶段的 `core.RegHandle` 只登记 Handler 模块，不访问 etcd。
-2. `EnableEtcdRegistry` 创建 registry 和 discovery，立即把实例写入 `/<namespace>/services/<service_name>/<service_id>`，并保存本次成功注册的 service name 与 namespace。
+2. `EnableEtcdRegistry` 创建 Registry，复用相同配置的 Discovery，以每进程唯一 `generation` 和 `ready=false` 注册。Gateway 暂不选用准备态实例。
 3. `Listen` / `Run` 启动准备阶段加载 Handler，方法名路由在这里生成并进入自动目录。
-4. Handler、gRPC 和 TLS 准备完成后，筛选出的完整目录一次性写入 `/<namespace>/gateway/routes/auto_http/<owner_id>`；成功后 HTTP server 才进入 Serve。
+4. Handler、gRPC 和 TLS 准备完成后，启用自动 HTTP 发布时先写入完整目录，随后 Registry 更新 `ready=true`；成功后 server 才进入 Serve。未开启自动 HTTP 发布也使用相同 readiness 顺序。
 
 开启自动发布但未先成功调用 `EnableEtcdRegistry`，或者目录写入 etcd 失败，`Listen` / `Run` 会返回错误并清理已启动资源。框架不会启动周期发布 worker。HTTP 自动路由保持对外路径和上游路径一致，不做参数转换，path、query 和 body 由目标 HTTP 服务处理；不支持路径改写或静态 Header 注入。
 
@@ -1086,7 +1090,7 @@ POST /v1/auth/user/login      -> /v1.auth.UserService/PostLogin
 GET  /v1/auth/user/:id        -> /v1.auth.UserService/GetUserById
 ```
 
-当服务 reflection 中的方法减少，或 etcd 中的路由被删除/禁用时，网关会注销旧 HTTP 路由。
+gRPC 自动路由采用当前已接入实例的方法并集：新增 RPC 仅选择支持实例，最后一个支持实例退出后移除该方法；全部离线时保留路由返回 `503`。同一 RPC 的输入/输出 descriptor（含嵌套消息与枚举）不一致时返回 `503`，协议一致后恢复。HTTP/manual 路由删除或禁用时撤下相应 source；manual 继续优先于 automatic。
 
 ### 7. 手动配置网关路由
 

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/xs23933/core/v3/etcd"
 	"github.com/xs23933/core/v3/reuseport"
@@ -25,6 +26,8 @@ var (
 	ErrGRPCServerAlreadyConfigured = errors.New("grpc server already configured")
 	// ErrGRPCTLSSharedAddress 表示 transport credentials 不能在 HTTP 共端口 ServeHTTP 路径上生效。
 	ErrGRPCTLSSharedAddress = errors.New("grpc transport credentials require a dedicated grpc address")
+	// ErrEtcdDiscoveryConfigurationChanged protects clients bound to an existing Discovery.
+	ErrEtcdDiscoveryConfigurationChanged = errors.New("core: etcd discovery configuration change requires a new Core instance")
 
 	newCoreEtcdRegistry      = etcd.NewRegistry
 	newCoreEtcdDiscovery     = etcd.NewDiscovery
@@ -180,15 +183,41 @@ func errorWrapInterceptor(ctx context.Context, req any, info *grpc.UnaryServerIn
 
 // shutdownGRPC 优雅关闭 gRPC 服务器
 func (app *Core) shutdownGRPC() {
-	if app.grpcServer != nil {
-		Info("Shutting down gRPC server...")
-		app.grpcServer.GracefulStop()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	app.shutdownGRPCContext(ctx)
+}
+
+func (app *Core) shutdownGRPCContext(ctx context.Context) {
+	if app.grpcServer == nil {
+		return
 	}
+	Info("Shutting down gRPC server...")
+	done := make(chan struct{})
+	go func() {
+		app.grpcServer.GracefulStop()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		app.forceStopGRPC()
+	}
+}
+
+func (app *Core) forceStopGRPC() {
+	app.grpcForceStopOnce.Do(func() {
+		if app.grpcServer != nil {
+			go app.grpcServer.Stop()
+		}
+	})
 }
 
 // EnableEtcdRegistry 启用 etcd 服务注册
 // 当 opts 为 nil 时，从配置文件读取；当 opts 已设置字段时，保留用户值
 func (app *Core) EnableEtcdRegistry(opts *etcd.Options) error {
+	app.etcdRegistryMu.Lock()
+	defer app.etcdRegistryMu.Unlock()
 	app.mutex.Lock()
 	shutdownStarted := app.shutdownStarted
 	app.mutex.Unlock()
@@ -213,15 +242,31 @@ func (app *Core) EnableEtcdRegistry(opts *etcd.Options) error {
 		Password:    opts.Password,
 		DialTimeout: opts.DialTimeout,
 	}
-	discovery, err := newCoreEtcdDiscovery(discoveryOpts)
-	if err != nil {
+	app.mutex.Lock()
+	discovery := app.EtcdDiscovery
+	discoveryCleanup := app.etcdDiscoveryCleanup
+	app.mutex.Unlock()
+	newDiscovery := discovery == nil
+	if !newDiscovery && !discovery.MatchesOptions(discoveryOpts) {
 		registryCleanup()
-		return err
+		return ErrEtcdDiscoveryConfigurationChanged
 	}
-	discoveryCleanup := onceCleanup(func() { _ = closeCoreEtcdDiscovery(discovery) })
+	if newDiscovery {
+		discovery, err = newCoreEtcdDiscovery(discoveryOpts)
+		if err != nil {
+			registryCleanup()
+			return err
+		}
+		discoveryCleanup = onceCleanup(func() { _ = closeCoreEtcdDiscovery(discovery) })
+	}
+	candidateCleanup := func() {
+		if newDiscovery {
+			discoveryCleanup()
+		}
+	}
 
 	if err := registerCoreEtcdRegistry(registry); err != nil {
-		discoveryCleanup()
+		candidateCleanup()
 		registryCleanup()
 		return err
 	}
@@ -229,12 +274,24 @@ func (app *Core) EnableEtcdRegistry(opts *etcd.Options) error {
 	app.mutex.Lock()
 	if app.shutdownStarted {
 		app.mutex.Unlock()
-		discoveryCleanup()
+		candidateCleanup()
 		registryCleanup()
 		return errors.New("core: cannot install etcd registry after shutdown")
 	}
+	// A client may have enabled Discovery while registration was in flight.
+	if app.EtcdDiscovery != nil && app.EtcdDiscovery != discovery {
+		current := app.EtcdDiscovery
+		if !current.MatchesOptions(discoveryOpts) {
+			app.mutex.Unlock()
+			candidateCleanup()
+			registryCleanup()
+			return ErrEtcdDiscoveryConfigurationChanged
+		}
+		candidateCleanup()
+		discovery = current
+		discoveryCleanup = app.etcdDiscoveryCleanup
+	}
 	previousRegistryCleanup := app.etcdRegistryCleanup
-	previousDiscoveryCleanup := app.etcdDiscoveryCleanup
 	app.etcdRegistry = registry
 	app.EtcdDiscovery = discovery
 	app.etcdRegistryServiceName = opts.ServiceName
@@ -247,9 +304,6 @@ func (app *Core) EnableEtcdRegistry(opts *etcd.Options) error {
 
 	if previousRegistryCleanup != nil {
 		previousRegistryCleanup()
-	}
-	if previousDiscoveryCleanup != nil {
-		previousDiscoveryCleanup()
 	}
 	if registerReflection {
 		reflection.Register(app.GetGRPCServer())
@@ -274,6 +328,11 @@ func (app *Core) EtcdRegistryIdentity() (serviceName, namespace string, ok bool)
 }
 
 func (app *Core) applyEtcdRegistryDefaults(opts *etcd.Options) {
+	app.applyEtcdDiscoveryDefaults(opts)
+	if opts.RegistrationReady == nil {
+		ready := false
+		opts.RegistrationReady = &ready
+	}
 	if opts.Namespace == "" {
 		opts.Namespace = app.Conf.GetString("etcd.namespace", "")
 	}
@@ -316,26 +375,37 @@ func (app *Core) EnableEtcdDiscovery(opts *etcd.Options) error {
 	}
 	app.applyEtcdDiscoveryDefaults(opts)
 
+	// Serialize discovery initialization so concurrent clients share one owner.
+	app.mutex.Lock()
+	defer app.mutex.Unlock()
+	if app.shutdownStarted {
+		return errors.New("core: cannot enable etcd discovery after shutdown")
+	}
+	if app.EtcdDiscovery != nil {
+		if !app.EtcdDiscovery.MatchesOptions(opts) {
+			return ErrEtcdDiscoveryConfigurationChanged
+		}
+		return nil
+	}
 	discovery, err := newCoreEtcdDiscovery(opts)
 	if err != nil {
 		return err
 	}
-	discoveryCleanup := onceCleanup(func() { _ = closeCoreEtcdDiscovery(discovery) })
-
-	app.mutex.Lock()
-	previousDiscoveryCleanup := app.etcdDiscoveryCleanup
 	app.EtcdDiscovery = discovery
-	app.etcdDiscoveryCleanup = discoveryCleanup
-	app.mutex.Unlock()
-
-	if previousDiscoveryCleanup != nil {
-		previousDiscoveryCleanup()
-	}
-
+	app.etcdDiscoveryCleanup = onceCleanup(func() { _ = closeCoreEtcdDiscovery(discovery) })
 	return nil
 }
 
 func (app *Core) applyEtcdDiscoveryDefaults(opts *etcd.Options) {
+	if opts.DialTimeout == 0 {
+		opts.DialTimeout = time.Duration(app.Conf.GetInt64("etcd.dialTimeout", 5)) * time.Second
+	}
+	if opts.Username == "" {
+		opts.Username = app.Conf.GetString("etcd.username", "")
+	}
+	if opts.Password == "" {
+		opts.Password = app.Conf.GetString("etcd.password", "")
+	}
 	if opts.Namespace == "" {
 		opts.Namespace = app.Conf.GetString("etcd.namespace", "")
 	}
@@ -346,7 +416,17 @@ func (app *Core) applyEtcdDiscoveryDefaults(opts *etcd.Options) {
 
 // OnShutdown 添加关闭钩子
 func (app *Core) OnShutdown(fn func()) {
+	if fn == nil {
+		return
+	}
+	app.mutex.Lock()
+	if app.shutdownStarted {
+		app.mutex.Unlock()
+		fn()
+		return
+	}
 	app.shutdownHooks = append(app.shutdownHooks, fn)
+	app.mutex.Unlock()
 }
 
 func onceCleanup(fn func()) func() {

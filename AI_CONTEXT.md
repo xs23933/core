@@ -589,7 +589,7 @@ return app.Listen(":8080")
 规则：
 
 * 只需要本机 gRPC 时用 `app.EnableGRPC(":9001")`。
-* 需要网关自动发现时用 `app.EnableEtcdRegistry(nil)`；它会注册 etcd，并自动开启 gRPC reflection。
+* `app.EnableEtcdRegistry(nil)` 开启 reflection，以每进程唯一 `generation` 和 `ready=false` 注册；启动准备和启用的自动 HTTP 目录发布完成后更新 `ready=true`。历史缺少 ready 的记录兼容可服务。
 * `RegisterGRPCService` 必须在 `Listen` / `Run` 前调用。
 * `ConfigureGRPCServer` 必须在 `GetGRPCServer`、`RegisterGRPCService` 或 `EnableEtcdRegistry` 创建 server 前调用；只允许配置一次。
 * Core 始终保留默认 unary error wrapper；调用方 interceptor 按配置顺序组成 chain。
@@ -603,6 +603,14 @@ return app.Listen(":8080")
 * HTTP Handler 自动发布默认关闭；开启 `gateway.auto_http_routes.enabled` 时必须设置 `include_prefixes`，可用 `exclude_prefixes` 排除内部路径，并配置 Gateway 可访问的 `etcd.http_addr`。
 * HTTP 自动发布只收集嵌入 `core.Handler` 后按方法名生成的路由；`app.GET/POST` 等手写路由不收集。启动时同步一次完整目录，不创建周期 worker。
 * HTTP 自动发布顺序固定为 `core.New` → `EnableEtcdRegistry` → `Listen/Run`；`RegHandle` 只登记模块，Handler 路由在启动加载阶段生成，随后写入 etcd。registry 未初始化或同步失败会使启动返回错误。
+
+
+服务注册携带每进程唯一 `generation`，同 ID/地址重启也重新 reflection。每个期望实例保留一个恢复任务，连接/reflection 超时后以 0.5 秒递增、最多 5 秒的间隔重试，熔断冷却后继续尝试；删除、换代或关闭取消任务。Registry 丢租恢复通过 CAS 防旧代覆盖，正常退出先撤注册，异常退出由 TTL 摘除。滚动升级采用方法并集，RPC descriptor 冲突返回 503，写请求不自动重放。
+
+`GrpcClient("service-name")` 的 resolver 每连接绑定 Discovery；相同配置复用，改变 namespace/endpoints/etcd 身份返回 `ErrEtcdDiscoveryConfigurationChanged`，应新建 Core 实例迁移。直接 `etcd.NewRegistry` 默认没有 ready 字段、兼容立即可服务。
+
+`ShutdownWithTimeout` 使用独立 deadline，先撤注册，再同时排空 HTTP/HTTP3/gRPC，最后关闭业务依赖与 Discovery；超时强制关闭 transport。信号退出默认 10 秒，可配置 `shutdown_timeout: "10s"`。重复调用共享首个退出任务，后来短期限只停止该调用等待。无 context 的旧 shutdown hook 无法强制取消，后台清理需它自行返回，但不延长调用方期限。
+
 * HTTP 手动批量注册使用 `gateway.RegisterHTTPRoutes`，单条使用 `RegisterHTTPRoute`；HTTP 路由不支持 path rewrite 或静态 Header 注入。
 
 网关路由命名：

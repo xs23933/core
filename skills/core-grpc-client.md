@@ -101,6 +101,10 @@ if err := app.EnableEtcdDiscovery(&etcd.Options{
 conn, err := app.GrpcClient("user-service")
 ```
 
+每个 `GrpcClient` 连接通过 `grpc.WithResolvers` 绑定所属 Core 的 Discovery；不同 Core 实例互不影响，不依赖进程级首次初始化。相同 namespace、endpoints、认证和 dialTimeout 的重复初始化会复用 Discovery，`EnableEtcdRegistry` 也复用它；改变这些配置返回 `ErrEtcdDiscoveryConfigurationChanged`，必须新建 Core 实例，避免让已有连接失去 watch。直接使用 etcd 包时优先 `etcd.DialDiscovery(discovery, serviceName, opts...)`；旧 `InitEtcdResolver` / `Dial` 仍保留兼容。
+
+Resolver 只选择 `ready` 未设置（旧实例）或 `ready=true` 的注册，`ready=false` 不进入负载均衡。调用方应按服务生命周期复用连接，不能通过普通业务写请求自动重放弥补重启。
+
 客户端 namespace 必须与目标服务注册时一致。`xpay` 客户端只发现 `/xpay/services/` 下的实例；空值继续发现 `/services/`。
 
 ## 5. 每服务 TLS 与明确地址
