@@ -89,9 +89,9 @@ debug: true # 调试模式
 network: tcp4 # 网络协议
 listen: 8080 # 监听端口
 prefork: false # 是否启用 prefork 模式
-# 可信代理 CIDR 列表，仅当请求来自这些 IP 时才采信 X-Forwarded-For；
-# 默认信任本机回环与私有网段（127.0.0.0/8、10.0.0.0/8、172.16.0.0/12、192.168.0.0/16）
-trusted_proxies: [] # 例如: ["10.0.0.0/8", "192.168.0.0/16"]
+# 额外可信代理 CIDR 列表；私有 IP（net.IP.IsPrivate）、回环 IP 和 Cloudflare 回源段始终可信。
+# 私有/回环 IP 同时支持 IPv4 和 IPv6，不受此配置覆盖。
+trusted_proxies: [] # 例如: ["203.0.113.0/24"]；仅作用于 c.RemoteIP()
 log: /var/log/myapp/app.log # 可选：日志文件路径
 log_rotate:
   - size: 300M # 文件达到 300MB 后切割
@@ -156,6 +156,8 @@ app.GET("/health", func(c core.Ctx) error {
 ### 2. 上下文 (Ctx)
 
 上下文对象封装了 HTTP 请求和响应，提供了丰富的操作方法。
+
+获取客户端 IP 可以直接调用 `core.RemoteIP(req.Header, req.RemoteAddr)`，无需另行包装对端判断。包级函数与 `c.RemoteIP()` 均只对私有/回环 IP（IPv4/IPv6）和 Cloudflare 回源段采信 `X-Forwarded-For` 的第一个 IP；`c.RemoteIP()` 还支持应用配置的 `trusted_proxies`。不可信对端或无效转发头回退对端 IP，无效 `RemoteAddr` 返回 nil。可信代理必须覆盖转发头。包级函数现在也校验可信代理，旧调用方不能再依赖公网直连转发头；`ExtractClientInfo` 同样遵循此规则。
 
 ```go
 func (Handler) Get(c core.Ctx) {
@@ -2117,7 +2119,7 @@ app := core.New(core.Options{
 | `max_body_size` | string | `"1MB"`   | 最大请求体大小   |
 | `read_timeout`  | string | `"5s"`    | 读取超时         |
 | `write_timeout` | string | `"10s"`   | 写入超时         |
-| `trusted_proxies` | []string | `[]`   | 可信代理 CIDR 列表，请求来自这些 IP 时 RemoteIP 才采信 X-Forwarded-For（默认信任回环与私有网段） |
+| `trusted_proxies` | []string | `[]`   | 额外可信代理 CIDR 列表；RemoteIP 始终信任 IPv4/IPv6 私有与回环 IP、Cloudflare 回源段，此配置不覆盖内置规则 |
 
 ## 最佳实践
 

@@ -137,11 +137,13 @@ ua := core.GrpcHeader(ctx, "user-agent")
 1. 可信代理校验通过后，`X-Forwarded-For` 的第一个 IP
 2. `RemoteAddr`
 
-> 安全提示：`c.RemoteIP()` 会先校验请求是否来自可信代理
-> （Cloudflare 回源 IP 段、默认的本机回环与私有网段，或配置项 `trusted_proxies` 中的 CIDR），
+> 安全提示：`core.RemoteIP(header, addr)` 与 `c.RemoteIP()` 都会先校验请求是否来自可信代理
+> （`net.IP.IsPrivate()` / `IsLoopback()` 判定的 IPv4/IPv6 IP、Cloudflare 回源 IP 段，或配置项 `trusted_proxies` 中的 CIDR），
+> 私有与回环 IP 在 `isTrustedProxy` 中直接信任，`trusted_proxies` 仅补充额外 CIDR，不覆盖内置规则。
 > 只有可信代理才采信 `X-Forwarded-For`，否则直接返回 `RemoteAddr`，防止客户端伪造 IP。
 > 可信代理必须覆盖 `X-Forwarded-For` 写入真实客户端 IP。
-> 包级函数 `core.RemoteIP(header, addr)` 为兼容旧调用方，不做可信代理校验。
+> 包级函数只使用内置可信规则；`c.RemoteIP()` 还使用应用的 `trusted_proxies` 配置。
+> 无效 `RemoteAddr` 返回 nil；无效转发头回退对端 IP。`ExtractClientInfo` 同样遵循包级函数的规则。
 
 ## 6. 错误工具
 

@@ -161,7 +161,7 @@ func TestRemoteIP(t *testing.T) {
     app := core.New()
 
     ctx := app.AcquireCtx(nil, &http.Request{
-        // RemoteAddr 必须为可信代理（默认信任本机回环与私有网段），
+        // RemoteAddr 必须为可信代理（始终信任 IPv4/IPv6 私有与回环 IP），
         // 否则 RemoteIP 会直接返回 RemoteAddr，不采信 X-Forwarded-For。
         RemoteAddr: "127.0.0.1:8080",
         Header: http.Header{

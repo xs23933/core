@@ -894,17 +894,17 @@ type iGet interface {
 	Get(key string) string
 }
 
-// RemoteIP 按头优先级解析客户端 IP（向后兼容，不校验可信代理）。
-func RemoteIP(h iGet, ip string) net.IP {
-	return remoteIP(h, ip, nil, false)
+// RemoteIP 返回客户端 IP，仅对私有/回环 IP 和 Cloudflare 回源段采信 X-Forwarded-For。
+// 不可信对端或无效转发头回退 RemoteAddr；无效 RemoteAddr 返回 nil。
+func RemoteIP(h iGet, remoteAddr string) net.IP {
+	return remoteIP(h, remoteAddr, nil)
 }
 
 // remoteIP 是 RemoteIP 的通用实现。
-// checkTrust 为 true 时，仅当 TCP 对端 IP 命中可信代理（Cloudflare 回源段或 trusted）才采信 X-Forwarded-For；
-// 为 false 时直接采信 X-Forwarded-For（保持 RemoteIP 的旧行为）。
-func remoteIP(h iGet, remoteAddr string, trusted []*net.IPNet, checkTrust bool) net.IP {
+// 仅当 TCP 对端 IP 命中可信代理（私有/回环 IP、Cloudflare 回源段或 trusted）才采信 X-Forwarded-For。
+func remoteIP(h iGet, remoteAddr string, trusted []*net.IPNet) net.IP {
 	remote := parseIPFromAddr(remoteAddr)
-	if checkTrust && !isTrustedProxy(remote, trusted) {
+	if !isTrustedProxy(remote, trusted) {
 		return remote
 	}
 
@@ -961,10 +961,13 @@ func parseCIDRs(cidrs []string) []*net.IPNet {
 // cloudflareNets 是 Cloudflare 回源 IP 段的解析结果，进程启动时解析一次。
 var cloudflareNets = parseCIDRs(cloudflareIPv4Ranges)
 
-// isTrustedProxy 判断 ip 是否属于可信代理（Cloudflare 回源段或配置的 trusted）。
+// isTrustedProxy 判断 ip 是否属于可信代理（私有/回环 IP、Cloudflare 回源段或配置的 trusted）。
 func isTrustedProxy(ip net.IP, trusted []*net.IPNet) bool {
 	if ip == nil {
 		return false
+	}
+	if ip.IsPrivate() || ip.IsLoopback() {
+		return true
 	}
 	for _, n := range trusted {
 		if n.Contains(ip) {

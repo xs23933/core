@@ -369,6 +369,8 @@ ua := core.GrpcHeader(ctx, "user-agent")
 domain := core.ExtractPrimaryDomain("api.example.com")
 ```
 
+`core.RemoteIP(header, addr)` 与 `c.RemoteIP()` 均先校验对端，仅对可信代理采信 `X-Forwarded-For` 的第一个 IP。`isTrustedProxy` 直接信任 `net.IP.IsPrivate()` 与 `IsLoopback()`（IPv4/IPv6），以及 Cloudflare 回源段；`c.RemoteIP()` 还使用应用的 `trusted_proxies` 补充额外 CIDR。包级函数不读取应用配置。不可信对端或无效转发头回退对端 IP，无效对端返回 nil。`ExtractClientInfo` 同样遵循包级函数的校验规则。
+
 #### 错误与哈希
 
 ```go

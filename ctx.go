@@ -752,11 +752,11 @@ func (c *BaseCtx) Cookies(name string) (string, error) {
 }
 
 // RemoteIP 返回客户端真实 IP。
-// 仅当请求来自可信代理（Cloudflare 回源 IP 段或配置项 trusted_proxies 中的 CIDR）时，
+// 仅当请求来自可信代理（私有/回环 IP、Cloudflare 回源 IP 段或配置项 trusted_proxies 中的 CIDR）时，
 // 才采信 X-Forwarded-For 的第一个 IP；否则直接返回 TCP 层对端 RemoteAddr，防止客户端伪造 IP。
 // 可信代理必须覆盖 X-Forwarded-For 写入真实客户端 IP。
 func (c *BaseCtx) RemoteIP() net.IP {
-	return remoteIP(c.R.Header, c.R.RemoteAddr, c.app.trustedProxies, true)
+	return remoteIP(c.R.Header, c.R.RemoteAddr, c.app.trustedProxies)
 }
 
 // set locals var
