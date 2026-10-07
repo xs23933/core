@@ -295,13 +295,20 @@ func (p *ServicePool) GetForMethod(method string, excluded *ReflectionProxy) *Re
 		return nil
 	}
 	start := p.idx.Add(1) - 1
+	var idle *ReflectionProxy
 	for offset := 0; offset < n; offset++ {
 		proxy := all[(int(start)+offset)%n]
 		if proxy != excluded && proxy.isReady() {
 			return proxy
 		}
+		// A first RPC wakes a normally idle channel without dialing or reflecting
+		// here. Alternate-instance retries remain limited to Ready connections.
+		// Honor the test readiness hook before inspecting a possibly mock conn.
+		if excluded == nil && idle == nil && proxy != nil && proxy.ready == nil && proxy.conn != nil && proxy.conn.GetState() == connectivity.Idle {
+			idle = proxy
+		}
 	}
-	return nil
+	return idle
 }
 func (p *ServicePool) removeInstance(instanceID string, clearDesired bool) bool {
 	if p == nil {

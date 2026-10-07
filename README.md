@@ -875,6 +875,8 @@ Gateway 的每个 `ServicePool` 使用 etcd 中的逻辑服务名选择 Core 客
 
 同一逻辑服务的多个 `service_id` 会参与轮询。`GET`/`HEAD` 遇到上游连接失败时，Gateway 最多改用另一个实例重试一次；写请求不会自动重放。gRPC 服务全部离线时，已自动生成的路由会保留并返回 `503`，实例恢复后继续使用原路由。
 
+Gateway 首次请求优先选择 Ready 连接；没有 Ready 时只允许已核验方法的 Idle 连接由正常 RPC 唤醒，备用实例重试仍只选择 Ready，不选择 Connecting、TransientFailure 或 Shutdown。
+
 当请求返回 `service <name> unavailable` 时，优先看 Gateway 日志中的 `state={...}` 诊断字段：
 
 - `pool=missing` 或 `pool_instances=0`：网关当前没有可用的 gRPC proxy 连接池。
