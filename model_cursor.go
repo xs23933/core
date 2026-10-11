@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"reflect"
-	"regexp"
 	"strings"
 
 	"gorm.io/gorm"
@@ -38,8 +37,6 @@ type CursorSpec struct {
 var ErrInvalidCursor = errors.New("core: invalid cursor")
 
 const cursorTokenVersion = 1
-
-var cursorFieldPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?$`)
 
 type cursorToken struct {
 	Version int               `json:"v"`
@@ -126,6 +123,10 @@ func findCursor[T any](params FindsParams, whr Map) (FindsResult[T], error) {
 		return result, err
 	}
 
+	// Ignored controls still must obey the shared public input contract.
+	if err := validateQueryWhere(whr); err != nil {
+		return result, err
+	}
 	delete(whr, "p")
 	delete(whr, "asc")
 	delete(whr, "desc")
@@ -136,6 +137,9 @@ func findCursor[T any](params FindsParams, whr Map) (FindsResult[T], error) {
 		tx, _, lmt = Where(&whr, params.DB)
 	} else {
 		tx, _, lmt = Where(&whr)
+	}
+	if tx.Error != nil {
+		return result, tx.Error
 	}
 	// Cursor mode is always keyset based. Clear an Offset inherited from a
 	// caller-supplied GORM scope so the public no-OFFSET contract also holds
@@ -167,7 +171,7 @@ func findCursor[T any](params FindsParams, whr Map) (FindsResult[T], error) {
 		queryDesc = !queryDesc
 	}
 	for i, name := range spec.Fields {
-		tx = tx.Order(clause.OrderByColumn{Column: cursorColumn(name), Desc: queryDesc, Reorder: i == 0})
+		tx = tx.Order(clause.OrderByColumn{Column: queryColumn(name), Desc: queryDesc, Reorder: i == 0})
 	}
 
 	data := make([]T, 0, lmt+1)
@@ -254,7 +258,7 @@ func validateCursorFields(fields []string) error {
 	}
 	seen := make(map[string]struct{}, len(fields))
 	for _, field := range fields {
-		if !cursorFieldPattern.MatchString(field) {
+		if !queryFieldPattern.MatchString(field) {
 			return fmt.Errorf("%w: unsafe field %q", ErrInvalidCursor, field)
 		}
 		if _, ok := seen[field]; ok {
@@ -318,35 +322,15 @@ func applyCursorBoundary(tx *gorm.DB, spec CursorSpec, values []any) *gorm.DB {
 			operator = ">"
 		}
 	}
-	first := quoteCursorColumn(tx, spec.Fields[0])
+	first := quoteQueryColumn(tx, spec.Fields[0])
 	if len(spec.Fields) == 1 {
 		return tx.Where(first+" "+operator+" ?", values[0])
 	}
-	second := quoteCursorColumn(tx, spec.Fields[1])
+	second := quoteQueryColumn(tx, spec.Fields[1])
 	return tx.Where(
 		"("+first+" "+operator+" ?) OR ("+first+" = ? AND "+second+" "+operator+" ?)",
 		values[0], values[0], values[1],
 	)
-}
-
-func cursorColumn(name string) clause.Column {
-	parts := strings.Split(name, ".")
-	if len(parts) == 2 {
-		return clause.Column{Table: parts[0], Name: parts[1]}
-	}
-	return clause.Column{Name: name}
-}
-
-func quoteCursorColumn(tx *gorm.DB, name string) string {
-	var builder strings.Builder
-	parts := strings.Split(name, ".")
-	for i, part := range parts {
-		if i > 0 {
-			builder.WriteByte('.')
-		}
-		tx.Dialector.QuoteTo(&builder, part)
-	}
-	return builder.String()
 }
 
 func cursorValuesFromRow[T any](row T, fields []*schema.Field) ([]any, error) {

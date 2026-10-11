@@ -910,6 +910,10 @@ type User struct {
 
 ### 3.16 分页规范
 
+列表筛选统一经过共享 `Where` 安全校验：字段仅允许 ASCII 标识符或一层 `table.column`，以及既有的 `IN` / `NOTIN` / `!=` / `> < >= <=` / `*` / `^` / `$` 语法。`asc` / `desc` / `omitFields` 仅接受逗号分隔字段字符串（空字符串为 no-op），不接受 SQL 表达式、内嵌方向或其他类型。非法输入返回 `ErrInvalidQuery`，整条查询不执行；`Where` 保留原签名，通过 `tx.Error` 返回，列表 API 通过 `error` 返回。`FindsModeCursor` 在忽略 `asc` / `desc` 前也校验它们。
+
+业务必须在 DAO 定义可用字段并独立施加权限/租户条件；标识符语法校验不代表字段授权。可信复杂查询放入服务端构造的 GORM scope；禁止把请求字符串作为原始 SQL 或 `core.Expr` 的表达式部分。原先 Map 中的 `asc: "id DESC"` 必须改为 `desc: "id"`。
+
 需要总数的兼容后台管理：
 
 ```go

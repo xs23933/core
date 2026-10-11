@@ -237,6 +237,8 @@ result, err := core.FindNext(whr, &users)
 
 ### Where 条件构建
 
+共享 `Where` 对全部列表 API 校验筛选字段及 `asc` / `desc` / `omitFields`。字段仅允许 ASCII 标识符或一层 `table.column`，可附加下述操作符；排序与排除字段只接受逗号分隔的字段字符串，空字符串为 no-op。非法 key、表达式、内嵌排序方向或错误类型返回 `core.ErrInvalidQuery` 并阻止整条查询；`Where` 通过 `tx.Error` 返回错误。业务仍须定义允许查询的字段及权限条件；可信复杂表达式放入 DAO 构造的 GORM scope，不得把请求字符串包装成原始 SQL 或 `core.Expr`。
+
 ```go
 whr := &core.Map{
     "p":          1,

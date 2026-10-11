@@ -10,7 +10,7 @@ skills/
 ├── core-gateway.md          # etcd HTTP/gRPC 网关（自动/手动路由、负载均衡、请求 metadata / 响应 Header/Cookie）
 ├── core-websocket.md        # WebSocket 处理（连接管理/按用户推送/广播）
 ├── core-sse.md              # SSE 服务端推送（SSEWrite/SSESend/EventHub）
-├── core-page.md             # 分页查询实现
+├── core-page.md             # 分页查询实现、共享 Where 字段/排序校验与 ErrInvalidQuery
 ├── core-utils.md            # 工具函数、Map/Array、加密与密码
 ├── core-redis.md            # Redis 封装（String/JSON/Hash/Set/ZSet/List/BitMap/Pipeline/Lua/PubSub/Stream）
 ├── core-cache.md            # Redis Cache 包装器（DB fallback、自动回填、singleflight、空值缓存）

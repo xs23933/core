@@ -182,6 +182,10 @@ func (dao *UserDAO) ListPage(ctx context.Context, whr *core.Map) (core.Page[vo.U
 
 ### 7. 筛选参数详解
 
+`Where` 是所有列表入口的共享安全边界，覆盖 `Finds` 三种模式、`FindPage` / `FindPageBy`、`FindNext` / `FindNextBy` 和 `Find`。字段只接受 ASCII 标识符或一层 `table.column`；排序及 `omitFields` 只接受逗号分隔字段字符串（空字符串为 no-op）。非法字段、SQL 表达式、注释、分号、内嵌排序方向和错误的参数类型返回 `core.ErrInvalidQuery`，查询不执行。`Where` 的原签名不变，调用方须检查 `tx.Error`；其他 API 检查 `error`，可用 `errors.Is` 判断。游标模式在忽略 `asc` / `desc` 前也会校验其合法性。
+
+兼容迁移：`asc: "id DESC"` 改为 `desc: "id"`；可信的复杂查询放入 DAO 构造的 GORM scope。框架校验标识符语法，业务负责字段白名单、租户和权限；禁止将请求字符串放入原始 SQL 或 `core.Expr` 表达式。
+
 | 参数写法        | 说明           | SQL 结果                        |
 | --------------- | -------------- | ------------------------------- |
 | `"name": "john"` | 精确匹配       | `WHERE name = 'john'`           |

@@ -1326,6 +1326,9 @@ func Find(out any, args ...any) error {
 }
 
 // Where build page query
+// Invalid filter fields or sort/omit controls set ErrInvalidQuery on the
+// returned DB and prevent query execution. Values remain parameter-bound;
+// caller-supplied GORM expressions and scopes must be trusted.
 //
 //	whr *Map
 //	db  *DB optional
@@ -1338,7 +1341,16 @@ func Where(whr *Map, db ...*DB) (*DB, int, int) {
 		tx = Conn()
 	}
 
-	wher := map[string]any(*whr)
+	var wher map[string]any
+	if whr != nil {
+		wher = map[string]any(*whr)
+	}
+	if err := validateQueryWhere(wher); err != nil {
+		// Clone even an already-scoped DB before attaching a per-query error.
+		tx = tx.Session(&gorm.Session{})
+		tx.AddError(err)
+		return tx, 1, 20
+	}
 
 	lmt := 20
 	l, ok := wher["l"]
@@ -1369,15 +1381,18 @@ func Where(whr *Map, db ...*DB) (*DB, int, int) {
 		tx = tx.Offset((pos - 1) * lmt)
 	}
 
-	asc, ok := wher["asc"].(string)
-	if ok {
-		delete(wher, "asc")
-		tx = tx.Order(asc)
-	}
-	desc, ok := wher["desc"].(string)
-	if ok {
-		delete(wher, "desc")
-		tx = tx.Order(fmt.Sprintf("%s desc", desc))
+	for _, key := range []string{"asc", "desc"} {
+		if value, ok := wher[key]; ok {
+			delete(wher, key)
+			columns, err := queryColumns(value)
+			if err != nil {
+				tx.AddError(err)
+				return tx, pos, lmt
+			}
+			for _, column := range columns {
+				tx = tx.Order(clause.OrderByColumn{Column: queryColumn(column), Desc: key == "desc"})
+			}
+		}
 	}
 
 	if name, ok := wher["name"]; ok {
@@ -1389,7 +1404,12 @@ func Where(whr *Map, db ...*DB) (*DB, int, int) {
 
 	if omit, ok := wher["omitFields"]; ok { // 排除相应字段 多个,号隔开
 		delete(wher, "omitFields")
-		tx = tx.Omit(omit.(string))
+		columns, err := queryColumns(omit)
+		if err != nil {
+			tx.AddError(err)
+			return tx, pos, lmt
+		}
+		tx = tx.Omit(columns...)
 	}
 
 	// 过滤掉字符串等于空 的搜索
@@ -1404,39 +1424,39 @@ func Where(whr *Map, db ...*DB) (*DB, int, int) {
 				continue
 			}
 			if before, ok0 := strings.CutSuffix(k, " NOTIN"); ok0 {
-				tx = tx.Where(fmt.Sprintf("%s NOT IN (?)", before), v)
+				tx = tx.Where(quoteQueryColumn(tx, before)+" NOT IN (?)", v)
 				delete(wher, k)
 				continue
 			}
 			if before, ok0 := strings.CutSuffix(k, " IN"); ok0 {
-				tx = tx.Where(fmt.Sprintf("%s in (?)", before), v)
+				tx = tx.Where(quoteQueryColumn(tx, before)+" IN (?)", v)
 				delete(wher, k)
 				continue
 			}
 			if after, ok0 := strings.CutPrefix(k, "^"); ok0 {
-				tx = tx.Where(fmt.Sprintf("%s like ?", after), fmt.Sprintf("%s%%", v))
+				tx = tx.Where(quoteQueryColumn(tx, after)+" LIKE ?", fmt.Sprintf("%s%%", v))
 				delete(wher, k)
 				continue
 			}
 			if before, ok0 := strings.CutSuffix(k, "$"); ok0 {
-				tx = tx.Where(fmt.Sprintf("%s like ?", before), fmt.Sprintf("%%%s", v))
+				tx = tx.Where(quoteQueryColumn(tx, before)+" LIKE ?", fmt.Sprintf("%%%s", v))
 				delete(wher, k)
 				continue
 			}
 			if before, ok0 := strings.CutSuffix(k, "*"); ok0 {
-				tx = tx.Where(fmt.Sprintf("%s like ?", before), fmt.Sprintf("%%%s%%", v))
+				tx = tx.Where(quoteQueryColumn(tx, before)+" LIKE ?", fmt.Sprintf("%%%s%%", v))
 				delete(wher, k)
 				continue
 			}
 			if before, ok0 := strings.CutSuffix(k, " !="); ok0 {
-				tx = tx.Where(fmt.Sprintf("`%s` <> ?", before), v)
+				tx = tx.Where(quoteQueryColumn(tx, before)+" <> ?", v)
 				delete(wher, k)
 				continue
 			}
 			if strings.HasSuffix(k, " >") || strings.HasSuffix(k, " <") ||
 				strings.HasSuffix(k, " >=") || strings.HasSuffix(k, " <=") {
 				ks := strings.Split(k, " ")
-				ks[0] = fmt.Sprintf("`%s`", ks[0])
+				ks[0] = quoteQueryColumn(tx, ks[0])
 				ks = append(ks, "?")
 				tx = tx.Where(strings.Join(ks, " "), v)
 				delete(wher, k)

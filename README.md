@@ -1350,6 +1350,12 @@ core.Conn().Where("id IN (?)", subQuery).Find(&users)
 
 #### Finds：推荐的新分页入口
 
+共享 `Where` 对 `Finds` 全部模式、`FindPage` / `FindPageBy`、`FindNext` / `FindNextBy` 和 `Find` 统一校验输入：筛选字段仅接受 `[A-Za-z_][A-Za-z0-9_]*`，或一层 `table.column`，可以附加上表及 `NOTIN`、`!=` 等已支持的操作符。`asc` / `desc` / `omitFields` 必须为字符串，只接受逗号分隔的上述字段；空字符串表示不追加排序或排除字段。字段按数据库方言引用，筛选值继续绑定参数。
+
+SQL 表达式、注释、引号、分号、非法字段和错误的排序参数类型会使整个查询返回 `core.ErrInvalidQuery`，不会静默丢弃条件或执行查询。直接调用 `Where` 时通过返回的 `tx.Error` 获取错误；其他列表接口通过 `error` 返回，可用 `errors.Is(err, core.ErrInvalidQuery)` 判断。游标模式仍忽略合法的 `p` / `asc` / `desc`，但会先拒绝非法排序输入。
+
+兼容性：过去在 Map 中传入 `asc: "id DESC"`、函数排序或任意 SQL 筛选 key 的用法现在会被拒绝；请使用 `desc: "id"`，或把固定、可信的复杂表达式放入 DAO 构造的 GORM scope。框架只校验 SQL 标识符语法；业务仍须限制允许筛选、排序和返回的字段，并独立施加租户和权限条件。不要将请求字符串传给 GORM 的原始 SQL API，也不要将不可信输入包装成 `core.Expr`。
+
 ```go
 func (dao *UsersViewDAO) List(ctx context.Context, whr *core.Map, next bool) (core.FindsResult[user.UsersView], error) {
     mode := core.FindsModePage

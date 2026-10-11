@@ -311,7 +311,7 @@ app.POST("/events/push", hub.PostData)
 
 #### core-page — 分页查询
 
-**功能概述**：提供统一分页入口（Finds）、真正的 keyset cursor（FindsModeCursor）、经典分页（FindPageBy，含总数）和兼容无 Count 页码分页（FindNextBy），通过 `core.Map` 构建灵活的筛选条件。
+**功能概述**：提供统一分页入口（Finds）、真正的 keyset cursor（FindsModeCursor）、经典分页（FindPageBy，含总数）和兼容无 Count 页码分页（FindNextBy），通过 `core.Map` 构建筛选条件。共享 `Where` 校验字段、排序与排除字段，非法输入以 `ErrInvalidQuery` 拒绝，阻止 SQL 执行。
 
 **核心特性**：
 - `Finds`：新代码推荐，使用 `FindsParams` 统一传递 Where/DB/Mode/Cursor；`FindsModeCursor` 返回前后 cursor 和 has flags，不使用 COUNT/OFFSET
