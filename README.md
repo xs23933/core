@@ -8,6 +8,12 @@ It is inspired by Tornado, Sinatra and Koa(node.js). Core has some Go-specific f
 * koa(node.js) develop style
 * simple light framework
 
+### 列表查询安全边界
+
+`Where`、`FindPage`、`FindNext` 和 `Find` 统一校验筛选字段、排序与排除字段。字段只允许 `[A-Za-z_][A-Za-z0-9_]*` 或一层 `table.column`；筛选 key 保留 `IN`、`NOTIN`、`!=`、`> < >= <=`、`*`、`^`、`$` 语法。`asc` / `desc` / `omitFields` 必须为逗号分隔的字段字符串，空字符串为 no-op；SQL 表达式、注释、分号、内嵌排序方向或错误类型会使整个查询返回 `core.ErrInvalidQuery`，不执行 SQL。字段按数据库方言引用，值保持参数绑定。
+
+`Where` 保持原签名，通过返回的 `tx.Error` 返回错误；其他列表 API 通过 `error` 返回，可用 `errors.Is(err, core.ErrInvalidQuery)` 判断。原先的 `asc: "id DESC"` 需改为 `desc: "id"`。可信复杂查询放入服务端构造的 GORM scope，不得把请求字符串放入原始 SQL 或 `core.Expr` 表达式。标识符语法校验不代表字段授权，DAO 仍须限制可筛选/排序/返回的字段，并独立施加租户与权限条件。
+
 
 # example/work
 
