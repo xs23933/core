@@ -148,6 +148,9 @@ type EtcdGateway struct {
 }
 
 type Config struct {
+	// GRPCRequestTimeout bounds the entire proxied RPC, including any safe read retry.
+	// It does not override a shorter incoming deadline. Zero/negative uses 10s.
+	GRPCRequestTimeout  time.Duration `yaml:"grpc_request_timeout"`
 	EtcdEndpoints       []string      `yaml:"etcd_endpoints"`
 	EtcdDialTimeout     time.Duration `yaml:"etcd_dial_timeout"`
 	Namespace           string        `yaml:"namespace"`
@@ -158,6 +161,8 @@ type Config struct {
 }
 
 const defaultMaxRequestBodyBytes int64 = 8 << 20
+
+const defaultGRPCRequestTimeout = 10 * time.Second
 
 var errRequestBodyTooLarge = errors.New("request body too large")
 
@@ -437,6 +442,9 @@ func applyGatewayPrefixDefaults(config *Config) {
 
 func applyGatewayConfigDefaults(config *Config) {
 	applyGatewayPrefixDefaults(config)
+	if config.GRPCRequestTimeout <= 0 {
+		config.GRPCRequestTimeout = defaultGRPCRequestTimeout
+	}
 	if config.MaxRequestBodyBytes <= 0 {
 		config.MaxRequestBodyBytes = defaultMaxRequestBodyBytes
 	}
@@ -580,6 +588,7 @@ func NewEtcdGateway(app *core.Core, conf ...*Config) (*EtcdGateway, error) {
 		config.EtcdDialTimeout = time.Duration(app.Conf.GetInt64("etcd.dial_timeout", 5)) * time.Second
 		config.Namespace = app.Conf.GetString("etcd.namespace", "")
 		config.GRPCServiceExcludes = app.Conf.GetStrings("gateway.grpc_service_excludes")
+		config.GRPCRequestTimeout = app.Conf.GetDuration("gateway.grpc_request_timeout", defaultGRPCRequestTimeout)
 		config.MaxRequestBodyBytes = app.Conf.GetInt64("gateway.max_request_body_bytes", defaultMaxRequestBodyBytes)
 	}
 	applyGatewayConfigDefaults(config)
@@ -1140,7 +1149,11 @@ func (gw *EtcdGateway) createProxyHandler(route *Route) core.HandlerFunc {
 
 		grpcCtx := gatewayOutgoingContext(ctx.Context(), md)
 
-		callCtx, cancel := context.WithTimeout(grpcCtx, 10*time.Second)
+		// This is the upstream RPC total budget, not a Provider HTTP timeout.
+		// Wallet authentication may perform several sequential network requests.
+		requestTimeout := gw.grpcRequestTimeout()
+		started := time.Now()
+		callCtx, cancel := context.WithTimeout(grpcCtx, requestTimeout)
 		defer cancel()
 
 		jsonResp, responseHeaders, err := proxy.InvokeWithHeaders(callCtx, route.GRPCMethod, jsonReq)
@@ -1154,8 +1167,8 @@ func (gw *EtcdGateway) createProxyHandler(route *Route) core.HandlerFunc {
 		appendGRPCResponseHeaders(ctx.Response().Header(), responseHeaders)
 		if err != nil {
 			if st, ok := status.FromError(err); ok {
-				core.Erro("[Gateway] gRPC proxy upstream error: grpc=%s code=%s message=%q",
-					route.GRPCMethod, st.Code(), st.Message())
+				core.Erro("[Gateway] gRPC proxy upstream error: grpc=%s code=%s elapsed=%s timeout=%s message=%q",
+					route.GRPCMethod, st.Code(), time.Since(started), requestTimeout, st.Message())
 			} else {
 				core.Erro("[Gateway] gRPC proxy upstream error: grpc=%s err=%v",
 					route.GRPCMethod, err)
@@ -1171,6 +1184,13 @@ func gatewayOutgoingContext(parent context.Context, md metadata.MD) context.Cont
 		parent = context.Background()
 	}
 	return metadata.NewOutgoingContext(parent, md)
+}
+
+func (gw *EtcdGateway) grpcRequestTimeout() time.Duration {
+	if gw != nil && gw.config != nil && gw.config.GRPCRequestTimeout > 0 {
+		return gw.config.GRPCRequestTimeout
+	}
+	return defaultGRPCRequestTimeout
 }
 
 func (gw *EtcdGateway) maxRequestBodyBytes() int64 {

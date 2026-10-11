@@ -1130,6 +1130,9 @@ Content-Type: application/json
 
 ### 8. HTTP 到 gRPC 的请求映射
 
+Gateway 的 gRPC 自动代理总期限由 `gateway.grpc_request_timeout` 配置（例如 `180s`），也可通过 `gateway.Config.GRPCRequestTimeout` 指定；默认及非正值保持 10s。此期限覆盖一次 RPC 及其允许的只读重试，短于它的入站 context deadline 仍优先生效。它与下游单次 HTTP timeout 不同，多步骤登录应为整个流程留出预算。配置在 Gateway 启动时读取，修改后需重建/重启；错误日志包含实际 elapsed 和配置 timeout。
+
+
 网关会把 HTTP 路径参数、query 参数和 JSON body 合并为一个 JSON 对象，然后按 reflection 中的请求 message 反序列化。
 
 ```http
