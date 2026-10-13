@@ -14,89 +14,117 @@ import (
 )
 
 func TestGatewayLifecycleDuplicateConnectSharesResult(t *testing.T) {
-	started := make(chan struct{}, 1)
-	release := make(chan struct{})
-	joined := make(chan struct{}, 2)
-	joinRelease := make(chan struct{})
-	var connects atomic.Int32
-	connector := func(ctx context.Context, _ *core.Core, _, addr string, schema *ReflectionSchema) (*ReflectionProxy, error) {
-		connects.Add(1)
-		started <- struct{}{}
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-release:
+	for _, late := range []bool{false, true} {
+		name := "concurrent"
+		if late {
+			name = "delayed_before_singleflight"
 		}
-		if schema == nil {
-			schema = &ReflectionSchema{methods: map[string]*MethodDescriptor{}}
-		}
-		return lifecycleTestProxy(addr, schema, nil), nil
-	}
-	gw := newLifecycleTestGateway(connector)
-	gw.connectWaitObserver = func(string) {
-		joined <- struct{}{}
-		<-joinRelease
-	}
-	gw.setDesiredServiceSnapshot(serviceSnapshot{
-		"billing/billing-1": {ServiceName: "billing", InstanceID: "billing-1", GRPCAddr: "addr-1"},
-	})
-	pool := gw.connPool.GetOrCreate(gw.app, "billing")
-	pool.SetDesiredInstance("billing-1", "addr-1")
+		t.Run(name, func(t *testing.T) {
+			started := make(chan struct{}, 1)
+			release := make(chan struct{})
+			joined := make(chan struct{}, 2)
+			joinRelease := make(chan struct{})
+			lateRelease := make(chan struct{})
+			var observed atomic.Int32
+			var connects atomic.Int32
+			connector := func(ctx context.Context, _ *core.Core, _, addr string, schema *ReflectionSchema) (*ReflectionProxy, error) {
+				connects.Add(1)
+				started <- struct{}{}
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-release:
+				}
+				if schema == nil {
+					schema = &ReflectionSchema{methods: map[string]*MethodDescriptor{}}
+				}
+				return lifecycleTestProxy(addr, schema, nil), nil
+			}
+			gw := newLifecycleTestGateway(connector)
+			gw.connectWaitObserver = func(string) {
+				call := observed.Add(1)
+				joined <- struct{}{}
+				<-joinRelease
+				if late && call == 2 {
+					<-lateRelease
+				}
+			}
+			gw.setDesiredServiceSnapshot(serviceSnapshot{
+				"billing/billing-1": {ServiceName: "billing", InstanceID: "billing-1", GRPCAddr: "addr-1"},
+			})
+			pool := gw.connPool.GetOrCreate(gw.app, "billing")
+			pool.SetDesiredInstance("billing-1", "addr-1")
 
-	type result struct {
-		proxy   *ReflectionProxy
-		changed bool
-		err     error
-	}
-	results := make(chan result, 2)
-	var callers sync.WaitGroup
-	callers.Add(2)
-	for range 2 {
-		go func() {
-			defer callers.Done()
-			proxy, changed, err := gw.connectInstance("billing", "billing-1", "addr-1")
-			results <- result{proxy: proxy, changed: changed, err: err}
-		}()
-	}
-	for range 2 {
-		select {
-		case <-joined:
-		case <-time.After(time.Second):
-			t.Fatal("connect caller did not join singleflight")
-		}
-	}
-	close(joinRelease)
-	select {
-	case <-started:
-	case <-time.After(time.Second):
-		t.Fatal("connector did not start")
-	}
-	for range 100 {
-		runtime.Gosched()
-	}
-	close(release)
-	callers.Wait()
-	close(results)
+			type result struct {
+				proxy   *ReflectionProxy
+				changed bool
+				err     error
+			}
+			results := make(chan result, 2)
+			var callers sync.WaitGroup
+			callers.Add(2)
+			for range 2 {
+				go func() {
+					defer callers.Done()
+					proxy, changed, err := gw.connectInstance("billing", "billing-1", "addr-1")
+					results <- result{proxy: proxy, changed: changed, err: err}
+				}()
+			}
+			for range 2 {
+				select {
+				case <-joined:
+				case <-time.After(time.Second):
+					t.Fatal("connect caller did not reach pre-singleflight observer")
+				}
+			}
+			close(joinRelease)
+			select {
+			case <-started:
+			case <-time.After(time.Second):
+				t.Fatal("connector did not start")
+			}
+			close(release)
+			if late {
+				// Force the second caller to enter singleflight only after installation.
+				// The observer runs before Do, so this is a valid schedule even when
+				// both callers have already reached the observer.
+				firstResult := <-results
+				results <- firstResult
+				close(lateRelease)
+			}
+			callers.Wait()
+			close(results)
 
-	var first *ReflectionProxy
-	for got := range results {
-		if got.err != nil || !got.changed || got.proxy == nil {
-			t.Fatalf("shared connect result = %#v", got)
-		}
-		if first == nil {
-			first = got.proxy
-		} else if got.proxy != first {
-			t.Fatalf("shared proxies = %p and %p, want identical result", first, got.proxy)
-		}
-	}
-	if got := connects.Load(); got != 1 {
-		t.Fatalf("connector calls = %d, want 1", got)
-	}
-	if _, exists := gw.connectInFlight.Load(connectInstanceKey("billing", "billing-1")); exists {
-		t.Fatal("singleflight bookkeeping retained completed key")
-	}
-	if err := gw.Close(); err != nil {
-		t.Fatal(err)
+			var first *ReflectionProxy
+			changedResults := 0
+			for got := range results {
+				if got.changed {
+					changedResults++
+				}
+				if got.err != nil || got.proxy == nil {
+					t.Fatalf("shared connect result = %#v", got)
+				}
+				if first == nil {
+					first = got.proxy
+				} else if got.proxy != first {
+					t.Fatalf("shared proxies = %p and %p, want identical result", first, got.proxy)
+				}
+			}
+			// Overlapping flights share changed=true. A caller scheduled after
+			// installation reuses the same proxy and correctly returns false.
+			if changedResults == 0 || (late && changedResults != 1) {
+				t.Fatalf("changed results = %d (late=%v)", changedResults, late)
+			}
+			if got := connects.Load(); got != 1 {
+				t.Fatalf("connector calls = %d, want 1", got)
+			}
+			if _, exists := gw.connectInFlight.Load(connectInstanceKey("billing", "billing-1")); exists {
+				t.Fatal("singleflight bookkeeping retained completed key")
+			}
+			if err := gw.Close(); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 

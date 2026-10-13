@@ -894,25 +894,45 @@ type iGet interface {
 	Get(key string) string
 }
 
-// RemoteIP 返回客户端 IP，仅对私有/回环 IP 和 Cloudflare 回源段采信 X-Forwarded-For。
-// 不可信对端或无效转发头回退 RemoteAddr；无效 RemoteAddr 返回 nil。
+// RemoteIP 默认信任私网和回环代理，不读取应用配置。
+// 可信对端优先解析 XFF，仅缺少 XFF 时尝试单个 X-Real-IP。
+// 无效 RemoteAddr 返回 nil。
 func RemoteIP(h iGet, remoteAddr string) net.IP {
 	return remoteIP(h, remoteAddr, nil)
 }
 
-// remoteIP 是 RemoteIP 的通用实现。
-// 仅当 TCP 对端 IP 命中可信代理（私有/回环 IP、Cloudflare 回源段或 trusted）才采信 X-Forwarded-For。
+// remoteIP 从右向左跳过可信代理，返回第一个不可信 IP。
 func remoteIP(h iGet, remoteAddr string, trusted []*net.IPNet) net.IP {
 	remote := parseIPFromAddr(remoteAddr)
-	if !isTrustedProxy(remote, trusted) {
+	if !isTrustedProxy(remote, trusted) || h == nil {
 		return remote
 	}
-
-	// 采信 X-Forwarded-For 的第一个 IP（真实客户端 IP）
-	if forwarded := strings.TrimSpace(h.Get("X-Forwarded-For")); forwarded != "" {
-		parts := strings.Split(forwarded, ",")
-		if realIP := net.ParseIP(strings.TrimSpace(parts[0])); realIP != nil {
-			return realIP
+	forwarded := h.Get("X-Forwarded-For")
+	present := forwarded != ""
+	headers, multiple := h.(interface{ Values(string) []string })
+	if multiple {
+		values := headers.Values("X-Forwarded-For")
+		present = len(values) > 0
+		forwarded = strings.Join(values, ",")
+	}
+	if !present {
+		realIP := h.Get("X-Real-IP")
+		if multiple {
+			realIP = strings.Join(headers.Values("X-Real-IP"), ",")
+		}
+		if ip := net.ParseIP(strings.TrimSpace(realIP)); ip != nil {
+			return ip
+		}
+		return remote
+	}
+	parts := strings.Split(forwarded, ",")
+	for i := len(parts) - 1; i >= 0; i-- {
+		ip := net.ParseIP(strings.TrimSpace(parts[i]))
+		if ip == nil {
+			return remote
+		}
+		if i == 0 || !isTrustedProxy(ip, trusted) {
+			return ip
 		}
 	}
 	return remote
@@ -927,55 +947,52 @@ func parseIPFromAddr(addr string) net.IP {
 	return net.ParseIP(addr)
 }
 
-// cloudflareIPv4Ranges 是 Cloudflare 官方回源 IP 段（IPv4），
-// 用于判断请求是否确实来自 Cloudflare 边缘，防止伪造 CF-Connecting-IP。
-var cloudflareIPv4Ranges = []string{
-	"173.245.48.0/20",
-	"103.21.244.0/22",
-	"103.22.200.0/22",
-	"103.31.4.0/22",
-	"141.101.64.0/18",
-	"108.162.192.0/18",
-	"190.93.240.0/20",
-	"188.114.96.0/20",
-	"197.234.240.0/22",
-	"198.41.128.0/17",
-	"162.158.0.0/15",
-	"104.16.0.0/13",
-	"104.24.0.0/14",
-	"172.64.0.0/13",
-	"131.0.72.0/22",
-}
-
-// parseCIDRs 将 CIDR 字符串列表解析为 *net.IPNet，忽略非法项。
-func parseCIDRs(cidrs []string) []*net.IPNet {
+// parseCIDRs 严格解析可信代理配置，非法类型或条目使整个配置失败。
+func parseCIDRs(value any) ([]*net.IPNet, error) {
+	var cidrs []string
+	switch v := value.(type) {
+	case nil:
+	case []string:
+		cidrs = v
+	case []any:
+		for i, item := range v {
+			str, ok := item.(string)
+			if !ok {
+				return nil, fmt.Errorf("trusted_proxies[%d]: expected IP/CIDR string", i)
+			}
+			cidrs = append(cidrs, str)
+		}
+	default:
+		return nil, fmt.Errorf("trusted_proxies: expected a list of IP/CIDR strings")
+	}
 	nets := make([]*net.IPNet, 0, len(cidrs))
-	for _, cidr := range cidrs {
-		if _, ipNet, err := net.ParseCIDR(strings.TrimSpace(cidr)); err == nil {
+	for i, cidr := range cidrs {
+		cidr = strings.TrimSpace(cidr)
+		if ip := net.ParseIP(cidr); ip != nil {
+			bits := 128
+			if ip.To4() != nil {
+				bits = 32
+			}
+			nets = append(nets, &net.IPNet{IP: ip, Mask: net.CIDRMask(bits, bits)})
+		} else if _, ipNet, err := net.ParseCIDR(cidr); err == nil {
 			nets = append(nets, ipNet)
+		} else {
+			return nil, fmt.Errorf("trusted_proxies[%d]: invalid IP/CIDR %q", i, cidr)
 		}
 	}
-	return nets
+	return nets, nil
 }
 
-// cloudflareNets 是 Cloudflare 回源 IP 段的解析结果，进程启动时解析一次。
-var cloudflareNets = parseCIDRs(cloudflareIPv4Ranges)
-
-// isTrustedProxy 判断 ip 是否属于可信代理（私有/回环 IP、Cloudflare 回源段或配置的 trusted）。
+// isTrustedProxy 空列表使用私网/回环兜底；非空列表仅信任配置范围。
 func isTrustedProxy(ip net.IP, trusted []*net.IPNet) bool {
 	if ip == nil {
 		return false
 	}
-	if ip.IsPrivate() || ip.IsLoopback() {
-		return true
+	if len(trusted) == 0 {
+		return ip.IsPrivate() || ip.IsLoopback()
 	}
 	for _, n := range trusted {
-		if n.Contains(ip) {
-			return true
-		}
-	}
-	for _, n := range cloudflareNets {
-		if n.Contains(ip) {
+		if n != nil && n.Contains(ip) {
 			return true
 		}
 	}
@@ -992,6 +1009,10 @@ func (m *mda) Get(key string) string {
 		return v[0]
 	}
 	return ""
+}
+
+func (m *mda) Values(key string) []string {
+	return m.md.Get(key)
 }
 
 type ClientInfo struct {
@@ -1126,6 +1147,9 @@ type Enum interface {
 //		return EnumString(s, TypeXMap)
 //	}
 func EnumString[T Enum](val T, mapping []string) string {
+	if int(val) >= len(mapping) {
+		return ""
+	}
 	return mapping[val]
 }
 
@@ -1148,6 +1172,9 @@ func EnumFromString[T Enum](str string, mapping []string) T {
 
 // EnumMarshalJSON 枚举 JSON 序列化
 func EnumMarshalJSON[T Enum](val T, mapping []string) ([]byte, error) {
+	if int(val) >= len(mapping) {
+		return nil, fmt.Errorf("invalid enum value: %d", val)
+	}
 	return sonic.Marshal(mapping[val])
 }
 
@@ -1162,17 +1189,18 @@ func EnumUnmarshalJSON[T Enum](data []byte, mapping []string) (T, error) {
 	if err := sonic.Unmarshal(data, &num); err != nil {
 		return T(0), err
 	}
-	if !math.IsInf(num, 0) && num == math.Trunc(num) {
-		val := T(uint8(num))
-		if val >= 0 && val < T(len(mapping)) {
-			return val, nil
-		}
+	if num >= 0 && num <= 255 && num == math.Trunc(num) && int(num) < len(mapping) {
+		return T(uint8(num)), nil
 	}
 	tType := reflect.TypeOf((*T)(nil)).Elem().Name()
 	return T(0), fmt.Errorf("invalid %v value: %v ", tType, data)
 }
 
+// EnumMarshalText 将枚举格式化为文本；未定义的索引返回错误。
 func EnumMarshalText[T Enum](v T, mapping []string) ([]byte, error) {
+	if int(v) >= len(mapping) {
+		return nil, fmt.Errorf("invalid enum value: %d", v)
+	}
 	return []byte(mapping[v]), nil
 }
 

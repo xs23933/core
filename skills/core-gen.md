@@ -167,35 +167,45 @@ sensitive: false  # （默认）UnmarshalJSON 自动 bytes.ToLower
 
 ---
 
-## Scan() 兼容性修复（重要）
+## Scan() 兼容性与数值边界
 
-旧模板的 `Scan()` 只支持 `int64`，在 ClickHouse 场景会 panic：
+枚举边界：生成的 Scan 支持 int64/uint8/uint16/uint32/float64/string/[]byte；数值输入必须为 0～255 的整数，拒绝负数、溢出和非有限浮点且不修改原值。EnumString 对越界索引返回空串，EnumMarshalJSON/EnumMarshalText 返回错误；EnumUnmarshalJSON 在转换前检查数值范围，并支持 256 项映射。字符串解析沿用现行合同，领域取值仍由调用方校验。修改模板后须重新生成业务枚举。
 
-```go
-// ❌ 旧版 — ClickHouse 返回 uint8 会 panic
-func (v *UserStatus) Scan(value any) error {
-    *v = UserStatus(value.(int64))  // panic: interface conversion
-    return nil
-}
-```
-
-新版已修复，兼容所有数据库驱动类型：
+生成产物使用以下实现；涉及 float64 校验时导入 `math`。
 
 ```go
-// ✅ 新版 — 兼容 MySQL/PostgreSQL/ClickHouse
 func (v *UserStatus) Scan(value any) error {
-    switch val := value.(type) {
-    case int64:   *v = UserStatus(uint8(val))
-    case uint8:   *v = UserStatus(val)
-    case uint16:  *v = UserStatus(uint8(val))
-    case uint32:  *v = UserStatus(uint8(val))
-    case float64: *v = UserStatus(uint8(val))
-    case string:  *v = UserStatusFromString(val)
-    case []byte: *v = UserStatusFromString(string(val))
-    default:
-        return fmt.Errorf("cannot scan %T into UserStatus", value)
-    }
-    return nil
+	switch val := value.(type) {
+	case int64:
+		if val < 0 || val > 255 {
+			return fmt.Errorf("cannot scan %v into UserStatus: invalid uint8 value", val)
+		}
+		*v = UserStatus(uint8(val))
+	case uint8:
+		*v = UserStatus(val)
+	case uint16:
+		if val > 255 {
+			return fmt.Errorf("cannot scan %v into UserStatus: invalid uint8 value", val)
+		}
+		*v = UserStatus(uint8(val))
+	case uint32:
+		if val > 255 {
+			return fmt.Errorf("cannot scan %v into UserStatus: invalid uint8 value", val)
+		}
+		*v = UserStatus(uint8(val))
+	case float64:
+		if val < 0 || val > 255 || val != math.Trunc(val) {
+			return fmt.Errorf("cannot scan %v into UserStatus: invalid uint8 value", val)
+		}
+		*v = UserStatus(uint8(val))
+	case string:
+		*v = UserStatusFromString(val)
+	case []byte:
+		*v = UserStatusFromString(string(val))
+	default:
+		return fmt.Errorf("cannot scan %T into UserStatus", value)
+	}
+	return nil
 }
 ```
 
@@ -270,3 +280,5 @@ enums:
 2. ✅ `values` 第一个元素是 `"none"`
 3. ✅ 需要区分大小写时设置 `sensitive: true`
 4. ✅ 生成后执行 `go build ./...` 和 `go vet ./...`
+
+带点协议值可直接进入枚举 values：ToFixed 将点及连字符转换为常量名下划线，原 wire 值保持不变；无需在业务代码追加映射或伪造生成文件。

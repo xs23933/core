@@ -5,7 +5,7 @@ import (
 	"unicode"
 )
 
-// SnakeCase converts CamelCase to snake_case.
+// SnakeCase 将 CamelCase 转换为 snake_case。
 //
 //	UserStatus  → user_status
 //	Lang        → lang
@@ -15,8 +15,8 @@ func SnakeCase(s string) string {
 	runes := []rune(s)
 	for i, r := range runes {
 		if unicode.IsUpper(r) {
-			// insert underscore before uppercase that follows a lowercase,
-			// or before an uppercase that is followed by a lowercase (e.g. HTTPHandler)
+			// 在小写字符后的大写字符前插入下划线，
+			// 或在后接小写字符的大写字符前插入下划线（例如 HTTPHandler）
 			if i > 0 {
 				prev := runes[i-1]
 				if unicode.IsLower(prev) || unicode.IsDigit(prev) {
@@ -33,9 +33,9 @@ func SnakeCase(s string) string {
 	return string(result)
 }
 
-// ToFixed replaces hyphens with underscores for use in Go identifiers.
+// ToFixed 将协议值中的连字符和点替换为 Go 标识符的下划线。
 //
 //	zh-CN → zh_CN
 func ToFixed(s string) string {
-	return strings.ReplaceAll(s, "-", "_")
+	return strings.NewReplacer("-", "_", ".", "_").Replace(s)
 }

@@ -229,7 +229,11 @@ func New(options ...Options) *Core {
 	}
 	Conf = app.Conf
 
-	app.trustedProxies = parseCIDRs(app.Conf.GetStrings("trusted_proxies"))
+	var proxyErr error
+	app.trustedProxies, proxyErr = parseCIDRs(app.Conf["trusted_proxies"])
+	if proxyErr != nil {
+		panic(proxyErr)
+	}
 
 	app.RequestMethods = Conf.GetStrings("methods", Methods[:len(Methods)-1])
 

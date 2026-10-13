@@ -154,24 +154,41 @@ for i, r := range rows {
 **方案 B：修改 code generator，让 Scan 兼容多种类型**
 
 ```go
-// 在生成的 Scan() 方法中
-func (d *DeviceType) Scan(value any) error {
-    switch v := value.(type) {
-    case int64:
-        *d = DeviceType(v)
-    case uint8:
-        *d = DeviceType(v)
-    case uint16:
-        *d = DeviceType(v)
-    case uint32:
-        *d = DeviceType(v)
-    case float64:
-        *d = DeviceType(int(v))
-    default:
-        return fmt.Errorf("unsupported Scan type for DeviceType: %T", value)
-    }
-    return nil
+// 在生成模板修正并重新生成；本示例需要导入 math。
+func (v *DeviceType) Scan(value any) error {
+	switch val := value.(type) {
+	case int64:
+		if val < 0 || val > 255 {
+			return fmt.Errorf("cannot scan %v into DeviceType: invalid uint8 value", val)
+		}
+		*v = DeviceType(uint8(val))
+	case uint8:
+		*v = DeviceType(val)
+	case uint16:
+		if val > 255 {
+			return fmt.Errorf("cannot scan %v into DeviceType: invalid uint8 value", val)
+		}
+		*v = DeviceType(uint8(val))
+	case uint32:
+		if val > 255 {
+			return fmt.Errorf("cannot scan %v into DeviceType: invalid uint8 value", val)
+		}
+		*v = DeviceType(uint8(val))
+	case float64:
+		if val < 0 || val > 255 || val != math.Trunc(val) {
+			return fmt.Errorf("cannot scan %v into DeviceType: invalid uint8 value", val)
+		}
+		*v = DeviceType(uint8(val))
+	case string:
+		*v = DeviceTypeFromString(val)
+	case []byte:
+		*v = DeviceTypeFromString(string(val))
+	default:
+		return fmt.Errorf("cannot scan %T into DeviceType", value)
+	}
+	return nil
 }
+
 ```
 
 已用方案 A 修复的查询：`GetDeviceStatsByLink`、`GetBrowserStatsByLink`、`GetOSStatsByLink`、`GetClickLogsByLink`
@@ -347,3 +364,5 @@ service.go        → service_user.go + service_order.go
 2. ✅ 推荐修复方案（代码）
 3. ✅ 迁移步骤（旧 → 新）
 4. ✅ 验证方式（`go build` / `go vet` / 单元测试）
+
+带点协议值可直接进入枚举 values：ToFixed 将点及连字符转换为常量名下划线，原 wire 值保持不变；无需在业务代码追加映射或伪造生成文件。

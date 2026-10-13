@@ -1,5 +1,9 @@
 # [AI Context] Core Framework v3
 
+带点协议值可直接进入枚举 values：ToFixed 将点及连字符转换为常量名下划线，原 wire 值保持不变；无需在业务代码追加映射或伪造生成文件。
+
+枚举边界：生成的 Scan 支持 int64/uint8/uint16/uint32/float64/string/[]byte；数值输入必须为 0～255 的整数，拒绝负数、溢出和非有限浮点且不修改原值。EnumString 对越界索引返回空串，EnumMarshalJSON/EnumMarshalText 返回错误；EnumUnmarshalJSON 在转换前检查数值范围，并支持 256 项映射。字符串解析沿用现行合同，领域取值仍由调用方校验。修改模板后须重新生成业务枚举。
+
 ## 1. 框架身份
 - **名称**: Core Framework
 - **语言**: Go (Golang 1.24+)
@@ -369,7 +373,7 @@ ua := core.GrpcHeader(ctx, "user-agent")
 domain := core.ExtractPrimaryDomain("api.example.com")
 ```
 
-`core.RemoteIP(header, addr)` 与 `c.RemoteIP()` 均先校验对端，仅对可信代理采信 `X-Forwarded-For` 的第一个 IP。`isTrustedProxy` 直接信任 `net.IP.IsPrivate()` 与 `IsLoopback()`（IPv4/IPv6），以及 Cloudflare 回源段；`c.RemoteIP()` 还使用应用的 `trusted_proxies` 补充额外 CIDR。包级函数不读取应用配置。不可信对端或无效转发头回退对端 IP，无效对端返回 nil。`ExtractClientInfo` 同样遵循包级函数的校验规则。
+`c.RemoteIP()` 的 `trusted_proxies` 未配置、为 null 或空列表时，默认信任 IPv4/IPv6 私网和回环（`net.IP.IsPrivate()` / `IsLoopback()`）；非空列表只信任配置的 IP/CIDR，覆盖默认范围，回环也必须显式列入。配置必须是字符串列表，非法类型、空白项或任意非法 IP/CIDR 都使整个配置失败；`New()` 沿用现有初始化错误约定直接 panic，不忽略条目、不回退私网兜底。先校验 TCP 对端，不可信则忽略所有 IP 头。XFF 从右向左使用同一可信规则检查，重复头合并，返回首个不可信 IP，全部可信时返回最左项。仅缺少 XFF 时尝试单个合法的 `X-Real-IP`；XFF 为空或检查途中遇到非法项时直接回退对端。重复或包含列表的 X-Real-IP 无效。不采信其它 IP 头、不内置信任 Cloudflare；无效对端返回 nil。包级 `core.RemoteIP(header, addr)` 不读取应用配置，使用私网/回环默认规则；`ExtractClientInfo(ctx)` 同样使用该规则并合并重复 metadata。
 
 #### 错误与哈希
 

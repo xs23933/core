@@ -133,7 +133,7 @@ type EtcdGateway struct {
 	connectWorkers      sync.Map // map[string]*instanceConnectWorker
 	connectInFlight     sync.Map // map[string]struct{}
 	connectGroup        singleflight.Group
-	connectWaitObserver func(string)
+	connectWaitObserver func(string) // Test hook before Do; does not imply a joined flight.
 
 	desiredMu       sync.Mutex
 	desiredServices atomic.Value // serviceSnapshot, copy-on-write

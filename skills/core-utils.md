@@ -132,18 +132,11 @@ info := core.ExtractClientInfo(ctx)
 ua := core.GrpcHeader(ctx, "user-agent")
 ```
 
-`RemoteIP` 的取值顺序：
+`c.RemoteIP()` 的 `trusted_proxies` 未配置、为 null 或空列表时，默认信任 IPv4/IPv6 私网和回环（`net.IP.IsPrivate()` / `IsLoopback()`）；非空列表只信任配置的 IP/CIDR，覆盖默认范围，回环也必须显式列入。配置必须是字符串列表，非法类型、空白项或任意非法 IP/CIDR 都使整个配置失败；`New()` 沿用现有初始化错误约定直接 panic，不忽略条目、不回退私网兜底。先校验 TCP 对端，不可信则忽略所有 IP 头。XFF 从右向左使用同一可信规则检查，重复头合并，返回首个不可信 IP，全部可信时返回最左项。仅缺少 XFF 时尝试单个合法的 `X-Real-IP`；XFF 为空或检查途中遇到非法项时直接回退对端。重复或包含列表的 X-Real-IP 无效。不采信其它 IP 头、不内置信任 Cloudflare；无效对端返回 nil。包级 `core.RemoteIP(header, addr)` 不读取应用配置，使用私网/回环默认规则；`ExtractClientInfo(ctx)` 同样使用该规则并合并重复 metadata。
 
-1. 可信代理校验通过后，`X-Forwarded-For` 的第一个 IP
-2. `RemoteAddr`
+空配置时同机或私网反代默认可信；严格部署用 `trusted_proxies: ["10.0.0.2/32"]` 指定最小范围，覆盖默认私网/回环规则。后端仅允许受控代理访问，避免其它内网主机提交伪造头。不要信任任意来源，也不要原样转发用户 XFF；代理必须覆盖 XFF 或追加实际连接来源，X-Real-IP 必须由代理覆盖。Cloudflare 来源校验在 Caddy/Nginx 配置，验证后输出 XFF；Core 不维护 Cloudflare 网段或采信其专用头。配置示例见 [README](../README.md#2-上下文-ctx)。
 
-> 安全提示：`core.RemoteIP(header, addr)` 与 `c.RemoteIP()` 都会先校验请求是否来自可信代理
-> （`net.IP.IsPrivate()` / `IsLoopback()` 判定的 IPv4/IPv6 IP、Cloudflare 回源 IP 段，或配置项 `trusted_proxies` 中的 CIDR），
-> 私有与回环 IP 在 `isTrustedProxy` 中直接信任，`trusted_proxies` 仅补充额外 CIDR，不覆盖内置规则。
-> 只有可信代理才采信 `X-Forwarded-For`，否则直接返回 `RemoteAddr`，防止客户端伪造 IP。
-> 可信代理必须覆盖 `X-Forwarded-For` 写入真实客户端 IP。
-> 包级函数只使用内置可信规则；`c.RemoteIP()` 还使用应用的 `trusted_proxies` 配置。
-> 无效 `RemoteAddr` 返回 nil；无效转发头回退对端 IP。`ExtractClientInfo` 同样遵循包级函数的规则。
+兼容性：非空 trusted_proxies 不再补充默认范围，需列全实际可信代理链；非法配置使 New() 初始化失败。Cloudflare 不内置信任，非法 XFF 不回退 X-Real-IP。
 
 ## 6. 错误工具
 

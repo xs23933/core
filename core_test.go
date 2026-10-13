@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -24,13 +26,13 @@ func Test_Slice(t *testing.T) {
 }
 
 func Test_reomoteIP(t *testing.T) {
-	core := New()
+	core := New(Options{"trusted_proxies": []string{"127.0.0.1"}})
 
 	ctx := core.AcquireCtx(nil, &http.Request{
 		URL: &url.URL{
 			Path: "/",
 		},
-		RemoteAddr: "173.245.48.1:12345", // Cloudflare 回源 IP 段，使 RemoteIP 采信转发头
+		RemoteAddr: "127.0.0.1:12345", // 显式信任本机反向代理
 		Header: http.Header{
 			"X-Real-Ip":        []string{"192.168.1.2"},
 			"X-Forwarded-For":  []string{"127.0.0.1"},
@@ -67,161 +69,194 @@ func TestRemoteIPFallbacks(t *testing.T) {
 }
 
 func TestRemoteIPPackageTrustedProxy(t *testing.T) {
+	for _, addr := range []string{"203.0.113.10", "2001:db8::1", "10.1.2.3", "fd12::1", "127.0.0.1", "::1", "173.245.48.1"} {
+		t.Run(addr, func(t *testing.T) {
+			headers := http.Header{"X-Forwarded-For": {"8.8.8.8"}}
+			want := net.ParseIP(addr)
+			if want.IsPrivate() || want.IsLoopback() {
+				want = net.ParseIP("8.8.8.8")
+			}
+			if got := RemoteIP(headers, net.JoinHostPort(addr, "8080")); !got.Equal(want) {
+				t.Fatalf("remote ip = %v, want %v", got, want)
+			}
+		})
+	}
+	for _, addr := range []string{"", "invalid"} {
+		if got := RemoteIP(http.Header{"X-Forwarded-For": {"8.8.8.8"}}, addr); got != nil {
+			t.Fatalf("invalid peer = %v, want nil", got)
+		}
+	}
+}
+
+func TestExtractClientInfoTrustedProxy(t *testing.T) {
+	for _, addr := range []string{"203.0.113.10", "10.1.2.3", "127.0.0.1", ""} {
+		t.Run(addr, func(t *testing.T) {
+			ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(
+				"x-forwarded-for", "8.8.8.8", "user-agent", "test-agent",
+			))
+			if addr != "" {
+				ctx = peer.NewContext(ctx, &peer.Peer{Addr: &net.TCPAddr{IP: net.ParseIP(addr), Port: 8080}})
+			}
+			got := ExtractClientInfo(ctx)
+			want := addr
+			if ip := net.ParseIP(addr); ip.IsPrivate() || ip.IsLoopback() {
+				want = "8.8.8.8"
+			}
+			if got.IP != want || got.UA != "test-agent" {
+				t.Fatalf("client info = %+v, want IP %q and UA test-agent", got, want)
+			}
+		})
+	}
+}
+
+func TestRemoteIPTrustedProxyChain(t *testing.T) {
+	app := New(Options{"trusted_proxies": []string{"127.0.0.1", "10.0.0.2/32", "::1", "fd12::2/128", "198.51.100.0/24"}})
 	tests := []struct {
 		name string
 		addr string
-		xff  string
+		xff  []string
 		want string
 	}{
-		{"public IPv4", "203.0.113.10:8080", "8.8.8.8", "203.0.113.10"},
-		{"public IPv6", "[2001:db8::1]:8080", "8.8.8.8", "2001:db8::1"},
-		{"private IPv4", " 10.1.2.3:8080 ", " 8.8.8.8 , 10.0.0.2", "8.8.8.8"},
-		{"private IPv6", "[fd12::1]:8080", "8.8.8.8", "8.8.8.8"},
-		{"loopback IPv4", "127.0.0.1:8080", "8.8.8.8", "8.8.8.8"},
-		{"loopback IPv6", "::1", "8.8.8.8", "8.8.8.8"},
-		{"Cloudflare", "173.245.48.1:8080", "8.8.8.8", "8.8.8.8"},
-		{"missing header", "10.1.2.3", "", "10.1.2.3"},
-		{"invalid first IP", "10.1.2.3:8080", "invalid, 8.8.8.8", "10.1.2.3"},
-		{"invalid peer", "invalid", "8.8.8.8", ""},
-		{"missing peer", "", "8.8.8.8", ""},
+		{"nginx append spoofed prefix", "127.0.0.1", []string{"6.6.6.6, 203.0.113.10"}, "203.0.113.10"},
+		{"caddy overwrite", "127.0.0.1", []string{"203.0.113.10"}, "203.0.113.10"},
+		{"multiple trusted proxies", "127.0.0.1", []string{"6.6.6.6, 203.0.113.10, 10.0.0.2"}, "203.0.113.10"},
+		{"untrusted intermediate proxy", "127.0.0.1", []string{"6.6.6.6, 192.0.2.2, 10.0.0.2"}, "192.0.2.2"},
+		{"unconfigured private hop", "127.0.0.1", []string{"6.6.6.6, 10.0.0.3"}, "10.0.0.3"},
+		{"ipv6 chain", "::1", []string{"6.6.6.6, 2001:db8::10, fd12::2"}, "2001:db8::10"},
+		{"mapped ipv4 peer", "::ffff:127.0.0.1", []string{"203.0.113.10"}, "203.0.113.10"},
+		{"duplicate header appended origin", "127.0.0.1", []string{"6.6.6.6", "203.0.113.10"}, "203.0.113.10"},
+		{"duplicate header trusted chain", "127.0.0.1", []string{"6.6.6.6", "203.0.113.10, 10.0.0.2"}, "203.0.113.10"},
+		{"invalid rightmost", "127.0.0.1", []string{"8.8.8.8, invalid"}, "127.0.0.1"},
+		{"invalid traversed hop", "127.0.0.1", []string{"8.8.8.8, invalid, 10.0.0.2"}, "127.0.0.1"},
+		{"empty traversed hop", "127.0.0.1", []string{"8.8.8.8, , 10.0.0.2"}, "127.0.0.1"},
+		{"port in header", "127.0.0.1", []string{"203.0.113.10:80"}, "127.0.0.1"},
+		{"invalid prefix outside trust boundary", "127.0.0.1", []string{"invalid, 203.0.113.10"}, "203.0.113.10"},
+		{"whitespace", "127.0.0.1", []string{" 203.0.113.10 , 10.0.0.2 "}, "203.0.113.10"},
+		{"all trusted", "127.0.0.1", []string{"10.0.0.2, 127.0.0.1"}, "10.0.0.2"},
+		{"no XFF real IP fallback", "127.0.0.1", nil, "9.9.9.9"},
+		{"empty XFF", "127.0.0.1", []string{""}, "127.0.0.1"},
+		{"untrusted peer", "203.0.113.10", []string{"6.6.6.6"}, "203.0.113.10"},
+		{"cloudflare not built in", "173.245.48.1", []string{"6.6.6.6"}, "173.245.48.1"},
+		{"unconfigured private peer", "10.0.0.3", []string{"6.6.6.6"}, "10.0.0.3"},
+		{"configured public peer", "198.51.100.2", []string{"6.6.6.6, 203.0.113.10"}, "203.0.113.10"},
+		{"configured public hop", "127.0.0.1", []string{"6.6.6.6, 203.0.113.10, 198.51.100.2"}, "203.0.113.10"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			headers := http.Header{"X-Forwarded-For": []string{tt.xff}}
-			got := RemoteIP(headers, tt.addr)
-			if tt.want == "" {
-				if got != nil {
-					t.Fatalf("remote ip = %v, want nil", got)
-				}
-				return
+			h := http.Header{
+				"X-Forwarded-For": tt.xff,
+				"X-Real-Ip":       {"9.9.9.9"}, "Cf-Connecting-Ip": {"9.9.9.9"},
+				"Forwarded": {"for=9.9.9.9"}, "True-Client-Ip": {"9.9.9.9"},
 			}
-			if !got.Equal(net.ParseIP(tt.want)) {
+			ctx := app.AcquireCtx(nil, &http.Request{URL: &url.URL{}, RemoteAddr: net.JoinHostPort(tt.addr, "8080"), Header: h})
+			defer app.ReleaseCtx(ctx)
+			if got := ctx.RemoteIP(); !got.Equal(net.ParseIP(tt.want)) {
 				t.Fatalf("remote ip = %v, want %s", got, tt.want)
 			}
 		})
 	}
 }
 
-func TestExtractClientInfoTrustedProxy(t *testing.T) {
+func TestRemoteIPDefaultTrust(t *testing.T) {
+	for _, opts := range []Options{nil, {"trusted_proxies": []string{}}} {
+		app := New(opts)
+		for _, addr := range []string{"127.0.0.1", "::1", "10.0.0.1", "192.168.1.1", "fd12::1", "173.245.48.1", "203.0.113.10"} {
+			ctx := app.AcquireCtx(nil, &http.Request{URL: &url.URL{}, RemoteAddr: net.JoinHostPort(addr, "8080"), Header: http.Header{"X-Forwarded-For": {"6.6.6.6"}}})
+			got := ctx.RemoteIP()
+			app.ReleaseCtx(ctx)
+			want := net.ParseIP(addr)
+			if want.IsPrivate() || want.IsLoopback() {
+				want = net.ParseIP("6.6.6.6")
+			}
+			if !got.Equal(want) {
+				t.Fatalf("opts %v peer %s: got %v, want %v", opts, addr, got, want)
+			}
+		}
+	}
+}
+
+func TestRemoteIPRealIPFallback(t *testing.T) {
 	for _, tt := range []struct {
-		peer string
+		name string
+		addr string
+		xff  []string
+		real []string
 		want string
 	}{
-		{"203.0.113.10", "203.0.113.10"},
-		{"10.1.2.3", "8.8.8.8"},
-		{"", ""},
+		{"IPv4", "127.0.0.1", nil, []string{" 203.0.113.10 "}, "203.0.113.10"},
+		{"IPv6", "::1", nil, []string{"2001:db8::10"}, "2001:db8::10"},
+		{"private real IP", "127.0.0.1", nil, []string{"10.1.2.3"}, "10.1.2.3"},
+		{"missing", "127.0.0.1", nil, nil, "127.0.0.1"},
+		{"empty", "127.0.0.1", nil, []string{""}, "127.0.0.1"},
+		{"invalid", "127.0.0.1", nil, []string{"invalid"}, "127.0.0.1"},
+		{"port rejected", "127.0.0.1", nil, []string{"203.0.113.10:80"}, "127.0.0.1"},
+		{"list rejected", "127.0.0.1", nil, []string{"8.8.8.8, 9.9.9.9"}, "127.0.0.1"},
+		{"duplicates rejected", "127.0.0.1", nil, []string{"8.8.8.8", "9.9.9.9"}, "127.0.0.1"},
+		{"XFF wins", "127.0.0.1", []string{"203.0.113.10"}, []string{"9.9.9.9"}, "203.0.113.10"},
+		{"empty XFF blocks fallback", "127.0.0.1", []string{""}, []string{"9.9.9.9"}, "127.0.0.1"},
+		{"blank XFF blocks fallback", "127.0.0.1", []string{" "}, []string{"9.9.9.9"}, "127.0.0.1"},
+		{"invalid XFF blocks fallback", "127.0.0.1", []string{"invalid"}, []string{"9.9.9.9"}, "127.0.0.1"},
+		{"public peer ignores real IP", "203.0.113.10", nil, []string{"9.9.9.9"}, "203.0.113.10"},
 	} {
-		t.Run(tt.peer, func(t *testing.T) {
-			ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(
-				"x-forwarded-for", "8.8.8.8", "user-agent", "test-agent",
-			))
-			if tt.peer != "" {
-				ctx = peer.NewContext(ctx, &peer.Peer{Addr: &net.TCPAddr{IP: net.ParseIP(tt.peer), Port: 8080}})
-			}
-			got := ExtractClientInfo(ctx)
-			if got.IP != tt.want || got.UA != "test-agent" {
-				t.Fatalf("client info = %+v, want IP %q and UA test-agent", got, tt.want)
+		t.Run(tt.name, func(t *testing.T) {
+			h := http.Header{"X-Forwarded-For": tt.xff, "X-Real-Ip": tt.real}
+			if got := RemoteIP(h, net.JoinHostPort(tt.addr, "8080")); !got.Equal(net.ParseIP(tt.want)) {
+				t.Fatalf("got %v, want %s", got, tt.want)
 			}
 		})
 	}
 }
 
-func TestRemoteIPTrustedProxy(t *testing.T) {
-	app := New()
-
-	// 不可信代理（直连）伪造转发头 → 返回 TCP 对端 RemoteAddr
-	h := http.Header{}
-	h.Set("CF-Connecting-IP", "8.8.8.8")
-	h.Set("X-Forwarded-For", "6.6.6.6, 10.0.0.2")
-	h.Set("X-Real-IP", "9.9.9.9")
-	ctx := app.AcquireCtx(nil, &http.Request{
-		URL:        &url.URL{},
-		RemoteAddr: "203.0.113.10:12345",
-		Header:     h,
-	})
-	if got := ctx.RemoteIP(); !got.Equal(net.ParseIP("203.0.113.10")) {
-		t.Fatalf("untrusted proxy = %v, want 203.0.113.10", got)
-	}
-
-	// Cloudflare 回源 IP 可信 → 采信 X-Forwarded-For
-	cf := http.Header{}
-	cf.Set("X-Forwarded-For", "8.8.8.8")
-	ctx = app.AcquireCtx(nil, &http.Request{
-		URL:        &url.URL{},
-		RemoteAddr: "173.245.48.1:12345",
-		Header:     cf,
-	})
-	if got := ctx.RemoteIP(); !got.Equal(net.ParseIP("8.8.8.8")) {
-		t.Fatalf("cloudflare proxy = %v, want 8.8.8.8", got)
-	}
-}
-
-func TestRemoteIPTrustedProxiesConfig(t *testing.T) {
-	app := New(Options{"trusted_proxies": []string{"203.0.113.0/24"}})
-
-	h := http.Header{}
-	h.Set("X-Forwarded-For", "6.6.6.6, 10.0.0.2")
-	ctx := app.AcquireCtx(nil, &http.Request{
-		URL:        &url.URL{},
-		RemoteAddr: "203.0.113.10:12345",
-		Header:     h,
-	})
-	if got := ctx.RemoteIP(); !got.Equal(net.ParseIP("6.6.6.6")) {
-		t.Fatalf("trusted_proxies config = %v, want 6.6.6.6", got)
-	}
-}
-
-func TestRemoteIPBuiltInTrustedProxies(t *testing.T) {
-	configs := []struct {
-		name string
-		opts Options
+func TestExtractClientInfoForwardedHeaders(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		pairs []string
+		want  string
 	}{
-		{"default", nil},
-		{"empty", Options{"trusted_proxies": []string{}}},
-		{"custom", Options{"trusted_proxies": []string{"203.0.113.0/24"}}},
-	}
-	peers := []struct {
-		ip      string
-		trusted bool
-	}{
-		{"10.1.2.3", true},
-		{"172.16.0.1", true},
-		{"172.31.255.254", true},
-		{"192.168.1.2", true},
-		{"fc00::1", true},
-		{"fd12::1", true},
-		{"127.0.0.1", true},
-		{"127.0.0.2", true},
-		{"::1", true},
-		{"173.245.48.1", true},
-		{"172.15.255.254", false},
-		{"172.32.0.1", false},
-		{"198.51.100.1", false},
-		{"2001:db8::1", false},
-		{"169.254.1.2", false},
-		{"fe80::1", false},
-	}
-	for _, config := range configs {
-		t.Run(config.name, func(t *testing.T) {
-			app := New(config.opts)
-			for _, peer := range peers {
-				t.Run(peer.ip, func(t *testing.T) {
-					ctx := app.AcquireCtx(nil, &http.Request{
-						URL:        &url.URL{},
-						RemoteAddr: net.JoinHostPort(peer.ip, "12345"),
-						Header:     http.Header{"X-Forwarded-For": []string{"8.8.8.8, 10.0.0.2"}},
-					})
-					defer app.ReleaseCtx(ctx)
-					want := net.ParseIP(peer.ip)
-					if peer.trusted {
-						want = net.ParseIP("8.8.8.8")
-					}
-					if got := ctx.RemoteIP(); !got.Equal(want) {
-						t.Fatalf("remote ip = %v, want %v", got, want)
-					}
-				})
+		{"duplicate XFF", []string{"x-forwarded-for", "6.6.6.6", "x-forwarded-for", "203.0.113.10"}, "203.0.113.10"},
+		{"real IP", []string{"x-real-ip", "203.0.113.10"}, "203.0.113.10"},
+		{"empty XFF blocks fallback", []string{"x-forwarded-for", "", "x-real-ip", "203.0.113.10"}, "127.0.0.1"},
+		{"duplicate real IP", []string{"x-real-ip", "8.8.8.8", "x-real-ip", "9.9.9.9"}, "127.0.0.1"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(tt.pairs...))
+			ctx = peer.NewContext(ctx, &peer.Peer{Addr: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 8080}})
+			if got := ExtractClientInfo(ctx); got.IP != tt.want {
+				t.Fatalf("got %s, want %s", got.IP, tt.want)
 			}
 		})
+	}
+}
+
+func TestTrustedProxyConfiguration(t *testing.T) {
+	for _, raw := range []any{"127.0.0.1", 42, []string{""}, []string{" "}, []string{"invalid"}, []string{"127.0.0.1/99"}, []string{"10.0.0.2", "invalid"}, []any{"10.0.0.2", 42}} {
+		t.Run(fmt.Sprint(raw), func(t *testing.T) {
+			if nets, err := parseCIDRs(raw); err == nil || nets != nil {
+				t.Fatalf("parseCIDRs(%v) = %v, %v; want nil and error", raw, nets, err)
+			}
+			defer func() {
+				if err := recover(); err == nil || !strings.Contains(fmt.Sprint(err), "trusted_proxies") {
+					t.Fatalf("New should reject invalid trusted_proxies, got %v", err)
+				}
+			}()
+			New(Options{"trusted_proxies": raw})
+		})
+	}
+	for _, raw := range []any{[]string{" 203.0.113.10 ", "2001:db8::/32"}, []any{"203.0.113.10", "2001:db8::/32"}} {
+		app := New(Options{"trusted_proxies": raw})
+		for _, addr := range []string{"203.0.113.10", "2001:db8::10", "203.0.113.11", "10.0.0.2", "127.0.0.1", "::1", "fd12::1"} {
+			h := http.Header{"X-Forwarded-For": {"8.8.8.8"}, "X-Real-Ip": {"9.9.9.9"}}
+			ctx := app.AcquireCtx(nil, &http.Request{URL: &url.URL{}, RemoteAddr: net.JoinHostPort(addr, "8080"), Header: h})
+			got := ctx.RemoteIP()
+			app.ReleaseCtx(ctx)
+			want := addr
+			if addr == "203.0.113.10" || addr == "2001:db8::10" {
+				want = "8.8.8.8"
+			}
+			if !got.Equal(net.ParseIP(want)) {
+				t.Fatalf("peer %s: got %v, want %s", addr, got, want)
+			}
+		}
 	}
 }
 

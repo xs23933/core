@@ -1,5 +1,9 @@
 # Core Web Framework v3 - 完整帮助文档
 
+带点协议值可直接进入枚举 values：ToFixed 将点及连字符转换为常量名下划线，原 wire 值保持不变；无需在业务代码追加映射或伪造生成文件。
+
+枚举边界：生成的 Scan 支持 int64/uint8/uint16/uint32/float64/string/[]byte；数值输入必须为 0～255 的整数，拒绝负数、溢出和非有限浮点且不修改原值。EnumString 对越界索引返回空串，EnumMarshalJSON/EnumMarshalText 返回错误；EnumUnmarshalJSON 在转换前检查数值范围，并支持 256 项映射。字符串解析沿用现行合同，领域取值仍由调用方校验。修改模板后须重新生成业务枚举。
+
 ## 概述
 
 Core 是一个用于快速开发企业级 Go 应用程序的 Web 框架，包括 RESTful API、Web 应用和后端服务。它受到 Tornado、Sinatra 和 Koa (Node.js) 的启发，并具有一些 Go 特有的功能，如接口和结构体嵌入。
@@ -89,9 +93,9 @@ debug: true # 调试模式
 network: tcp4 # 网络协议
 listen: 8080 # 监听端口
 prefork: false # 是否启用 prefork 模式
-# 额外可信代理 CIDR 列表；私有 IP（net.IP.IsPrivate）、回环 IP 和 Cloudflare 回源段始终可信。
-# 私有/回环 IP 同时支持 IPv4 和 IPv6，不受此配置覆盖。
-trusted_proxies: [] # 例如: ["203.0.113.0/24"]；仅作用于 c.RemoteIP()
+# 空列表默认信任 IPv4/IPv6 私网和回环；非空列表仅信任配置范围。
+# 非空列表覆盖默认规则；非法类型/条目使 New() 初始化失败。
+trusted_proxies: [] # 公网反代示例: ["203.0.113.10/32"]；仅作用于 c.RemoteIP()
 log: /var/log/myapp/app.log # 可选：日志文件路径
 log_rotate:
   - size: 300M # 文件达到 300MB 后切割
@@ -157,7 +161,52 @@ app.GET("/health", func(c core.Ctx) error {
 
 上下文对象封装了 HTTP 请求和响应，提供了丰富的操作方法。
 
-获取客户端 IP 可以直接调用 `core.RemoteIP(req.Header, req.RemoteAddr)`，无需另行包装对端判断。包级函数与 `c.RemoteIP()` 均只对私有/回环 IP（IPv4/IPv6）和 Cloudflare 回源段采信 `X-Forwarded-For` 的第一个 IP；`c.RemoteIP()` 还支持应用配置的 `trusted_proxies`。不可信对端或无效转发头回退对端 IP，无效 `RemoteAddr` 返回 nil。可信代理必须覆盖转发头。包级函数现在也校验可信代理，旧调用方不能再依赖公网直连转发头；`ExtractClientInfo` 同样遵循此规则。
+`c.RemoteIP()` 的 `trusted_proxies` 未配置、为 null 或空列表时，默认信任 IPv4/IPv6 私网和回环（`net.IP.IsPrivate()` / `IsLoopback()`）；非空列表只信任配置的 IP/CIDR，覆盖默认范围，回环也必须显式列入。配置必须是字符串列表，非法类型、空白项或任意非法 IP/CIDR 都使整个配置失败；`New()` 沿用现有初始化错误约定直接 panic，不忽略条目、不回退私网兜底。先校验 TCP 对端，不可信则忽略所有 IP 头。XFF 从右向左使用同一可信规则检查，重复头合并，返回首个不可信 IP，全部可信时返回最左项。仅缺少 XFF 时尝试单个合法的 `X-Real-IP`；XFF 为空或检查途中遇到非法项时直接回退对端。重复或包含列表的 X-Real-IP 无效。不采信其它 IP 头、不内置信任 Cloudflare；无效对端返回 nil。包级 `core.RemoteIP(header, addr)` 不读取应用配置，使用私网/回环默认规则；`ExtractClientInfo(ctx)` 同样使用该规则并合并重复 metadata。
+
+同机 Caddy/Nginx 连接 `127.0.0.1:8080` 时，回环默认可信，无需额外配置：
+
+```yaml
+listen: "127.0.0.1:8080"
+trusted_proxies: []
+```
+
+严格部署应显式列出服务实际看到的代理 IP 或最小 CIDR，例如 `trusted_proxies: ["10.0.0.2/32"]`，此时其它私网及回环地址不再自动可信。配置在初始化时解析，修改需重建应用。空配置的私网兜底意味着其它内网主机也能提交转发头，因此后端端口仅允许受控代理访问。框架无法验证可信代理自己伪造的头。代理不能原样透传用户 XFF，必须覆盖或追加实际连接来源；使用 X-Real-IP 时必须覆盖为验证后的客户端 IP。
+
+普通 Caddy 入口可使用默认 `reverse_proxy 127.0.0.1:8080`（默认防止客户端伪造 XFF）。普通 Nginx 入口可在 `location` 中覆盖为 `proxy_set_header X-Forwarded-For $remote_addr;`；多级代理也可使用 `$proxy_add_x_forwarded_for` 追加来源，Core 从右侧识别信任边界。
+
+Cloudflare DNS 代理开启时，由 Caddy/Nginx 验证回源地址，Core 只信任 Caddy/Nginx。以 Caddy 为例，环境变量 `CLOUDFLARE_CIDRS` 必须填入空格分隔的完整 [Cloudflare 官方 IPv4/IPv6 回源段](https://www.cloudflare.com/ips/)，并随官方变更维护；全局块必须位于 Caddyfile 最前且只出现一次：
+
+```caddyfile
+{
+    servers {
+        trusted_proxies static {$CLOUDFLARE_CIDRS}
+        trusted_proxies_strict
+        client_ip_headers CF-Connecting-IP
+    }
+}
+example.com {
+    reverse_proxy 127.0.0.1:8080 {
+        header_up X-Forwarded-For {client_ip}
+    }
+}
+```
+
+Nginx 需要启用 HTTP realip 模块；`/etc/nginx/cloudflare-realip.conf` 由部署侧维护完整官方回源段，每段一行 `set_real_ip_from CIDR;`，不能信任任意来源。在 `server` 中配置：
+
+```nginx
+include /etc/nginx/cloudflare-realip.conf;
+real_ip_header CF-Connecting-IP;
+
+location / {
+    proxy_pass http://127.0.0.1:8080;
+    proxy_set_header X-Forwarded-For $remote_addr;
+}
+```
+
+不可信来源传入的 `CF-Connecting-IP` 不会改写上述客户端地址；不要直接转发 `$http_cf_connecting_ip`。后端禁止绕过受控代理访问，代理层只信任实际的上游来源。
+
+实现依据：[Gin 可信链校验](https://github.com/gin-gonic/gin/blob/master/gin.go)、[Caddy 可信代理选项](https://caddyserver.com/docs/caddyfile/options#trusted-proxies)、[Caddy reverse_proxy 头规则](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy#headers)、[Nginx realip 模块](https://nginx.org/en/docs/http/ngx_http_realip_module.html)。
+
 
 ```go
 func (Handler) Get(c core.Ctx) {
@@ -2128,7 +2177,7 @@ app := core.New(core.Options{
 | `max_body_size` | string | `"1MB"`   | 最大请求体大小   |
 | `read_timeout`  | string | `"5s"`    | 读取超时         |
 | `write_timeout` | string | `"10s"`   | 写入超时         |
-| `trusted_proxies` | []string | `[]`   | 额外可信代理 CIDR 列表；RemoteIP 始终信任 IPv4/IPv6 私有与回环 IP、Cloudflare 回源段，此配置不覆盖内置规则 |
+| `trusted_proxies` | []string | `[]`   | c.RemoteIP() 可信代理 IP/CIDR；空列表默认私网/回环，非空覆盖默认规则；非法配置初始化报错 |
 
 ## 最佳实践
 
