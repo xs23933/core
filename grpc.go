@@ -48,6 +48,10 @@ type GRPCServerConfig struct {
 	TransportCredentials credentials.TransportCredentials
 	UnaryInterceptors    []grpc.UnaryServerInterceptor
 	StreamInterceptors   []grpc.StreamServerInterceptor
+	// TrustGateway verifies the RPC caller using peer address or authenticated
+	// transport identity. Nil trusts private/loopback peer IPs. A configured
+	// callback fully overrides that fallback. Never trust request metadata here.
+	TrustGateway func(context.Context) bool
 }
 
 // ConfigureGRPCServer 在 gRPC server 初始化前配置 transport 和 interceptor。

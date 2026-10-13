@@ -385,6 +385,12 @@ c.Set("user_id", "123")
 
 后端 gRPC handler 从 metadata 中读取。
 
+### Gateway 保留客户端 IP
+
+`core-client-ip`（`core.GatewayClientIPMetadata`）由 Gateway 使用 `c.RemoteIP()` 生成。客户端同名头被过滤，并在 header/Vars 转换后覆盖成单值，不能由 middleware 变量覆盖。无效连接对端不发送该字段，RPC 重试使用同一值。HTTP 原始 headers/body 仍是不可信请求数据。
+
+下游 Core 通过 `GRPCServerConfig.TrustGateway(ctx)` 验证实际 Gateway 对端或 mTLS 身份；未设置回调时默认信任实际对端的私网/回环 IP；显式回调覆盖默认规则，返回 false 时绝不兜底。`ExtractClientInfo` 仅对确认后的单值合法 IP 采信，其余情况返回 gRPC 对端，绝不回退原始 XFF/X-Real-IP。自动注册与 reflection 不代表调用方认证。部署需同时升级 Gateway/下游；公网 Gateway 或严格部署需配置服务端信任，示例见 [core-grpc.md](core-grpc.md#gateway-客户端-ip-的可信传递)。
+
 ### 6.1 gRPC 响应 Header 与 Cookie
 
 业务 gRPC Handler 使用 `core.GrpcSetHeader(ctx, key, values...)`、`core.GrpcSetCookie(ctx, name, value, exp, path, args...)`、`core.GrpcRemoveCookie(ctx, name, path, dom...)` 或 `core.GrpcCookie(ctx, *http.Cookie)`（均返回 error），自动路由即支持写入浏览器 cookie；无需按业务解析 token JSON 或增加登录 adapter。

@@ -373,7 +373,11 @@ ua := core.GrpcHeader(ctx, "user-agent")
 domain := core.ExtractPrimaryDomain("api.example.com")
 ```
 
-`c.RemoteIP()` 的 `trusted_proxies` 未配置、为 null 或空列表时，默认信任 IPv4/IPv6 私网和回环（`net.IP.IsPrivate()` / `IsLoopback()`）；非空列表只信任配置的 IP/CIDR，覆盖默认范围，回环也必须显式列入。配置必须是字符串列表，非法类型、空白项或任意非法 IP/CIDR 都使整个配置失败；`New()` 沿用现有初始化错误约定直接 panic，不忽略条目、不回退私网兜底。先校验 TCP 对端，不可信则忽略所有 IP 头。XFF 从右向左使用同一可信规则检查，重复头合并，返回首个不可信 IP，全部可信时返回最左项。仅缺少 XFF 时尝试单个合法的 `X-Real-IP`；XFF 为空或检查途中遇到非法项时直接回退对端。重复或包含列表的 X-Real-IP 无效。不采信其它 IP 头、不内置信任 Cloudflare；无效对端返回 nil。包级 `core.RemoteIP(header, addr)` 不读取应用配置，使用私网/回环默认规则；`ExtractClientInfo(ctx)` 同样使用该规则并合并重复 metadata。
+`c.RemoteIP()` 的 `trusted_proxies` 未配置、为 null 或空列表时，默认信任 IPv4/IPv6 私网和回环（`net.IP.IsPrivate()` / `IsLoopback()`）；非空列表只信任配置的 IP/CIDR，覆盖默认范围，回环也必须显式列入。配置必须是字符串列表，非法类型、空白项或任意非法 IP/CIDR 都使整个配置失败；`New()` 沿用现有初始化错误约定直接 panic，不忽略条目、不回退私网兜底。先校验 TCP 对端，不可信则忽略所有 IP 头。XFF 从右向左使用同一可信规则检查，重复头合并，返回首个不可信 IP，全部可信时返回最左项。仅缺少 XFF 时尝试单个合法的 `X-Real-IP`；XFF 为空或检查途中遇到非法项时直接回退对端。重复或包含列表的 X-Real-IP 无效。不采信其它 IP 头、不内置信任 Cloudflare；无效对端返回 nil。包级 `core.RemoteIP(header, addr)` 不读取应用配置，使用私网/回环默认规则；`ExtractClientInfo(ctx)` 使用独立的 Gateway 信任规则，不再解析原始 XFF/X-Real-IP：仅在当前 Core 的 Gateway 信任规则通过且 `core-client-ip` 为单个合法 IP 时采信，否则返回 gRPC 对端 IP。未设置 `GRPCServerConfig.TrustGateway` 时按实际 gRPC 对端 IP 默认信任私网/回环；设置后完全使用回调结果，拒绝时不启用兜底。
+
+Gateway 自动 HTTP→gRPC 路由保留 `core-client-ip`：过滤同名用户头，在 header/Vars 转换后用 `c.RemoteIP()` 覆盖。下游在 `ConfigureGRPCServer` 设置 `TrustGateway func(context.Context) bool`，基于 peer IP/CIDR 或已验证的 mTLS Gateway 身份确认来源，不能基于 metadata 自我声明。未设置回调默认按 gRPC 对端 IP 信任私网/回环；显式回调覆盖默认规则，拒绝时不兜底；unary/stream 均通过 `ExtractClientInfo` 获取，非法或缺失字段回退 gRPC 对端，不回退原始转发头。该行为替代旧的 gRPC XFF/X-Real-IP 推断；详见 `skills/core-grpc.md`。
+
+`core.NewGRPCCtx(ctx)` 是 RPC 生命周期内的轻量适配对象，stream 传 stream.Context()，不改变 protobuf 签名。GetHeader/HeaderValues/RequestMetadata/Cookie 只读请求，ClientIP 复用 ExtractClientInfo；SetHeader/SetCookie/WriteCookie/RemoveCookie 复用响应桥接并返回 error；OutgoingContext(metadata.MD) 只显式构造下游 metadata，不自动透传请求或身份字段，同名 outgoing 键覆盖，保留取消/deadline。Service 继续接收 StdContext()。Cookie 读取返回 (string,error)，请求副本独立；详见 skills/core-grpc.md。
 
 #### 错误与哈希
 
@@ -405,6 +409,8 @@ idx := core.SHA256Hash("user@example.com")
 * `SHA256Hash` 适合邮箱、手机号等索引哈希，不适合密码哈希。
 
 ### 3.6 Fetch API 客户端
+
+可复用客户端使用 `fetch.New(baseURL).Timeout(45 * time.Second).SetProxy(proxyURL)` 配置每次请求预算，无需为超时构造 `http.Client`。非正值保持默认 30 秒，更短的父 context deadline 优先。Timeout 复制并原子替换客户端配置，保留代理、Cookie、重定向和其它设置；不修改调用方传入或已开始请求使用的客户端。
 
 外部 HTTP API 调用优先使用独立子包 `github.com/xs23933/core/v3/fetch`。
 

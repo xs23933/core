@@ -52,6 +52,10 @@ if err != nil {
 _ = resp
 ```
 
+### 在服务端调用另一个 gRPC 服务
+
+在现有 protobuf 方法中创建 `c := core.NewGRPCCtx(ctx)`，通过 `c.OutgoingContext(metadata.Pairs("x-request-id", c.GetHeader("x-request-id")))` 生成下游调用 context。此 API 保留取消/deadline 和已有 outgoing metadata，但不会自动转发 incoming 的 Cookie、Authorization、core-client-ip 或响应字段；显式传入的同名键覆盖已有 outgoing 值，所有 map/slice 均复制。业务 Service 仍使用标准 context.Context。完整 API 见 [core-grpc.md](core-grpc.md#轻量-grpcctx)。
+
 ## 3. 启动期硬依赖
 
 如果服务启动必须依赖某个 gRPC 后端，可以在 main 初始化阶段使用 `MustGrpcClient`。

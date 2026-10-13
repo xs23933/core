@@ -107,6 +107,10 @@ func TestGatewayResponseMetadataUsesFinalRetry(t *testing.T) {
 	makeProxy := func(value string, rpcErr error) *ReflectionProxy {
 		srv := grpc.NewServer()
 		healthpb.RegisterHealthServer(srv, &responseMetadataServer{write: func(ctx context.Context, _ *healthpb.HealthCheckRequest) error {
+			md, _ := metadata.FromIncomingContext(ctx)
+			if values := md.Get(core.GatewayClientIPMetadata); len(values) != 1 || values[0] != "203.0.113.10" {
+				t.Errorf("retry client IP = %v, want single validated IP", values)
+			}
 			if err := core.GrpcCookie(ctx, &http.Cookie{Name: "session", Value: value, Path: "/"}); err != nil {
 				return err
 			}
@@ -122,7 +126,10 @@ func TestGatewayResponseMetadataUsesFinalRetry(t *testing.T) {
 	pool.storeState(servicePoolState{byID: map[string]*ReflectionProxy{"one": first, "two": second}, all: []*ReflectionProxy{first, second}, methods: map[string][]*ReflectionProxy{"/grpc.health.v1.Health/Check": {first, second}}})
 	gw.registerRoute(&Route{Method: http.MethodGet, Path: "/check", ServiceName: "metadata", GRPCMethod: "/grpc.health.v1.Health/Check"})
 	rec := httptest.NewRecorder()
-	app.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/check", nil))
+	req := httptest.NewRequest(http.MethodGet, "/check", nil)
+	req.RemoteAddr = "203.0.113.10:8080"
+	req.Header.Set("Core-Client-IP", "6.6.6.6")
+	app.ServeHTTP(rec, req)
 	cookies := rec.Result().Cookies()
 	if rec.Code != http.StatusOK || len(cookies) != 1 || cookies[0].Value != "final-attempt" {
 		t.Fatalf("retry response: status=%d cookies=%v", rec.Code, cookies)

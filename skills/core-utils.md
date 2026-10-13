@@ -132,11 +132,13 @@ info := core.ExtractClientInfo(ctx)
 ua := core.GrpcHeader(ctx, "user-agent")
 ```
 
-`c.RemoteIP()` 的 `trusted_proxies` 未配置、为 null 或空列表时，默认信任 IPv4/IPv6 私网和回环（`net.IP.IsPrivate()` / `IsLoopback()`）；非空列表只信任配置的 IP/CIDR，覆盖默认范围，回环也必须显式列入。配置必须是字符串列表，非法类型、空白项或任意非法 IP/CIDR 都使整个配置失败；`New()` 沿用现有初始化错误约定直接 panic，不忽略条目、不回退私网兜底。先校验 TCP 对端，不可信则忽略所有 IP 头。XFF 从右向左使用同一可信规则检查，重复头合并，返回首个不可信 IP，全部可信时返回最左项。仅缺少 XFF 时尝试单个合法的 `X-Real-IP`；XFF 为空或检查途中遇到非法项时直接回退对端。重复或包含列表的 X-Real-IP 无效。不采信其它 IP 头、不内置信任 Cloudflare；无效对端返回 nil。包级 `core.RemoteIP(header, addr)` 不读取应用配置，使用私网/回环默认规则；`ExtractClientInfo(ctx)` 同样使用该规则并合并重复 metadata。
+`c.RemoteIP()` 的 `trusted_proxies` 未配置、为 null 或空列表时，默认信任 IPv4/IPv6 私网和回环（`net.IP.IsPrivate()` / `IsLoopback()`）；非空列表只信任配置的 IP/CIDR，覆盖默认范围，回环也必须显式列入。配置必须是字符串列表，非法类型、空白项或任意非法 IP/CIDR 都使整个配置失败；`New()` 沿用现有初始化错误约定直接 panic，不忽略条目、不回退私网兜底。先校验 TCP 对端，不可信则忽略所有 IP 头。XFF 从右向左使用同一可信规则检查，重复头合并，返回首个不可信 IP，全部可信时返回最左项。仅缺少 XFF 时尝试单个合法的 `X-Real-IP`；XFF 为空或检查途中遇到非法项时直接回退对端。重复或包含列表的 X-Real-IP 无效。不采信其它 IP 头、不内置信任 Cloudflare；无效对端返回 nil。包级 `core.RemoteIP(header, addr)` 不读取应用配置，使用私网/回环默认规则；`ExtractClientInfo(ctx)` 使用独立的 Gateway 信任规则，不再解析原始 XFF/X-Real-IP：仅在当前 Core 的 Gateway 信任规则通过且 `core-client-ip` 为单个合法 IP 时采信，否则返回 gRPC 对端 IP。未设置 `GRPCServerConfig.TrustGateway` 时按实际 gRPC 对端 IP 默认信任私网/回环；设置后完全使用回调结果，拒绝时不启用兜底。
 
 空配置时同机或私网反代默认可信；严格部署用 `trusted_proxies: ["10.0.0.2/32"]` 指定最小范围，覆盖默认私网/回环规则。后端仅允许受控代理访问，避免其它内网主机提交伪造头。不要信任任意来源，也不要原样转发用户 XFF；代理必须覆盖 XFF 或追加实际连接来源，X-Real-IP 必须由代理覆盖。Cloudflare 来源校验在 Caddy/Nginx 配置，验证后输出 XFF；Core 不维护 Cloudflare 网段或采信其专用头。配置示例见 [README](../README.md#2-上下文-ctx)。
 
 兼容性：非空 trusted_proxies 不再补充默认范围，需列全实际可信代理链；非法配置使 New() 初始化失败。Cloudflare 不内置信任，非法 XFF 不回退 X-Real-IP。
+
+gRPC Handler 可使用 `core.NewGRPCCtx(ctx)` 统一读取 metadata/Cookie/ClientIP、写响应 Header/Cookie，并通过 OutgoingContext 显式创建下游调用 metadata；三者互不修改。请求多值与 metadata 返回独立副本，Cookie 读取需要处理 error，业务层使用 StdContext()。详见 [core-grpc.md](core-grpc.md#轻量-grpcctx)。
 
 ## 6. 错误工具
 

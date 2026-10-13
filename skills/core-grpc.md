@@ -102,6 +102,82 @@ app.RegisterGRPCService(registerServices)
 
 配置只能成功一次，且必须早于 `GetGRPCServer`、`RegisterGRPCService` 和 `EnableEtcdRegistry`。证书身份、URI、吊销和授权策略由应用实现；Core 不推断业务身份。
 
+
+
+### 轻量 GRPCCtx
+
+在 protobuf 生成的 gRPC 方法内部使用 `c := core.NewGRPCCtx(ctx)`；stream 使用 `core.NewGRPCCtx(stream.Context())`。不改变 protobuf 方法签名，不嵌入 HTTP BaseCtx，不提供路由、JSON 或 HTTP 状态码能力。对象只用于当前 RPC 生命周期；业务 Service 继续接收 `c.StdContext()`，不要保存封装对象或跨 RPC 复用。nil/零值使用 background context，不能据此写有效 RPC 响应。
+
+| 方法 | 方向与语义 |
+| --- | --- |
+| `StdContext() context.Context` | 原始 context，保留 deadline/cancellation、peer 和 Core 信任配置 |
+| `GetHeader(key) string` | 读取 incoming metadata 的第一个值，大小写不敏感；缺失返回空字符串 |
+| `HeaderValues(key) []string` | 读取请求多值，返回独立副本 |
+| `RequestMetadata() metadata.MD` | 读取全部请求 metadata 的独立副本，修改不会影响请求 |
+| `ClientIP() string` | 复用 ExtractClientInfo 的 Gateway 信任校验，不能用原始 core-client-ip 代替 |
+| `Cookie(name) (string, error)` | 读取请求 Cookie 并 URL 解码；缺失返回 http.ErrNoCookie，非法转义返回错误 |
+| `SetHeader(key, values...) error` | 复用 GrpcSetHeader，排队写入 Gateway HTTP 响应桥接字段，重复调用追加值 |
+| `SetCookie(name, value, exp, path, args...) error` | 复用 GrpcSetCookie 的默认值、URL 编码、Domain 与变参规则 |
+| `WriteCookie(*http.Cookie) error` | 复用 GrpcCookie，完整响应 Cookie，不补默认值或编码 |
+| `RemoveCookie(name, path, domain...) error` | 复用 GrpcRemoveCookie 删除规则 |
+| `OutgoingContext(metadata.MD) context.Context` | 构造下游 RPC context，显式添加的键覆盖已有 outgoing 同名键，不自动转发 incoming metadata |
+
+请求读取不代表字段已通过身份验证。响应 Header/Cookie 必须在发送 initial headers 或第一条 stream 消息之前写入，并处理 error；此处的 SetHeader 使用 `core-http-<name>-bin` 响应桥接协议，不是下游调用参数，也不会修改请求。需要原生 gRPC response metadata/trailer 时可直接对 StdContext 使用 gRPC 标准 API。
+
+在现有 RPC 方法中适配协议层，再传递标准 context 给 Service：
+
+```go
+c := core.NewGRPCCtx(ctx)
+requestID := c.GetHeader("x-request-id")
+clientIP := c.ClientIP() // 可供审计；信任规则与 ExtractClientInfo 一致
+_ = clientIP
+if err := c.SetHeader("X-Request-ID", requestID); err != nil {
+    return nil, err
+}
+return s.service.GetProfile(c.StdContext(), req)
+```
+
+调用下游时，只选择需要传递的字段（需要导入 `google.golang.org/grpc/metadata`）：
+
+```go
+c := core.NewGRPCCtx(ctx)
+callCtx := c.OutgoingContext(metadata.Pairs("x-request-id", c.GetHeader("x-request-id")))
+return userClient.GetProfile(callCtx, req)
+```
+
+OutgoingContext 保留原 context 的 deadline、取消及已有 outgoing metadata；提供的同名键整体覆盖旧值，并复制 map/slice。不会自动传播 Cookie、Authorization、core-client-ip 或响应字段。显式传播身份字段时，下游仍须按自己的调用方信任策略验证。修改请求/传入 metadata 的副本不会改变已创建的下游 context。已有 GrpcHeader、GrpcSetHeader、GrpcSetCookie 等函数继续可用。
+
+### Gateway 客户端 IP 的可信传递
+
+Gateway 保留 metadata 字段 `core-client-ip`（常量 `core.GatewayClientIPMetadata`），过滤客户端同名 HTTP 头，并在普通 header 和 middleware 变量转换完成后覆盖为 `c.RemoteIP().String()` 的单值结果。对端无法解析时不发送该字段；自动和手工 HTTP→gRPC 路由使用同一实现，重试沿用同一结果。原始 headers/body 中的字段仍是请求数据，不能当作可信身份来源。
+
+下游可在创建 gRPC server 之前设置 `GRPCServerConfig.TrustGateway` 收紧或替换默认规则，然后统一通过 `core.ExtractClientInfo(ctx).IP` 取用户 IP。回调只能依据连接对端或经过验证的 transport 身份判断，不能读取 metadata、XFF 或用户提交的身份字段来决定信任。未设置回调（包括未配置 GRPCServerConfig）时，只根据实际 gRPC 对端 IP 默认信任私网/回环（IPv4/IPv6 的 IsPrivate/IsLoopback）；公网、链路本地、缺少或无效对端均不默认可信。设置回调后完全按回调结果判断，回调拒绝不会启用私网兜底。校验拒绝、缺少 peer、缺少字段或非法/重复字段都返回 gRPC 对端 IP，不回退原始 XFF/X-Real-IP。此规则同时适用于 unary 和 stream。直接使用 `grpc.NewServer()` 或脱离 Core 托管上下文调用 ExtractClientInfo 不会采信该字段。
+
+受控内网按精确 Gateway IP 判断的示例，需要导入 `context`、`net` 和 `google.golang.org/grpc/peer`：
+
+```go
+gatewayIP := net.ParseIP("10.0.0.2")
+if err := app.ConfigureGRPCServer(core.GRPCServerConfig{
+    TrustGateway: func(ctx context.Context) bool {
+        p, ok := peer.FromContext(ctx)
+        if !ok {
+            return false
+        }
+        addr, ok := p.Addr.(*net.TCPAddr)
+        return ok && addr.IP.Equal(gatewayIP)
+    },
+}); err != nil {
+    return err
+}
+// 随后注册服务、调用 EnableEtcdRegistry(nil)，再启动应用。
+```
+
+上面的显式回调没有私网兜底。未设置回调的私网兜底适用于受控内网，后端端口必须限制为仅 Gateway 可访问；内网其它主机能直连时也可以提交该字段。需要 CIDR 时预先使用 `net.ParseCIDR` 解析并检查错误，回调中对实际 `peer.Addr` 做 `Contains` 判断；应用负责限制后端仅允许 Gateway 访问。多 Gateway 应明确列出各个来源。
+
+mTLS 部署在 `ConfigureGRPCServer` 同时设置 `TransportCredentials`，启用客户端证书验证。`TrustGateway` 应检查 `peer.AuthInfo` 中的 `credentials.TLSInfo`、非空 `State.VerifiedChains`，并匹配实际 Gateway 的证书 URI/SAN 身份；仅“证书属于同一 CA”不代表它是 Gateway。Core 不推断业务证书身份，详见 gRPC TLS 配置说明。
+
+兼容性：旧服务依赖 ExtractClientInfo 读取 XFF/X-Real-IP 的用法需要迁移。Gateway 与下游应一起升级；受控私网/回环部署可使用默认规则，严格部署应显式配置回调；旧 Gateway 没有 core-client-ip 时会返回连接对端，不会猜测用户 IP。etcd 自动注册/reflection 不提供调用方认证。用户 IP 仅表示 Gateway 对入站来源的判断，不代替业务鉴权。
+
 ## 4. HTTP 和 gRPC 共用端口
 
 共用端口时，`EnableGRPC` 和 `Listen` 使用同一个地址。框架会按 HTTP/2 与 `Content-Type: application/grpc` 分流。

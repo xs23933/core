@@ -50,9 +50,9 @@ skills/
 ├── core-model.md            # 数据模型定义、GORM 类型、分页查询、事务
 ├── core-service.md          # 业务逻辑层编写（兼容 HTTP/gRPC）
 ├── core-middleware.md       # 中间件开发（CORS/限流/Metrics/RequestID）
-├── core-grpc.md             # gRPC 服务端（TLS/interceptor/注册/启动/etcd 注册/共用端口约束/响应 Header/Cookie）
+├── core-grpc.md             # gRPC 服务端（轻量 GRPCCtx / 可信 Gateway 客户端 IP / TLS/interceptor/注册/启动/etcd 注册/共用端口约束/响应 Header/Cookie）
 ├── core-grpc-client.md      # gRPC 客户端（服务发现/明确 target/每服务 TLS/MustGrpcClient）
-├── core-gateway.md          # etcd HTTP/gRPC 网关（自动/手动路由、负载均衡、请求 metadata/响应 Header/Cookie）
+├── core-gateway.md          # etcd HTTP/gRPC 网关（core-client-ip / 自动/手动路由、负载均衡、请求 metadata/响应 Header/Cookie）
 ├── core-websocket.md        # WebSocket 连接管理/按用户推送/广播/心跳
 ├── core-sse.md              # SSE 服务端推送（SSEWrite/SSESend/EventHub）
 ├── core-page.md             # 分页查询（经典分页/滚动分页/条件构建）
@@ -228,6 +228,7 @@ HTTP 请求 → Middleware1 → Middleware2 → ... → Handler → Response
 **功能概述**：Core Framework 的 gRPC 服务端支持，包括启动前 TLS/interceptor 配置、proto service 注册、独立端口/共用端口部署、etcd 服务注册与发现、gRPC reflection。
 
 **核心特性**：
+- `NewGRPCCtx(ctx)` 轻量适配请求、响应和下游调用，Service 继续使用标准 context
 - `RegisterGRPCService()` 注册 proto service
 - `ConfigureGRPCServer()` 在 server 创建前配置 transport credentials 与 unary/stream interceptor
 - HTTP/gRPC 同端口分流（基于 HTTP/2 + Content-Type）

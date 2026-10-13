@@ -999,43 +999,50 @@ func isTrustedProxy(ip net.IP, trusted []*net.IPNet) bool {
 	return false
 }
 
-type mda struct {
-	md metadata.MD
-}
-
-func (m *mda) Get(key string) string {
-	v := m.md.Get(key)
-	if len(v) > 0 {
-		return v[0]
-	}
-	return ""
-}
-
-func (m *mda) Values(key string) []string {
-	return m.md.Get(key)
-}
-
 type ClientInfo struct {
 	IP string
 	UA string
 }
 
+// GatewayClientIPMetadata 是 Gateway 保留并覆盖写入的客户端 IP 字段。
+const GatewayClientIPMetadata = "core-client-ip"
+
+// ExtractClientInfo 对 Core 托管的 RPC 使用 TrustGateway 策略；未设置时
+// 根据实际对端 IP 信任私网/回环。仅采信单值合法 core-client-ip，
+// 其它情况返回 gRPC 对端，不解析原始 IP 转发头。
 func ExtractClientInfo(ctx context.Context) *ClientInfo {
 	result := &ClientInfo{}
-
-	var remoteAddr string
-	if peerInfo, ok := peer.FromContext(ctx); ok && peerInfo.Addr != nil {
-		remoteAddr = peerInfo.Addr.String()
+	if ctx == nil {
+		return result
 	}
-
-	if p, ok := metadata.FromIncomingContext(ctx); ok {
-		if ip := RemoteIP(&mda{md: p}, remoteAddr); ip != nil {
+	peerInfo, hasPeer := peer.FromContext(ctx)
+	hasPeer = hasPeer && peerInfo != nil
+	if hasPeer && peerInfo.Addr != nil {
+		if ip := parseIPFromAddr(peerInfo.Addr.String()); ip != nil {
 			result.IP = ip.String()
 		}
-		if ua := p.Get("user-agent"); len(ua) > 0 {
-			result.UA = ua[0]
-		}
-	} else if ip := RemoteIP(http.Header{}, remoteAddr); ip != nil {
+	}
+	md, _ := metadata.FromIncomingContext(ctx)
+	if ua := md.Get("user-agent"); len(ua) > 0 {
+		result.UA = ua[0]
+	}
+	app, _ := ctx.Value(grpcCoreContextKey{}).(*Core)
+	if !hasPeer || app == nil {
+		return result
+	}
+	values := md.Get(GatewayClientIPMetadata)
+	if len(values) != 1 {
+		return result
+	}
+	ip := net.ParseIP(values[0])
+	if ip == nil {
+		return result
+	}
+	trusted := isTrustedProxy(net.ParseIP(result.IP), nil)
+	if app.grpcConfig != nil && app.grpcConfig.TrustGateway != nil {
+		trusted = app.grpcConfig.TrustGateway(ctx)
+	}
+	if trusted {
 		result.IP = ip.String()
 	}
 	return result

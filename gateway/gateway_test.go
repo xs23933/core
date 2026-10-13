@@ -144,6 +144,8 @@ func TestAppendHTTPHeadersToMetadataIncludesCustomHeaders(t *testing.T) {
 	headers.Set("Connection", "close")
 	headers.Set("Content-Length", "10")
 	headers.Set("Content-Type", "application/json")
+	headers.Add("Core-Client-IP", "6.6.6.6")
+	headers.Add("CORE-CLIENT-IP", "7.7.7.7")
 
 	md := metadata.New(nil)
 	appendHTTPHeadersToMetadata(md, headers)
@@ -157,7 +159,7 @@ func TestAppendHTTPHeadersToMetadataIncludesCustomHeaders(t *testing.T) {
 			t.Fatalf("metadata %s = %#v, want %#v", key, got, want)
 		}
 	}
-	for _, key := range []string{"connection", "content-length", "content-type"} {
+	for _, key := range []string{"connection", "content-length", "content-type", core.GatewayClientIPMetadata} {
 		if got := md.Get(key); len(got) > 0 {
 			t.Fatalf("metadata %s = %#v, want omitted transport header", key, got)
 		}

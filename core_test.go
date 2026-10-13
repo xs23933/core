@@ -99,9 +99,6 @@ func TestExtractClientInfoTrustedProxy(t *testing.T) {
 			}
 			got := ExtractClientInfo(ctx)
 			want := addr
-			if ip := net.ParseIP(addr); ip.IsPrivate() || ip.IsLoopback() {
-				want = "8.8.8.8"
-			}
 			if got.IP != want || got.UA != "test-agent" {
 				t.Fatalf("client info = %+v, want IP %q and UA test-agent", got, want)
 			}
@@ -213,8 +210,8 @@ func TestExtractClientInfoForwardedHeaders(t *testing.T) {
 		pairs []string
 		want  string
 	}{
-		{"duplicate XFF", []string{"x-forwarded-for", "6.6.6.6", "x-forwarded-for", "203.0.113.10"}, "203.0.113.10"},
-		{"real IP", []string{"x-real-ip", "203.0.113.10"}, "203.0.113.10"},
+		{"duplicate XFF ignored", []string{"x-forwarded-for", "6.6.6.6", "x-forwarded-for", "203.0.113.10"}, "127.0.0.1"},
+		{"real IP ignored", []string{"x-real-ip", "203.0.113.10"}, "127.0.0.1"},
 		{"empty XFF blocks fallback", []string{"x-forwarded-for", "", "x-real-ip", "203.0.113.10"}, "127.0.0.1"},
 		{"duplicate real IP", []string{"x-real-ip", "8.8.8.8", "x-real-ip", "9.9.9.9"}, "127.0.0.1"},
 	} {

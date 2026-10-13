@@ -1147,6 +1147,12 @@ func (gw *EtcdGateway) createProxyHandler(route *Route) core.HandlerFunc {
 			md.Set(k, fmt.Sprintf("%v", v))
 		}
 
+		// This reserved field is derived from the validated HTTP connection,
+		// after headers and middleware vars, so neither can override it.
+		md.Delete(core.GatewayClientIPMetadata)
+		if ip := ctx.RemoteIP(); ip != nil {
+			md.Set(core.GatewayClientIPMetadata, ip.String())
+		}
 		grpcCtx := gatewayOutgoingContext(ctx.Context(), md)
 
 		// This is the upstream RPC total budget, not a Provider HTTP timeout.
@@ -1265,7 +1271,7 @@ func appendHTTPHeadersToMetadata(md metadata.MD, headers http.Header) {
 func grpcMetadataHeaderSkipped(key string) bool {
 	switch key {
 	case "connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade",
-		"content-length", "content-type", "te", "trailer":
+		"content-length", "content-type", "te", "trailer", core.GatewayClientIPMetadata:
 		return true
 	default:
 		return strings.HasPrefix(key, ":") || strings.HasPrefix(key, "grpc-")

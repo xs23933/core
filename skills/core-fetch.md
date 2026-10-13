@@ -73,6 +73,8 @@ _, err = fetch.Delete("https://api.example.com/users/1", nil)
 
 ## 3. 可复用 Client
 
+可复用客户端使用 `fetch.New(baseURL).Timeout(45 * time.Second).SetProxy(proxyURL)` 配置每次请求预算，无需为超时构造 `http.Client`。非正值保持默认 30 秒，更短的父 context deadline 优先。Timeout 复制并原子替换客户端配置，保留代理、Cookie、重定向和其它设置；不修改调用方传入或已开始请求使用的客户端。
+
 服务代码中优先创建可复用 client，统一配置 baseURL、公共 Header、Cookie 和 Hook。
 
 ```go
