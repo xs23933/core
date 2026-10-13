@@ -113,7 +113,7 @@ func (i *Identity) refreshOnce(ctx context.Context) error {
 
 func (i *Identity) requestCertificate(ctx context.Context) ([]byte, error) {
 	endpoint, err := url.Parse(i.conf.IssuerURL)
-	if err != nil || endpoint.Scheme != "https" || endpoint.Host == "" || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" {
+	if err != nil || endpoint.Scheme != "https" || endpoint.Host == "" || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.ForceQuery || endpoint.Fragment != "" {
 		return nil, errors.New("workload issuer_url must be trusted HTTPS URL")
 	}
 	mode := "enroll"

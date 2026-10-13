@@ -269,6 +269,7 @@ func init() {
 	}
 }
 
+// LoadConfigFile 加载并展开配置；托管身份的相对文件路径以该配置所在目录为基准。
 func LoadConfigFile(file string, opts ...Options) Options {
 	conf := make(Options)
 	if len(opts) > 0 {
@@ -276,11 +277,12 @@ func LoadConfigFile(file string, opts ...Options) Options {
 	}
 
 	if strings.HasSuffix(file, ".dat") {
-		return loadEncryptedConfig(file, conf)
+		conf = loadEncryptedConfig(file, conf)
+	} else {
+		conf = loadYamlConfig(file, conf)
 	}
-
-	conf = loadYamlConfig(file, conf)
 	conf.ExpandEnv()
+	resolveWorkloadConfigPaths(conf, file)
 	return conf
 }
 
@@ -563,4 +565,34 @@ func (opt *Options) GetPathBool(path string, def ...bool) bool {
 // GetPathStrings 获取字符串数组类型的配置值
 func (opt *Options) GetPathStrings(path string, def ...[]string) []string {
 	return opt.GetStrings(path, def...)
+}
+
+// resolveWorkloadConfigPaths 只解析托管身份的本地文件路径，避免进程工作目录改变证书存放位置。
+func resolveWorkloadConfigPaths(conf Options, file string) {
+	directory, err := filepath.Abs(filepath.Dir(file))
+	if err != nil {
+		return
+	}
+	fields := map[string][]string{
+		"workload":        {"state_dir", "trust_bundle_file", "bootstrap_token_file"},
+		"workload_issuer": {"state_dir", "policy_file", "pin_file"},
+	}
+	for section, names := range fields {
+		var values Options
+		switch value := conf[section].(type) {
+		case Options:
+			values = value
+		case map[string]any:
+			values = Options(value)
+		default:
+			continue
+		}
+		for _, name := range names {
+			value, ok := values[name].(string)
+			if !ok || value == "" || filepath.IsAbs(value) {
+				continue
+			}
+			values[name] = filepath.Join(directory, value)
+		}
+	}
 }

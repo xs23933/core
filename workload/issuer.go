@@ -340,6 +340,7 @@ func (i *Issuer) Start(ctx context.Context) error {
 	roots := x509.NewCertPool()
 	roots.AppendCertsFromPEM(i.RootPEM())
 	mux := http.NewServeMux()
+	mux.HandleFunc("/root.pem", i.handlePublicRoot)
 	mux.HandleFunc("/enroll", i.handleEnroll)
 	mux.HandleFunc("/renew", i.handleRenew)
 	listener, e := net.Listen("tcp", i.config.ListenAddress)
@@ -609,4 +610,22 @@ func (i *Issuer) RotateIntermediate() error {
 	i.intermediate = parsed
 	i.key = key
 	return nil
+}
+
+// handlePublicRoot 仅公开公共根；申请凭据和签发私钥不会出现在此入口。
+func (i *Issuer) handlePublicRoot(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	i.mu.Lock()
+	data := []byte(i.state.RootPEM)
+	i.mu.Unlock()
+	w.Header().Set("Content-Type", "application/x-pem-file")
+	w.Header().Set("Content-Length", fmt.Sprint(len(data)))
+	w.Header().Set("Cache-Control", "no-store")
+	if r.Method == http.MethodGet {
+		_, _ = w.Write(data)
+	}
 }

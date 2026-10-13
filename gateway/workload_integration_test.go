@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -128,8 +129,14 @@ func TestWorkloadGatewayRealEtcd(t *testing.T) {
 	}
 	issuerState := filepath.Join(base, "issuer")
 	roots := filepath.Join(issuerState, "root.pem")
+	rootPin := ""
+
 	common := func(service, state string) core.Options {
-		return core.Options{"debug": false, "listen": "127.0.0.1:0", "workload": core.Options{"enabled": true, "service_name": service, "trust_domain": "integration", "issuer_url": issuerURL, "trust_bundle_file": roots, "bootstrap_token_file": tokens[service], "state_dir": state}, "etcd": core.Options{"endpoints": []string{endpoint}, "namespace": namespace, "service_name": service}}
+		identityConfig := core.Options{"enabled": true, "service_name": service, "trust_domain": "integration", "issuer_url": issuerURL, "root_sha256": rootPin, "bootstrap_token_file": tokens[service], "state_dir": state}
+		if service == "gateway" {
+			identityConfig["trust_bundle_file"] = roots
+		}
+		return core.Options{"debug": false, "listen": "127.0.0.1:0", "workload": identityConfig, "etcd": core.Options{"endpoints": []string{endpoint}, "namespace": namespace, "service_name": service}}
 	}
 	gatewayOptions := common("gateway", filepath.Join(base, "gateway-identity"))
 	gatewayOptions["workload_issuer"] = core.Options{"enabled": true, "state_dir": issuerState, "pin_file": filepath.Join(base, "root.pin"), "policy_file": policyFile, "listen": issuerAddress, "advertise_url": issuerURL}
@@ -151,6 +158,16 @@ func TestWorkloadGatewayRealEtcd(t *testing.T) {
 	if e = gatewayApp.EnableWorkloadIdentity(); e != nil {
 		t.Fatal(e)
 	}
+	// Gateway 首次启动自动创建 CA；测试部署随后仅读可信本地指纹，后端没有共享根文件。
+	pinBytes, pinError := os.ReadFile(filepath.Join(base, "root.pin"))
+	if pinError != nil {
+		t.Fatal(pinError)
+	}
+	rootPin = strings.TrimSpace(string(pinBytes))
+	for _, backend := range prepared {
+		backend.app.Conf.GetMap("workload")["root_sha256"] = rootPin
+	}
+
 	t.Cleanup(func() { _ = gatewayApp.ShutdownWithTimeout(3 * time.Second) })
 	if e = gatewayApp.EnableEtcdDiscovery(nil); e != nil {
 		t.Fatal(e)
@@ -168,6 +185,14 @@ func TestWorkloadGatewayRealEtcd(t *testing.T) {
 		if e := app.EnableWorkloadIdentity(); e != nil {
 			t.Fatal(e)
 		}
+		cachedRoot, readError := os.ReadFile(filepath.Join(state, "root.pem"))
+		if readError != nil {
+			t.Fatalf("后端未自动缓存独立根证书: %v", readError)
+		}
+		if len(cachedRoot) == 0 {
+			t.Fatal("后端根证书缓存为空")
+		}
+
 		app.EnableGRPC(address)
 		if healthService {
 			app.RegisterGRPCService(func(server *grpc.Server) {

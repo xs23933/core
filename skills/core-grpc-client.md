@@ -160,4 +160,8 @@ Core helper 使用 `core-http-<小写 header 名>-bin` 声明 HTTP 响应；md �
 
 ## 托管工作负载 mTLS
 
+通过 `core.LoadConfigFile` 加载 YAML 或加密 `.dat` 时，`workload.state_dir`、`trust_bundle_file`、`bootstrap_token_file` 以及 `workload_issuer.state_dir`、`policy_file`、`pin_file` 的非空相对路径，在环境变量展开后按该配置文件所在目录解析。`state_dir: ./workload` 因而始终位于配置旁，不随启动 cwd 或 `-f`/`--config` 的绝对、相对写法变化。绝对路径保持原值；直接以程序构造 `Options` 或调用 `workload.Open` 时，仍由调用方确定路径基准。其它业务配置路径不受此规则影响。
+
 Gateway 可使用 Go 标准库首次自动创建私有 CA，后端自动申请、本地保存和续期，服务端、服务间客户端和 Gateway reflection 复用本进程身份。使用前必须在首次创建 gRPC server/client 前调用 `app.EnableWorkloadIdentity()`；启用后禁止明文回退或逐目标显式 transport 冲突配置。完整配置、引导认证、独立端口、根信任更新和验收边界见 [工作负载身份说明](../workload/README.md)。
+
+后端跨服务器可预置 `workload.root_sha256`（根证书 DER SHA-256），Core 从内部签发入口 `GET /root.pem` 无凭据下载，校验指纹及本次 HTTPS 链/主机名后原子缓存，再申请身份。每次启动校验缓存，拒绝不匹配/损坏缓存的静默覆盖；默认缓存位于本进程 state_dir，不依赖 Gateway 共享文件。指纹必须由可信部署渠道预置，详见工作负载说明。

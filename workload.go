@@ -53,6 +53,7 @@ func (app *Core) EnableWorkloadIdentity() error {
 		TrustDomain:        app.Conf.GetString("workload.trust_domain"),
 		IssuerURL:          app.Conf.GetString("workload.issuer_url"),
 		TrustBundleFile:    app.Conf.GetString("workload.trust_bundle_file"),
+		RootSHA256:         app.Conf.GetString("workload.root_sha256"),
 		BootstrapTokenFile: app.Conf.GetString("workload.bootstrap_token_file"),
 		StateDir:           app.Conf.GetString("workload.state_dir"),
 		RenewBefore:        app.Conf.GetDuration("workload.renew_before", 0),

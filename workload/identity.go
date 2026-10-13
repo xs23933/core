@@ -22,8 +22,8 @@ import (
 
 // Config 描述进程级工作负载身份，不包含逐目标服务凭据。
 type Config struct {
-	ServiceName, TrustDomain, IssuerURL, TrustBundleFile, BootstrapTokenFile, StateDir string
-	RenewBefore, RetryInterval                                                         time.Duration
+	ServiceName, TrustDomain, IssuerURL, TrustBundleFile, BootstrapTokenFile, StateDir, RootSHA256 string
+	RenewBefore, RetryInterval                                                                     time.Duration
 }
 
 type identityState struct {
@@ -89,7 +89,7 @@ func openIdentity(ctx context.Context, conf Config, local func(string, []byte, s
 		f.Close()
 		return nil, err
 	}
-	rootsPEM, err := os.ReadFile(conf.TrustBundleFile)
+	rootsPEM, err := loadTrustBundle(ctx, conf, local == nil)
 	if err != nil {
 		return cleanup(err)
 	}
