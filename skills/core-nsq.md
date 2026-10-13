@@ -279,3 +279,9 @@ func main() {
 3. **不可恢复错误**：如消息格式错误，应返回 `nil`（FIN）避免无限重试
 4. **Consumer 生命周期**：`Start` 阻塞运行，`StartAsync` 异步运行，`Stop` 优雅关闭
 5. **应用关闭时**：所有 Consumer 自动通过 `CloseNSQ()` 清理
+
+## NSQ 持久化业务重试策略
+
+`NSQConsumerConfig.DisableMaxAttempts=true` 显式关闭 go-nsq 的次数耗尽自动 FIN，将其 `MaxAttempts` 设为 0。默认 false 保持旧行为：未指定或 0 的 `MaxAttempts` 使用 5；正值为有限次数。金融 Outbox/Inbox 等要求故障恢复的消费者应显式启用此项，避免在调用业务 Handler 之前因次数耗尽丢失重试。
+
+该选项不改变 Handler 语义：nil 仍 FIN，error 仍 REQ。只有业务已持久化完成或持久化隔离处理后才能返回 nil；仍在处理的 Inbox 锁、取消、超时和暂态故障须返回 error。格式错误的 poison 消息也不能只靠次数耗尽丢弃，调用方须选择持久隔离及诊断或继续有界退避重试。此项不提供 DLQ、持久化 Inbox 或业务幂等；父 context 和原命令键恢复仍由调用方负责。

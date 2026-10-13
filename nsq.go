@@ -181,15 +181,16 @@ func (p *NSQProducer) Stop() {
 
 // NSQConsumerConfig 消费者配置
 type NSQConsumerConfig struct {
-	Topic       string        // Topic 名称（必填）
-	Channel     string        // Channel 名称（必填）
-	NSQDs       []string      // 直连 nsqd 地址列表（如 ["127.0.0.1:4150"]）
-	Lookupds    []string      // nsqlookupd 地址列表（如 ["127.0.0.1:4161"]）
-	Concurrency int           // 并发处理数（默认 1）
-	MaxInFlight int           // 最大在途消息数（默认 200）
-	MaxAttempts uint16        // 最大重试次数（默认 5）
-	MaxBackoff  time.Duration // 最大退避时间（默认 2m）
-	MsgTimeout  time.Duration // 消息处理超时（0 使用服务端默认）
+	Topic              string        // Topic 名称（必填）
+	Channel            string        // Channel 名称（必填）
+	NSQDs              []string      // 直连 nsqd 地址列表（如 ["127.0.0.1:4150"]）
+	Lookupds           []string      // nsqlookupd 地址列表（如 ["127.0.0.1:4161"]）
+	Concurrency        int           // 并发处理数（默认 1）
+	MaxInFlight        int           // 最大在途消息数（默认 200）
+	MaxAttempts        uint16        // 最大重试次数（默认 5）
+	DisableMaxAttempts bool          // 显式关闭超限自动 FIN，由业务持久化结果决定是否确认。
+	MaxBackoff         time.Duration // 最大退避时间（默认 2m）
+	MsgTimeout         time.Duration // 消息处理超时（0 使用服务端默认）
 }
 
 // NSQConsumer 封装 nsq.Consumer
@@ -211,7 +212,9 @@ func NewNSQConsumer(conf NSQConsumerConfig) (*NSQConsumer, error) {
 	if conf.MaxInFlight <= 0 {
 		conf.MaxInFlight = 200
 	}
-	if conf.MaxAttempts <= 0 {
+	if conf.DisableMaxAttempts {
+		conf.MaxAttempts = 0
+	} else if conf.MaxAttempts == 0 {
 		conf.MaxAttempts = 5
 	}
 	if conf.MaxBackoff <= 0 {

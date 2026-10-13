@@ -2952,3 +2952,9 @@ _Core Framework v3.0.0_
 Gateway 可使用 Go 标准库首次自动创建私有 CA，后端自动申请、本地保存和续期，服务端、服务间客户端和 Gateway reflection 复用本进程身份。使用前必须在首次创建 gRPC server/client 前调用 `app.EnableWorkloadIdentity()`；启用后禁止明文回退或逐目标显式 transport 冲突配置。完整配置、引导认证、独立端口、根信任更新和验收边界见 [工作负载身份说明](workload/README.md)。
 
 后端跨服务器可预置 `workload.root_sha256`（根证书 DER SHA-256），Core 从内部签发入口 `GET /root.pem` 无凭据下载，校验指纹及本次 HTTPS 链/主机名后原子缓存，再申请身份。每次启动校验缓存，拒绝不匹配/损坏缓存的静默覆盖；默认缓存位于本进程 state_dir，不依赖 Gateway 共享文件。指纹必须由可信部署渠道预置，详见工作负载说明。
+
+## NSQ 持久化业务重试策略
+
+`NSQConsumerConfig.DisableMaxAttempts=true` 显式关闭 go-nsq 的次数耗尽自动 FIN，将其 `MaxAttempts` 设为 0。默认 false 保持旧行为：未指定或 0 的 `MaxAttempts` 使用 5；正值为有限次数。金融 Outbox/Inbox 等要求故障恢复的消费者应显式启用此项，避免在调用业务 Handler 之前因次数耗尽丢失重试。
+
+该选项不改变 Handler 语义：nil 仍 FIN，error 仍 REQ。只有业务已持久化完成或持久化隔离处理后才能返回 nil；仍在处理的 Inbox 锁、取消、超时和暂态故障须返回 error。格式错误的 poison 消息也不能只靠次数耗尽丢弃，调用方须选择持久隔离及诊断或继续有界退避重试。此项不提供 DLQ、持久化 Inbox 或业务幂等；父 context 和原命令键恢复仍由调用方负责。

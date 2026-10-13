@@ -1232,3 +1232,9 @@ EventHub 注册通道后由 Hub 独占发送和关闭，调用方不得自行关
 后端跨服务器可预置 `workload.root_sha256`（根证书 DER SHA-256），Core 从内部签发入口 `GET /root.pem` 无凭据下载，校验指纹及本次 HTTPS 链/主机名后原子缓存，再申请身份。每次启动校验缓存，拒绝不匹配/损坏缓存的静默覆盖；默认缓存位于本进程 state_dir，不依赖 Gateway 共享文件。指纹必须由可信部署渠道预置，详见工作负载说明。
 
 HTTP-only 应用可启用工作负载身份进行出站 mTLS，`EnableEtcdRegistry` 不因此开启入站 gRPC。实际 server 能力写入 `metadata.grpc_enabled`；显式 `false` 只排除 gRPC 接入，HTTP 路由照常发布和代理，缺字段保持旧接入方式。真正注册 gRPC 服务必须先于 registry，mTLS listener 仍须独立 `grpc.addr`，共享 HTTP 端口继续拒绝启动。
+
+## NSQ 持久化业务重试策略
+
+`NSQConsumerConfig.DisableMaxAttempts=true` 显式关闭 go-nsq 的次数耗尽自动 FIN，将其 `MaxAttempts` 设为 0。默认 false 保持旧行为：未指定或 0 的 `MaxAttempts` 使用 5；正值为有限次数。金融 Outbox/Inbox 等要求故障恢复的消费者应显式启用此项，避免在调用业务 Handler 之前因次数耗尽丢失重试。
+
+该选项不改变 Handler 语义：nil 仍 FIN，error 仍 REQ。只有业务已持久化完成或持久化隔离处理后才能返回 nil；仍在处理的 Inbox 锁、取消、超时和暂态故障须返回 error。格式错误的 poison 消息也不能只靠次数耗尽丢弃，调用方须选择持久隔离及诊断或继续有界退避重试。此项不提供 DLQ、持久化 Inbox 或业务幂等；父 context 和原命令键恢复仍由调用方负责。
