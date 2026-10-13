@@ -38,6 +38,7 @@ func TestGRPCToHTTPOnlyRemovesReflectionPool(t *testing.T) {
 	if len(gw.loadRouteSnapshot().activeSlots) != 1 {
 		t.Fatal("gRPC route was not installed")
 	}
+	oldProxy := gw.connPool.Get("demo").Get()
 	manual := minimalRouteStateDefinition("manual", gatewayroute.SourceManual, "", "demo", "/manual")
 	automaticHTTP := minimalRouteStateDefinition("http", gatewayroute.SourceAutoHTTP, "demo", "demo", "/http")
 	gw.applyRouteBatch([]routeEvent{{StorageKey: "manual", Value: &routeSourceValue{Definition: manual}}, {StorageKey: "http", Value: &routeSourceValue{Definition: automaticHTTP}}})
@@ -45,6 +46,8 @@ func TestGRPCToHTTPOnlyRemovesReflectionPool(t *testing.T) {
 	instance.HTTPOnly = true
 	gw.reconcileServiceSnapshot(serviceSnapshot{"demo/one": instance})
 	gw.taskWG.Wait()
+	// 旧接入任务即使迟到安装，也不能恢复已撤销的自动 gRPC 路由。
+	gw.autoRegisterRoutes("demo", oldProxy)
 	if pool := gw.connPool.Get("demo"); pool != nil && pool.Size() != 0 {
 		t.Fatal("HTTP-only retained gRPC proxy")
 	}

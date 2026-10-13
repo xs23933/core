@@ -988,6 +988,21 @@ func (gw *EtcdGateway) autoRegisterRoutes(serviceName string, proxy *ReflectionP
 	}
 	gw.mu.Lock()
 	defer gw.mu.Unlock()
+	// 已撤销入站能力的服务不能被迟到的 reflection 结果重新发布自动路由。
+	found, httpOnly := false, true
+	for _, instance := range gw.loadDesiredServiceSnapshot() {
+		if instance.ServiceName != serviceName {
+			continue
+		}
+		found = true
+		if !instance.HTTPOnly {
+			httpOnly = false
+			break
+		}
+	}
+	if found && httpOnly {
+		return
+	}
 	methods := proxy.Methods()
 	if pool := gw.connPool.Get(serviceName); pool != nil {
 		if pool.Size() == 0 {
