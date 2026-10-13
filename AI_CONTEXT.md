@@ -601,9 +601,9 @@ return app.Listen(":8080")
 规则：
 
 * 只需要本机 gRPC 时用 `app.EnableGRPC(":9001")`。
-* `app.EnableEtcdRegistry(nil)` 开启 reflection，以每进程唯一 `generation` 和 `ready=false` 注册；启动准备和启用的自动 HTTP 目录发布完成后更新 `ready=true`。历史缺少 ready 的记录兼容可服务。
+* `app.EnableEtcdRegistry(nil)` 仅为已有入站 gRPC server 开启 reflection，不隐式创建 server；以每进程唯一 `generation` 和 `ready=false` 注册；启动准备和启用的自动 HTTP 目录发布完成后更新 `ready=true`。历史缺少 ready 的记录兼容可服务。
 * `RegisterGRPCService` 必须在 `Listen` / `Run` 前调用。
-* `ConfigureGRPCServer` 必须在 `GetGRPCServer`、`RegisterGRPCService` 或 `EnableEtcdRegistry` 创建 server 前调用；只允许配置一次。
+* `ConfigureGRPCServer` 必须在 `GetGRPCServer` 或 `RegisterGRPCService` 创建 server 前调用；只允许配置一次。
 * Core 始终保留默认 unary error wrapper；调用方 interceptor 按配置顺序组成 chain。
 * 配置 gRPC transport credentials 时必须使用独立的 Core-managed gRPC 地址；HTTP/gRPC 共端口会以 `ErrGRPCTLSSharedAddress` fail closed。
 * 证书身份、URI、吊销和授权策略属于应用，不属于 Core。
@@ -844,7 +844,7 @@ Core 的 gRPC 能力由以下入口组成：
 | `ConfigureGRPCServer(config)` | 在 server 创建前配置 transport credentials 与 unary/stream interceptor |
 | `ConfigureGRPCClient(serviceName, config)` | 在指定服务首次 dial 前配置 transport credentials |
 | `EnableGRPC(addr)` | 启动 gRPC server，可与 HTTP 共用端口 |
-| `EnableEtcdRegistry(opts)` | 注册 etcd、启用 discovery、开启 reflection |
+| `EnableEtcdRegistry(opts)` | 注册 etcd、启用 discovery、为已有入站 gRPC server 开启 reflection |
 | `GrpcClient(serviceName)` | 基于 etcd resolver 创建客户端连接 |
 | `GrpcClientAt(serviceName, target)` | 使用同一每服务 transport 配置连接明确 target |
 | `gateway.NewEtcdGateway(app)` | 自动发现服务并生成 HTTP -> gRPC 路由 |
@@ -1230,3 +1230,5 @@ Gateway 可使用 Go 标准库首次自动创建私有 CA，后端自动申请�
 EventHub 注册通道后由 Hub 独占发送和关闭，调用方不得自行关闭或复用退役通道；广播、定向发送、替换、注销和关闭共享生命周期锁，仍保持非阻塞丢弃语义。相同 ID 的旧连接注销不能关闭新连接，同一活动通道的多个 ID 共享生命周期。
 
 后端跨服务器可预置 `workload.root_sha256`（根证书 DER SHA-256），Core 从内部签发入口 `GET /root.pem` 无凭据下载，校验指纹及本次 HTTPS 链/主机名后原子缓存，再申请身份。每次启动校验缓存，拒绝不匹配/损坏缓存的静默覆盖；默认缓存位于本进程 state_dir，不依赖 Gateway 共享文件。指纹必须由可信部署渠道预置，详见工作负载说明。
+
+HTTP-only 应用可启用工作负载身份进行出站 mTLS，`EnableEtcdRegistry` 不因此开启入站 gRPC。实际 server 能力写入 `metadata.grpc_enabled`；显式 `false` 只排除 gRPC 接入，HTTP 路由照常发布和代理，缺字段保持旧接入方式。真正注册 gRPC 服务必须先于 registry，mTLS listener 仍须独立 `grpc.addr`，共享 HTTP 端口继续拒绝启动。

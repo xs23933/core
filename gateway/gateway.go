@@ -73,6 +73,7 @@ type registeredServiceInstance struct {
 	Generation  string
 	Version     string
 	NotReady    bool
+	HTTPOnly    bool
 	Lease       int64
 }
 
@@ -98,6 +99,14 @@ type serviceWatchResponse struct {
 type serviceWatchSource interface {
 	Load(context.Context) (serviceSnapshotRevision, error)
 	Watch(context.Context, int64) <-chan serviceWatchResponse
+}
+
+// GRPCAddr 只对明确提供 gRPC 的新实例或缺少能力标记的旧实例返回地址。
+func (s *serviceInstance) GRPCAddr() string {
+	if s == nil || s.Metadata[etcd.MetadataGRPCEnabled] == "false" {
+		return ""
+	}
+	return strings.TrimSpace(s.Addr)
 }
 
 func (s *serviceInstance) HTTPAddr() string {
@@ -284,11 +293,12 @@ func decodeServiceSnapshotValue(serviceRoot, key string, value []byte) (register
 	return registeredServiceInstance{
 		ServiceName: serviceName,
 		InstanceID:  instanceID,
-		GRPCAddr:    strings.TrimSpace(info.Addr),
+		GRPCAddr:    info.GRPCAddr(),
 		HTTPAddr:    info.HTTPAddr(),
 		Generation:  info.Generation,
 		Version:     info.Version,
 		NotReady:    info.Ready != nil && !*info.Ready,
+		HTTPOnly:    info.Metadata[etcd.MetadataGRPCEnabled] == "false",
 	}, true
 }
 
@@ -874,14 +884,14 @@ func (gw *EtcdGateway) reconcileServiceSnapshot(snapshot serviceSnapshot) {
 		}
 		gw.cancelInstanceConnect(key)
 		if pool := gw.connPool.Get(old.ServiceName); pool != nil {
-			if !exists || latest.NotReady {
+			if !exists || latest.NotReady || latest.GRPCAddr == "" {
 				pool.MarkInstanceUndesired(old.InstanceID)
 				pool.RemoveInstanceIfUndesired(old.InstanceID)
 			}
 		}
 	}
 	for _, instance := range next {
-		if instance.NotReady {
+		if instance.NotReady || instance.GRPCAddr == "" {
 			continue
 		}
 		pool := gw.connPool.SetDesiredInstance(gw.app, instance.ServiceName, instance.InstanceID, instance.GRPCAddr)
@@ -906,13 +916,39 @@ func (gw *EtcdGateway) reconcileServiceSnapshot(snapshot serviceSnapshot) {
 		}
 	}
 	for key, old := range previous {
-		if latest, exists := next[key]; exists && !latest.NotReady {
+		if old.GRPCAddr == "" {
+			continue
+		}
+		if latest, exists := next[key]; exists && !latest.NotReady && latest.GRPCAddr != "" {
 			continue
 		}
 		gw.removeGRPCInstance(old.ServiceName, old.InstanceID)
 	}
+	// 明确撤销整个服务的入站 gRPC 能力时删除自动路由；暂时离线仍保留原 503 语义。
+	httpOnlyServices := make(map[string]bool)
 	for _, instance := range next {
-		if instance.NotReady {
+		if _, seen := httpOnlyServices[instance.ServiceName]; !seen {
+			httpOnlyServices[instance.ServiceName] = true
+		}
+		if !instance.HTTPOnly {
+			httpOnlyServices[instance.ServiceName] = false
+		}
+	}
+	gw.mu.Lock()
+	for serviceName, httpOnly := range httpOnlyServices {
+		if !httpOnly {
+			continue
+		}
+		events := make([]routeEvent, 0, len(gw.grpcServiceRoutes[serviceName]))
+		for key := range gw.grpcServiceRoutes[serviceName] {
+			events = append(events, routeEvent{StorageKey: key, Deleted: true})
+		}
+		delete(gw.grpcServiceRoutes, serviceName)
+		gw.applyRouteBatchLocked(events)
+	}
+	gw.mu.Unlock()
+	for _, instance := range next {
+		if instance.NotReady || instance.GRPCAddr == "" {
 			continue
 		}
 		pool := gw.connPool.Get(instance.ServiceName)
@@ -926,11 +962,13 @@ func (gw *EtcdGateway) reconcileServiceSnapshot(snapshot serviceSnapshot) {
 }
 
 func (gw *EtcdGateway) addDesiredServiceInstance(instance registeredServiceInstance) {
+	if instance.GRPCAddr == "" || instance.NotReady {
+		return
+	}
 	gw.desiredMu.Lock()
 	defer gw.desiredMu.Unlock()
 	key := connectInstanceKey(instance.ServiceName, instance.InstanceID)
-	// A request fallback may fill a missing discovery fact, but must never
-	// replace a newer authoritative watch generation or its readiness state.
+	// 请求回退仅补充缺失的发现事实，不得覆盖 watch 的较新代次或就绪状态。
 	if _, known := gw.loadDesiredServiceSnapshot()[key]; known {
 		return
 	}
@@ -1315,6 +1353,9 @@ func (gw *EtcdGateway) doGetProxy(serviceName string) *ReflectionProxy {
 	}
 
 	for _, s := range services {
+		if s.Metadata[etcd.MetadataGRPCEnabled] == "false" {
+			continue
+		}
 		instanceID := s.ID
 		if instanceID == "" {
 			instanceID = s.Addr // fallback
@@ -1324,7 +1365,7 @@ func (gw *EtcdGateway) doGetProxy(serviceName string) *ReflectionProxy {
 		}
 		instance := registeredServiceInstance{ServiceName: serviceName, InstanceID: instanceID, GRPCAddr: s.Addr, Generation: s.Generation, Version: s.Version}
 		if current, known := gw.loadDesiredServiceSnapshot()[connectInstanceKey(serviceName, instanceID)]; known {
-			if current.NotReady {
+			if current.NotReady || current.GRPCAddr == "" {
 				continue
 			}
 			instance = current

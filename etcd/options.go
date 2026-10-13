@@ -7,6 +7,9 @@ import (
 	"time"
 )
 
+// MetadataGRPCEnabled 标识实例是否提供入站 gRPC；缺省保持旧注册事实的解析方式。
+const MetadataGRPCEnabled = "grpc_enabled"
+
 type Options struct {
 	// TLS 与 TLSFingerprint 共同标识连接安全配置，调用方不得运行中修改。
 	TLS            *tls.Config

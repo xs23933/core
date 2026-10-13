@@ -94,3 +94,7 @@ CA 必需，客户端证书/私钥必须成对；仅服务端 TLS 可省略客�
 根指纹为根证书 DER（x509.Certificate.Raw）的 SHA-256，64 位十六进制；不是 PEM 文件字节的 hash，PEM 换行变化不改变证书指纹。首次 Gateway 初始化写入的 `workload_issuer.pin_file` 已保存同一指纹，可通过可信 SSH、部署配置或 secret/config 管理渠道预置到后端。指纹是公开信任锚，不从 `/root.pem` 或其它未认证网络响应自动获取其期望值。
 
 后端跨机配置必须把默认回环 `issuer_url` 改为其可访问的内部 HTTPS DNS/IP，且该名称存在于 Gateway 签发入口证书 SAN。此能力不自动改变网络监听、DNS、防火墙、etcd 注册地址或 RPC 权限；部署按各自网络事实配置。有效根缓存与身份证书允许签发器离线重启；缓存缺失而下载失败时明确失败，不回退明文或跳过校验。
+
+## HTTP-only 服务
+
+工作负载身份同时支持只调用后端的 HTTP-only 服务。先启用 `EnableWorkloadIdentity`，随后 `EnableEtcdRegistry` 和 HTTP 路由发布即可，无需配置无用途的 `grpc.addr`。Registry 不创建 gRPC server；它仅为已通过 `RegisterGRPCService` 或 `GetGRPCServer` 创建的 server 开启 reflection。实例 `metadata.grpc_enabled=false` 使 Gateway 和 gRPC resolver 跳过入站 gRPC，但不影响 HTTP 代理或本进程出站 mTLS。该字段表示能力，不替代业务认证。真正提供 gRPC 的应用仍必须独立 mTLS 端口，共用 HTTP 端口会拒绝启动。

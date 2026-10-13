@@ -99,7 +99,7 @@ Gateway 的 gRPC `ServicePool` 使用 etcd 实例所属的逻辑服务名调用 
 
 ## 3. HTTP 微服务路由注册
 
-HTTP 服务必须先调用 `EnableEtcdRegistry` 注册实例，并通过 `etcd.http_addr` 提供 Gateway 可访问的 HTTP origin。路由可以自动发布，也可以显式注册。
+HTTP 服务必须先调用 `EnableEtcdRegistry` 注册实例，并通过 `etcd.http_addr` 提供 Gateway 可访问的 HTTP origin。路由可以自动发布，也可以显式注册。HTTP-only 注册不创建 gRPC server 或 reflection；Core 按实际 server 写入 `metadata.grpc_enabled=false`，Gateway 保留 HTTP 上游而跳过 gRPC 接入，能力更新为 HTTP-only 时撤销旧 gRPC 连接和自动路由。缺少能力字段的历史实例保持原接入行为。工作负载身份可只服务于出站 mTLS，无需添加入站 gRPC 端口。
 
 ### 3.1 自动发布 Handler 路由
 

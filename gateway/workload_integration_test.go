@@ -15,14 +15,17 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/xs23933/core/v3"
 	"github.com/xs23933/core/v3/workload"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+	reflectionv1 "google.golang.org/grpc/reflection/grpc_reflection_v1"
 )
 
 func workloadTestAddress(t *testing.T) string {
@@ -78,12 +81,19 @@ func workloadTestEtcdProcess(t *testing.T) string {
 	t.Fatalf("真实 etcd 进程未就绪: %v", e)
 	return ""
 }
-func workloadTestServe(t *testing.T, app *core.Core) {
+func workloadTestServe(t *testing.T, app *core.Core, listeners ...net.Listener) {
 	t.Helper()
-	ln, e := net.Listen("tcp", "127.0.0.1:0")
-	if e != nil {
-		t.Fatal(e)
+	var ln net.Listener
+	if len(listeners) > 0 {
+		ln = listeners[0]
+	} else {
+		var e error
+		ln, e = net.Listen("tcp", "127.0.0.1:0")
+		if e != nil {
+			t.Fatal(e)
+		}
 	}
+	app.Server.Handler = app
 	done := make(chan error, 1)
 	go func() { done <- app.Serve(ln) }()
 	t.Cleanup(func() {
@@ -110,7 +120,7 @@ func TestWorkloadGatewayRealEtcd(t *testing.T) {
 	namespace := fmt.Sprintf("workload-test-%d", time.Now().UnixNano())
 	policy := workload.EnrollmentPolicy{Services: map[string]workload.EnrollmentBinding{}}
 	tokens := map[string]string{}
-	for _, service := range []string{"echo", "caller"} {
+	for _, service := range []string{"echo", "caller", "pages"} {
 		token := "isolated-test-bootstrap-" + service + "-0123456789abcdef"
 		digest := sha256.Sum256([]byte(token))
 		tokens[service] = filepath.Join(base, service+".token")
@@ -154,6 +164,12 @@ func TestWorkloadGatewayRealEtcd(t *testing.T) {
 		options["etcd"].(core.Options)["service_addr"] = address
 		prepared = append(prepared, preparedBackend{core.New(options), address})
 	}
+	pagesAddress := workloadTestAddress(t)
+	pagesOptions := common("pages", filepath.Join(base, "pages-identity"))
+	pagesOptions["listen"] = pagesAddress
+	pagesOptions["etcd"].(core.Options)["service_addr"] = pagesAddress
+	pagesOptions["etcd"].(core.Options)["http_addr"] = "http://" + pagesAddress
+	pagesApp := core.New(pagesOptions)
 	nextBackend := 0
 	if e = gatewayApp.EnableWorkloadIdentity(); e != nil {
 		t.Fatal(e)
@@ -167,6 +183,7 @@ func TestWorkloadGatewayRealEtcd(t *testing.T) {
 	for _, backend := range prepared {
 		backend.app.Conf.GetMap("workload")["root_sha256"] = rootPin
 	}
+	pagesApp.Conf.GetMap("workload")["root_sha256"] = rootPin
 
 	t.Cleanup(func() { _ = gatewayApp.ShutdownWithTimeout(3 * time.Second) })
 	if e = gatewayApp.EnableEtcdDiscovery(nil); e != nil {
@@ -177,6 +194,57 @@ func TestWorkloadGatewayRealEtcd(t *testing.T) {
 		t.Fatal(e)
 	}
 	t.Cleanup(func() { _ = gw.Close() })
+	// HTTP-only 服务有出站身份，但没有 gRPC listener 或公开 reflection。
+	if e = pagesApp.EnableWorkloadIdentity(); e != nil {
+		t.Fatal(e)
+	}
+	pagesApp.StaticFS("/site", http.FS(fstest.MapFS{"asset.txt": {Data: []byte("static ready")}}))
+	pagesApp.GET("/http-events", func(c core.Ctx) { c.SetHeader("Content-Type", "text/event-stream"); c.SendString("data: ready\n\n") })
+	if e = pagesApp.EnableEtcdRegistry(nil); e != nil {
+		t.Fatal(e)
+	}
+	if e = RegisterHTTPRoutes(pagesApp, &Route{Method: http.MethodGet, Path: "/site/*filepath"}, &Route{Method: http.MethodGet, Path: "/http-events"}); e != nil {
+		t.Fatal(e)
+	}
+	pagesListener, e := net.Listen("tcp", pagesAddress)
+	if e != nil {
+		t.Fatal(e)
+	}
+	workloadTestServe(t, pagesApp, pagesListener)
+	for _, test := range []struct{ path, body string }{{"/site/asset.txt", "static ready"}, {"/http-events", "data: ready\n\n"}} {
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			response := httptest.NewRecorder()
+			gatewayApp.ServeHTTP(response, httptest.NewRequest(http.MethodGet, test.path, nil))
+			if response.Code == 200 && response.Body.String() == test.body {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("managed HTTP proxy %s: %d %s", test.path, response.Code, response.Body.String())
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	if gw.connPool.Get("pages") != nil {
+		t.Fatal("HTTP-only instance created a gRPC reflection pool")
+	}
+	plain, e := grpc.NewClient(pagesAddress, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer plain.Close()
+	plainContext, plainCancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer plainCancel()
+	stream, plainError := reflectionv1.NewServerReflectionClient(plain).ServerReflectionInfo(plainContext)
+	if plainError == nil {
+		plainError = stream.Send(&reflectionv1.ServerReflectionRequest{MessageRequest: &reflectionv1.ServerReflectionRequest_ListServices{ListServices: ""}})
+		if plainError == nil {
+			_, plainError = stream.Recv()
+		}
+	}
+	if plainError == nil {
+		t.Fatal("HTTP-only endpoint exposed plaintext gRPC reflection")
+	}
 	startBackend := func(service, id, state string, healthService bool) (*core.Core, string) {
 		t.Helper()
 		item := prepared[nextBackend]

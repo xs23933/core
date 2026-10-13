@@ -257,6 +257,20 @@ func (app *Core) EnableEtcdRegistry(opts *etcd.Options) error {
 		return err
 	}
 
+	// 注册只描述已创建的入站服务，不能因为客户端身份或 HTTP 路由隐式创建 gRPC。
+	app.mutex.Lock()
+	grpcServer := app.grpcServer
+	app.mutex.Unlock()
+	metadata := make(map[string]string, len(opts.Metadata)+1)
+	for key, value := range opts.Metadata {
+		metadata[key] = value
+	}
+	metadata[etcd.MetadataGRPCEnabled] = "false"
+	if grpcServer != nil {
+		metadata[etcd.MetadataGRPCEnabled] = "true"
+	}
+	opts.Metadata = metadata
+
 	registry, err := newCoreEtcdRegistry(opts)
 	if err != nil {
 		return err
@@ -328,15 +342,17 @@ func (app *Core) EnableEtcdRegistry(opts *etcd.Options) error {
 	app.etcdRegistryNamespace = opts.Namespace
 	app.etcdRegistryCleanup = registryCleanup
 	app.etcdDiscoveryCleanup = discoveryCleanup
-	registerReflection := !app.grpcReflectionRegistered
-	app.grpcReflectionRegistered = true
+	registerReflection := grpcServer != nil && !app.grpcReflectionRegistered
+	if registerReflection {
+		app.grpcReflectionRegistered = true
+	}
 	app.mutex.Unlock()
 
 	if previousRegistryCleanup != nil {
 		previousRegistryCleanup()
 	}
 	if registerReflection {
-		reflection.Register(app.GetGRPCServer())
+		reflection.Register(grpcServer)
 	}
 
 	return nil

@@ -197,7 +197,9 @@ app.Listen(":8080")
 
 ## 5. 注册到 etcd 并支持网关
 
-需要被网关自动发现时，优先使用 `EnableEtcdRegistry`。它会创建/复用 gRPC server、注册服务实例、开启 discovery，并自动注册 gRPC reflection。
+需要被网关自动发现时，优先使用 `EnableEtcdRegistry`。它注册服务实例并开启 discovery；仅当应用已经通过 `RegisterGRPCService` 或 `GetGRPCServer` 创建入站 gRPC server 时才注册 reflection。HTTP-only 应用即使启用工作负载身份作为出站客户端，也不会因此创建 gRPC listener。
+
+Core 将实际入站能力写入实例 metadata 的 `grpc_enabled`，覆盖调用方传入的同名值。`false` 实例保留 HTTP 上游，但 Gateway 和 gRPC resolver 不尝试 gRPC；历史缺少此字段的实例保持原解析方式。能力字段不是授权策略。真正提供 gRPC 的应用仍需在 registry 前注册服务，启用 mTLS 时配置独立 `grpc.addr`，不得共用 HTTP 端口。
 
 Core 初次注册携带 `ready=false`；`Listen` / `Run` 完成 Handler、gRPC、TLS 和路由目录准备后发布 `ready=true`。准备失败会清理注册；Gateway 和 gRPC resolver 不选择未就绪实例。直接使用 `etcd.NewRegistry` 的旧调用方默认不写 ready，兼容旧就绪语义；可设置 `Options.RegistrationReady` 并调用 `Registry.SetReady(ctx, ready)`。
 

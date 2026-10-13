@@ -26,8 +26,7 @@ type etcdResolver struct {
 	wg          sync.WaitGroup
 }
 
-// InitEtcdResolver registers a legacy process-wide resolver. Core uses a
-// connection-local builder via DialDiscovery instead.
+// InitEtcdResolver 注册进程级 resolver；Core 通过 DialDiscovery 使用连接独立的 builder。
 func InitEtcdResolver(discovery *Discovery) {
 	resolver.Register(&EtcdResolverBuilder{discovery: discovery})
 }
@@ -93,7 +92,7 @@ func (r *etcdResolver) resolve() {
 
 	addrs := make([]resolver.Address, 0, len(services))
 	for _, svc := range services {
-		if svc.Ready != nil && !*svc.Ready {
+		if svc.Metadata[MetadataGRPCEnabled] == "false" || (svc.Ready != nil && !*svc.Ready) {
 			continue
 		}
 		addrs = append(addrs, resolver.Address{Addr: svc.Addr})
@@ -129,8 +128,7 @@ func Dial(serviceName string, opts ...grpc.DialOption) (*grpc.ClientConn, error)
 	return grpc.NewClient(target, opts...)
 }
 
-// DialDiscovery binds the resolver to this Discovery for the connection's
-// lifetime, independently of other Core instances or global resolver state.
+// DialDiscovery 将连接生命周期绑定到此 Discovery，不受其它 Core 实例或全局 resolver 影响。
 func DialDiscovery(discovery *Discovery, serviceName string, opts ...grpc.DialOption) (*grpc.ClientConn, error) {
 	if discovery == nil {
 		return nil, fmt.Errorf("etcd resolver discovery required")
