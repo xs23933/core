@@ -446,3 +446,8 @@ Content-Type: application/json
 - `circuit_state=1` 表示该服务连接连续失败后处于熔断冷却期。
 
 休眠恢复或网络抖动后，重点匹配 `etcd service watch error`、`etcd service watch stopped unexpectedly`、`watch: <service>/<id> deregistered`、`watch: <service>/<id> registered`。只看到注销没有看到重新注册，优先排查 Gateway watch 或业务服务租约续期；重新注册存在但仍不可用，继续看连接实例失败日志。
+
+
+## 托管工作负载 mTLS
+
+Gateway 可使用 Go 标准库首次自动创建私有 CA，后端自动申请、本地保存和续期，服务端、服务间客户端和 Gateway reflection 复用本进程身份。使用前必须在首次创建 gRPC server/client 前调用 `app.EnableWorkloadIdentity()`；启用后禁止明文回退或逐目标显式 transport 冲突配置。完整配置、引导认证、独立端口、根信任更新和验收边界见 [工作负载身份说明](../workload/README.md)。

@@ -1055,3 +1055,8 @@ func main() {
 | 许可证 | LICENSE 文件 |
 | 技能文档版本 | 1.0.0 |
 | 最后更新 | 2026-05-19 |
+
+
+## 托管工作负载 mTLS
+
+Gateway 可使用 Go 标准库首次自动创建私有 CA，后端自动申请、本地保存和续期，服务端、服务间客户端和 Gateway reflection 复用本进程身份。使用前必须在首次创建 gRPC server/client 前调用 `app.EnableWorkloadIdentity()`；启用后禁止明文回退或逐目标显式 transport 冲突配置。完整配置、引导认证、独立端口、根信任更新和验收边界见 [工作负载身份说明](../workload/README.md)。

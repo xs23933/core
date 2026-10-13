@@ -156,3 +156,8 @@ cookies := md.Get("core-http-set-cookie-bin")
 ```
 
 Core helper 使用 `core-http-<小写 header 名>-bin` 声明 HTTP 响应；md 中 value 为原始字符串，grpc-go 已处理 wire 编码。原生 gRPC 客户端不自动保存 cookie。经 Core Gateway 调用时，网关在响应 body 前转换这些 initial metadata；普通 metadata 和 trailer 不转换。`resp`/`err`/`cookies` 由调用方按业务处理，不能记录完整 token/cookie。
+
+
+## 托管工作负载 mTLS
+
+Gateway 可使用 Go 标准库首次自动创建私有 CA，后端自动申请、本地保存和续期，服务端、服务间客户端和 Gateway reflection 复用本进程身份。使用前必须在首次创建 gRPC server/client 前调用 `app.EnableWorkloadIdentity()`；启用后禁止明文回退或逐目标显式 transport 冲突配置。完整配置、引导认证、独立端口、根信任更新和验收边界见 [工作负载身份说明](../workload/README.md)。

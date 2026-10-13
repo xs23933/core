@@ -43,6 +43,7 @@ func NewDiscovery(opts *Options) (*Discovery, error) {
 	opts = cloneOptions(opts)
 	client, err := clientv3.New(clientv3.Config{
 		Endpoints:   opts.Endpoints,
+		TLS:         opts.TLS,
 		Username:    opts.Username,
 		Password:    opts.Password,
 		DialTimeout: opts.DialTimeout,
@@ -370,5 +371,6 @@ func (d *Discovery) MatchesOptions(opts *Options) bool {
 	d.mu.Unlock()
 	return !closed && NamespacePrefix(d.opts.Namespace, "") == NamespacePrefix(opts.Namespace, "") &&
 		reflect.DeepEqual(d.opts.Endpoints, opts.Endpoints) && d.opts.Username == opts.Username &&
-		d.opts.Password == opts.Password && d.opts.DialTimeout == opts.DialTimeout
+		d.opts.Password == opts.Password && d.opts.DialTimeout == opts.DialTimeout &&
+		d.opts.TLSFingerprint == opts.TLSFingerprint && reflect.DeepEqual(d.opts.TLS, opts.TLS)
 }

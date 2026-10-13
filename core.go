@@ -99,6 +99,7 @@ type Core struct {
 	// gRPC 客户端安全配置按逻辑服务名隔离，首次建立连接后不得替换。
 	grpcClientConfigs     map[string]GRPCClientConfig
 	grpcClientInitialized map[string]struct{}
+	workload              *workloadRuntime
 
 	// etcd 相关
 	etcdRegistryMu            sync.Mutex
@@ -508,6 +509,11 @@ func (app *Core) prepareServe(ln net.Listener) error {
 }
 
 func (app *Core) prepareServeOnce() error {
+	if app.Conf.GetBool("workload.enabled", false) {
+		if _, err := app.workloadIdentity(); err != nil {
+			return err
+		}
+	}
 	app.loadMods()
 	if err := app.startGRPCServer(); err != nil {
 		return err

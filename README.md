@@ -704,6 +704,8 @@ hub.SendTo("admin-01", core.EventData{
 })
 ```
 
+EventHub 的广播、定向发送、注册、注销和关闭支持并发，慢客户端仍采用非阻塞丢弃。同 ID 的新连接替换旧连接后，旧连接的延迟注销不会影响新连接。手工 `Register` 会把管道的发送和关闭所有权移交给 Hub；调用方只接收，不得自行关闭或复用退役管道。同一管道的多个 ID 别名共享生命周期，注销或替换时一起移除。
+
 > 详细 API 参数和注意事项参见 [skills/core-sse.md](skills/core-sse.md)
 
 ### 11. 模板渲染
@@ -2941,3 +2943,8 @@ func (h *Handler) GetByID(c core.Ctx) error {}
 
 _文档最后更新: 2026-03-31_
 _Core Framework v3.0.0_
+
+
+## 托管工作负载 mTLS
+
+Gateway 可使用 Go 标准库首次自动创建私有 CA，后端自动申请、本地保存和续期，服务端、服务间客户端和 Gateway reflection 复用本进程身份。使用前必须在首次创建 gRPC server/client 前调用 `app.EnableWorkloadIdentity()`；启用后禁止明文回退或逐目标显式 transport 冲突配置。完整配置、引导认证、独立端口、根信任更新和验收边界见 [工作负载身份说明](workload/README.md)。

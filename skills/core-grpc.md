@@ -294,3 +294,8 @@ if err := core.GrpcRemoveCookie(ctx, "session", "/"); err != nil {
 响应 metadata 协议为 `core-http-<小写 header 名>-bin`，grpc-go 处理 wire 编码。header 名仅接受字母、数字、`-_.`，其他 HTTP token 符号返回错误，避免非法 metadata key。Gateway 只桥接这些 initial headers，包括 RPC 错误；多值、重复调用和多个 Set-Cookie 追加，重试只取最终尝试。普通 metadata 和 trailer 不转发，Content-Type、Content-Length、Content-Encoding、hop-by-hop/proxy/grpc-* 等保留 header 禁止设置。原生客户端用 grpc.Header 收集，不会自动保存 cookie。
 
 认证、CSRF、CORS 策略由应用负责。完整属性与原生读取示例见 [README](../README.md)，可复制响应代码见 [example/grpc-cookie/session.go](../example/grpc-cookie/session.go)。
+
+
+## 托管工作负载 mTLS
+
+Gateway 可使用 Go 标准库首次自动创建私有 CA，后端自动申请、本地保存和续期，服务端、服务间客户端和 Gateway reflection 复用本进程身份。使用前必须在首次创建 gRPC server/client 前调用 `app.EnableWorkloadIdentity()`；启用后禁止明文回退或逐目标显式 transport 冲突配置。完整配置、引导认证、独立端口、根信任更新和验收边界见 [工作负载身份说明](../workload/README.md)。

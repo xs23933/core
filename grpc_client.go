@@ -29,6 +29,9 @@ type GRPCClientConfig struct {
 
 // ConfigureGRPCClient 必须在指定逻辑服务首次建立连接前调用。
 func (app *Core) ConfigureGRPCClient(serviceName string, config GRPCClientConfig) error {
+	if app.Conf.GetBool("workload.enabled", false) {
+		return errors.New("core: managed workload conflicts with explicit client transport")
+	}
 	serviceName = strings.TrimSpace(serviceName)
 	if serviceName == "" {
 		return ErrGRPCClientServiceRequired
@@ -106,6 +109,22 @@ func (app *Core) grpcClientCredentialOption(serviceName string, hasLegacyOptions
 		return nil, ErrGRPCClientServiceRequired
 	}
 
+	if app.Conf.GetBool("workload.enabled", false) {
+		if hasLegacyOptions {
+			return nil, ErrGRPCClientDialOptionsConflict
+		}
+		transport, err := app.WorkloadClientCredentials(serviceName)
+		if err != nil {
+			return nil, err
+		}
+		app.mutex.Lock()
+		if app.grpcClientInitialized == nil {
+			app.grpcClientInitialized = make(map[string]struct{})
+		}
+		app.grpcClientInitialized[serviceName] = struct{}{}
+		app.mutex.Unlock()
+		return grpc.WithTransportCredentials(transport), nil
+	}
 	app.mutex.Lock()
 	config, configured := app.grpcClientConfigs[serviceName]
 	if configured && hasLegacyOptions {

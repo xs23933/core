@@ -152,14 +152,17 @@ func TestBytePoolWithMaxKeepsWithinLimit(t *testing.T) {
 	const maxCap = 1024
 	p := NewBytePoolWithMax(64, maxCap)
 
-	// 正常大小的缓冲区应该被保留
-	b := p.Get()
-	*b = append(*b, make([]byte, 100)...)
-	p.Put(b)
+	// Put 确定性地清空合规缓冲区并保持容量；sync.Pool 不保证下次取回同一对象。
+	b := make([]byte, 100, 128)
+	p.Put(&b)
+	if len(b) != 0 || cap(b) != 128 {
+		t.Fatalf("after Put len/cap = %d/%d, want 0/128", len(b), cap(b))
+	}
 
+	// Get 可以返回归还的缓冲区，也可以重新创建初始容量的缓冲区。
 	got := p.Get()
-	if cap(*got) < 100 {
-		t.Fatalf("pooled cap = %d, want >= 100 (should be reused)", cap(*got))
+	if len(*got) != 0 || (cap(*got) != 64 && cap(*got) != 128) {
+		t.Fatalf("pooled len/cap = %d/%d, want 0 and cap 64 or 128", len(*got), cap(*got))
 	}
 	p.Put(got)
 }
@@ -186,4 +189,29 @@ func TestBytePoolConcurrent(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
+}
+
+// 构造器始终提供脏对象，因此无需依赖 sync.Pool 的随机复用即可验证 Get 的清理合同。
+func TestBufferPoolGetResetsDirtyFixture(t *testing.T) {
+	p := &BufferPool{pool: sync.Pool{New: func() any { return bytes.NewBufferString("dirty fixture") }}}
+	for range 3 {
+		buffer := p.Get()
+		if buffer.Len() != 0 {
+			t.Fatalf("Get did not reset dirty buffer: len=%d", buffer.Len())
+		}
+		buffer.WriteString("dirty again")
+		p.Put(buffer)
+	}
+}
+
+func TestBytePoolGetResetsDirtyFixture(t *testing.T) {
+	p := &BytePool{pool: sync.Pool{New: func() any { buffer := make([]byte, 20, 128); return &buffer }}}
+	for range 3 {
+		buffer := p.Get()
+		if len(*buffer) != 0 || cap(*buffer) != 128 {
+			t.Fatalf("Get changed reset/capacity contract: len=%d cap=%d", len(*buffer), cap(*buffer))
+		}
+		*buffer = append(*buffer, "dirty again"...)
+		p.Put(buffer)
+	}
 }

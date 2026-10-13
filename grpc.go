@@ -3,6 +3,7 @@ package core
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/reflection"
 	"google.golang.org/grpc/status"
 )
@@ -57,6 +59,9 @@ type GRPCServerConfig struct {
 // ConfigureGRPCServer 在 gRPC server 初始化前配置 transport 和 interceptor。
 // 每个 Core 实例只允许配置一次，避免后续调用静默覆盖安全策略。
 func (app *Core) ConfigureGRPCServer(config GRPCServerConfig) error {
+	if app.Conf.GetBool("workload.enabled", false) && config.TransportCredentials != nil {
+		return errors.New("core: managed workload conflicts with explicit server transport")
+	}
 	app.mutex.Lock()
 	defer app.mutex.Unlock()
 
@@ -106,6 +111,16 @@ func (app *Core) newGRPCServer() *grpc.Server {
 	unaryInterceptors := []grpc.UnaryServerInterceptor{app.grpcResponseContext, errorWrapInterceptor}
 	streamInterceptors := []grpc.StreamServerInterceptor{app.grpcStreamResponseContext}
 	serverOptions := make([]grpc.ServerOption, 0, 3)
+	if app.Conf.GetBool("workload.enabled", false) {
+		transport := credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS13, GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+			return nil, errors.New("core: workload identity not initialized")
+		}})
+		if app.workload != nil && app.workload.identity != nil {
+			transport = app.workload.identity.ServerCredentials()
+		}
+		// 即使调用方直接 Serve GetGRPCServer 返回值，未初始化身份也只能拒绝握手。
+		serverOptions = append(serverOptions, grpc.Creds(transport), grpc.KeepaliveParams(keepalive.ServerParameters{MaxConnectionAge: time.Hour, MaxConnectionAgeGrace: 5 * time.Minute}))
+	}
 	if app.grpcConfig != nil {
 		unaryInterceptors = append(unaryInterceptors, app.grpcConfig.UnaryInterceptors...)
 		if len(app.grpcConfig.StreamInterceptors) > 0 {
@@ -126,6 +141,11 @@ func (app *Core) RegisterGRPCService(registerFunc func(*grpc.Server)) {
 
 // startGRPCServer 内部方法，启动 gRPC 服务器
 func (app *Core) startGRPCServer() error {
+	if app.Conf.GetBool("workload.enabled", false) {
+		if _, err := app.workloadIdentity(); err != nil {
+			return err
+		}
+	}
 	if !app.grpcEnabled || app.grpcServer == nil {
 		return nil
 	}
@@ -133,7 +153,7 @@ func (app *Core) startGRPCServer() error {
 	if app.grpcAddr == app.addr {
 		// grpc.Server 的 transport credentials 只在 Serve listener 握手路径执行。
 		// ServeHTTP 共端口无法提供等价的 gRPC peer.AuthInfo，必须拒绝伪安全配置。
-		if app.grpcConfig != nil && app.grpcConfig.TransportCredentials != nil {
+		if app.Conf.GetBool("workload.enabled", false) || (app.grpcConfig != nil && app.grpcConfig.TransportCredentials != nil) {
 			return ErrGRPCTLSSharedAddress
 		}
 		Info("gRPC sharing port with HTTP on %s", app.addr)
@@ -233,6 +253,9 @@ func (app *Core) EnableEtcdRegistry(opts *etcd.Options) error {
 		opts = etcd.DefaultOptions()
 	}
 	app.applyEtcdRegistryDefaults(opts)
+	if err := app.applyEtcdTLS(opts); err != nil {
+		return err
+	}
 
 	registry, err := newCoreEtcdRegistry(opts)
 	if err != nil {
@@ -241,11 +264,13 @@ func (app *Core) EnableEtcdRegistry(opts *etcd.Options) error {
 	registryCleanup := onceCleanup(func() { _ = deregisterCoreEtcdRegistry(registry) })
 
 	discoveryOpts := &etcd.Options{
-		Namespace:   opts.Namespace,
-		Endpoints:   append([]string(nil), opts.Endpoints...),
-		Username:    opts.Username,
-		Password:    opts.Password,
-		DialTimeout: opts.DialTimeout,
+		Namespace:      opts.Namespace,
+		TLS:            opts.TLS,
+		TLSFingerprint: opts.TLSFingerprint,
+		Endpoints:      append([]string(nil), opts.Endpoints...),
+		Username:       opts.Username,
+		Password:       opts.Password,
+		DialTimeout:    opts.DialTimeout,
 	}
 	app.mutex.Lock()
 	discovery := app.EtcdDiscovery
@@ -379,6 +404,9 @@ func (app *Core) EnableEtcdDiscovery(opts *etcd.Options) error {
 		opts = etcd.DefaultOptions()
 	}
 	app.applyEtcdDiscoveryDefaults(opts)
+	if err := app.applyEtcdTLS(opts); err != nil {
+		return err
+	}
 
 	// Serialize discovery initialization so concurrent clients share one owner.
 	app.mutex.Lock()

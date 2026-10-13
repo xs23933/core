@@ -1219,3 +1219,10 @@ uid := c.GetSid("user_id")              // 获取
 ### Gateway gRPC 调用期限
 
 Gateway 的 gRPC 自动代理总期限由 `gateway.grpc_request_timeout` 配置（例如 `180s`），也可通过 `gateway.Config.GRPCRequestTimeout` 指定；默认及非正值保持 10s。此期限覆盖一次 RPC 及其允许的只读重试，短于它的入站 context deadline 仍优先生效。它与下游单次 HTTP timeout 不同，多步骤登录应为整个流程留出预算。配置在 Gateway 启动时读取，修改后需重建/重启；错误日志包含实际 elapsed 和配置 timeout。
+
+
+## 托管工作负载 mTLS
+
+Gateway 可使用 Go 标准库首次自动创建私有 CA，后端自动申请、本地保存和续期，服务端、服务间客户端和 Gateway reflection 复用本进程身份。使用前必须在首次创建 gRPC server/client 前调用 `app.EnableWorkloadIdentity()`；启用后禁止明文回退或逐目标显式 transport 冲突配置。完整配置、引导认证、独立端口、根信任更新和验收边界见 [工作负载身份说明](workload/README.md)。
+
+EventHub 注册通道后由 Hub 独占发送和关闭，调用方不得自行关闭或复用退役通道；广播、定向发送、替换、注销和关闭共享生命周期锁，仍保持非阻塞丢弃语义。相同 ID 的旧连接注销不能关闭新连接，同一活动通道的多个 ID 共享生命周期。

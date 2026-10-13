@@ -596,8 +596,15 @@ func NewEtcdGateway(app *core.Core, conf ...*Config) (*EtcdGateway, error) {
 		config.EtcdDialTimeout = 5 * time.Second
 	}
 
+	etcdTLS, _, err := app.EtcdTLSConfig()
+	if err != nil {
+		return nil, fmt.Errorf("gateway etcd TLS: %w", err)
+	}
 	cli, err := newGatewayEtcdClient(clientv3.Config{
 		Endpoints:   config.EtcdEndpoints,
+		TLS:         etcdTLS,
+		Username:    app.Conf.GetString("etcd.username"),
+		Password:    app.Conf.GetString("etcd.password"),
 		DialTimeout: config.EtcdDialTimeout,
 	})
 	if err != nil {

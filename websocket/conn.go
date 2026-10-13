@@ -87,6 +87,10 @@ func (c *Conn) SendBatchWithType(messageType MessageType, data []byte) {
 	}
 
 	c.batchMu.Lock()
+	if c.closed.Load() {
+		c.batchMu.Unlock()
+		return
+	}
 	if !c.batchConfig.Enabled {
 		c.batchMu.Unlock()
 		c.SendWithType(messageType, data)
@@ -103,8 +107,11 @@ func (c *Conn) SendBatchWithType(messageType MessageType, data []byte) {
 
 	// 如果达到批量大小或延迟时间，发送批量消息
 	if len(c.batchMsgs) >= c.batchConfig.MaxSize {
-		c.flushBatch()
+		shouldClose := c.flushBatch()
 		c.batchMu.Unlock()
+		if shouldClose {
+			c.Close()
+		}
 		return
 	}
 
@@ -112,16 +119,19 @@ func (c *Conn) SendBatchWithType(messageType MessageType, data []byte) {
 	if c.batchTimer == nil {
 		c.batchTimer = time.AfterFunc(c.batchConfig.MaxDelay, func() {
 			c.batchMu.Lock()
-			defer c.batchMu.Unlock()
-			c.flushBatch()
+			shouldClose := c.flushBatch()
+			c.batchMu.Unlock()
+			if shouldClose {
+				c.Close()
+			}
 		})
 	}
 	c.batchMu.Unlock()
 }
 
-func (c *Conn) flushBatch() {
+func (c *Conn) flushBatch() bool {
 	if len(c.batchMsgs) == 0 {
-		return
+		return false
 	}
 
 	// 停止定时器
@@ -134,8 +144,7 @@ func (c *Conn) flushBatch() {
 	for _, msg := range c.batchMsgs[1:] {
 		if msg.typ != msgType {
 			// 类型不一致，分别发送
-			c.flushBatchSeparate()
-			return
+			return c.flushBatchSeparate()
 		}
 	}
 
@@ -157,8 +166,11 @@ func (c *Conn) flushBatch() {
 		mergedBuf = &newBuf
 	}
 
+	// 先撤回批量队列所有权，后续归还或入队不能再被 Close 重复处理。
+	batch := c.batchMsgs
+	c.batchMsgs = c.batchMsgs[:0]
 	// 合并消息
-	for i, msg := range c.batchMsgs {
+	for i, msg := range batch {
 		if i > 0 {
 			*mergedBuf = append(*mergedBuf, '\n')
 		}
@@ -167,34 +179,35 @@ func (c *Conn) flushBatch() {
 	}
 
 	// 发送合并后的消息
-	c.sendDirectWithType(msgType, mergedBuf)
-
-	// 清空批量队列（重用底层数组）
-	c.batchMsgs = c.batchMsgs[:0]
+	return !c.sendDirectWithType(msgType, mergedBuf)
 }
 
-func (c *Conn) flushBatchSeparate() {
-	// 分别发送每条消息
-	for _, msg := range c.batchMsgs {
-		c.sendDirectWithType(msg.typ, msg.data)
+func (c *Conn) flushBatchSeparate() bool {
+	batch := c.batchMsgs
+	c.batchMsgs = c.batchMsgs[:0]
+	shouldClose := false
+	// 每个缓冲区只转移一次：成功入队或立即归还。
+	for _, msg := range batch {
+		if !c.sendDirectWithType(msg.typ, msg.data) {
+			shouldClose = true
+		}
 	}
-	c.batchMsgs = c.batchMsgs[:0]
+	return shouldClose
 }
 
-func (c *Conn) sendDirectWithType(messageType MessageType, data *[]byte) {
+// sendDirectWithType 转移缓冲区所有权，不在持有 batchMu 时递归调用 Close。
+func (c *Conn) sendDirectWithType(messageType MessageType, data *[]byte) bool {
 	if c.closed.Load() {
 		putBuffer(data)
-		return
+		return false
 	}
-	msg := &message{
-		typ:  MessageType(messageType),
-		data: data,
-	}
+	msg := &message{typ: messageType, data: data}
 	select {
 	case c.send <- msg:
+		return true
 	default:
 		putBuffer(data)
-		c.Close()
+		return false
 	}
 }
 
@@ -366,17 +379,20 @@ func (c *Conn) Close() {
 		return
 	}
 
-	// 清理批量缓冲区 — 不用锁，CAS 保证了 Close 只执行一次
+	// 与批量提交、定时刷新共享锁，排空时取得剩余缓冲区的唯一所有权。
+	c.batchMu.Lock()
 	if c.batchTimer != nil {
 		c.batchTimer.Stop()
 		c.batchTimer = nil
 	}
-	for _, msg := range c.batchMsgs {
+	batch := c.batchMsgs
+	c.batchMsgs = nil
+	c.batchMu.Unlock()
+	for _, msg := range batch {
 		if msg != nil {
 			putBuffer(msg.data)
 		}
 	}
-	c.batchMsgs = nil
 
 	DefaultManager.Remove(c)
 	DefaultUserManager.Remove(c)

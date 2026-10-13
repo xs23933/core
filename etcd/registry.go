@@ -61,6 +61,7 @@ func NewRegistry(opts *Options) (*Registry, error) {
 	// 创建 etcd 客户端
 	client, err := clientv3.New(clientv3.Config{
 		Endpoints:   opts.Endpoints,
+		TLS:         opts.TLS,
 		Username:    opts.Username,
 		Password:    opts.Password,
 		DialTimeout: opts.DialTimeout,

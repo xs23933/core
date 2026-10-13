@@ -1,12 +1,16 @@
 package etcd
 
 import (
+	"crypto/tls"
 	"fmt"
 	"strings"
 	"time"
 )
 
 type Options struct {
+	// TLS 与 TLSFingerprint 共同标识连接安全配置，调用方不得运行中修改。
+	TLS            *tls.Config
+	TLSFingerprint string
 	// Namespace 隔离共享 etcd 中不同项目的数据；为空时保持旧 key 布局
 	Namespace string
 
@@ -82,6 +86,9 @@ func (o *Options) ServicePrefix() string {
 
 func cloneOptions(opts *Options) *Options {
 	snapshot := *opts
+	if opts.TLS != nil {
+		snapshot.TLS = opts.TLS.Clone()
+	}
 	snapshot.Endpoints = append([]string(nil), opts.Endpoints...)
 	snapshot.Metadata = make(map[string]string, len(opts.Metadata))
 	for key, value := range opts.Metadata {
