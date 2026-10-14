@@ -596,27 +596,41 @@ func (Handler) UploadMultiple(c core.Ctx) {
 ### 9. WebSocket 支持
 
 ```go
-import "github.com/xs23933/core/v3/websocket"
+import (
+    "net/http"
+    "time"
+    "github.com/xs23933/core/v3"
+    "github.com/xs23933/core/v3/websocket"
+)
 
-
-func main() {
-	app := core.New()
-	app.GET("/ws", websocket.New().
-		OnConnect(func(c *websocket.Conn) {
-			c.Send([]byte("Welcome to WebSocket"))
-		}).
-		OnMessage(
-			func(c *websocket.Conn, mt websocket.MessageType, b []byte) {
-				c.SendWithType(mt, b) //reply
-                core.Info("Received message: %s", string(b))
-			},
-		).OnClose(func(c *websocket.Conn) {
-		println("Connection closed")
-	}).Handler())
-app.Run()
-}
-
+app := core.New()
+app.GET("/ws", websocket.New().
+    WithOptions(websocket.Options{
+        Subprotocols: []string{"example.v1"},
+        RequireSubprotocol: true,
+        CheckOrigin: func(r *http.Request) bool { return r.Header.Get("Origin") == "" },
+        ReadLimit: 512 << 10,
+        ReadTimeout: 60 * time.Second,
+        WriteTimeout: 10 * time.Second,
+        HandshakeTimeout: 10 * time.Second,
+    }).
+    OnConnect(func(conn *websocket.Conn) {
+        if !conn.TrySend([]byte("已连接")) { return }
+    }).
+    OnMessage(func(conn *websocket.Conn, mt websocket.MessageType, data []byte) {
+        conn.TrySendWithType(mt, data)
+    }).
+    OnClose(func(conn *websocket.Conn) { core.Info("websocket closed") }).
+    Handler())
 ```
+
+`WithOptions` 可省略。零配置保持原行为：允许任意 Origin、不要求子协议、不限制消息大小或读写等待。需要设备或敏感通道时，调用方必须先鉴权并显式配置以上边界；框架不解释业务身份。
+
+`ReadLimit` 限制完整消息含所有分片的累计字节数，超限不进入回调。`ReadTimeout` 在每条消息开始及收到 pong 时刷新；`WriteTimeout` 同时约束消息和 ping 写入。`RequireSubprotocol` 要求客户端提供至少一个配置中的协议，无匹配或配置为空时拒绝升级。
+
+`TrySend`/`TrySendWithType` 复制输入并返回是否成功入队；成功不代表网络发送或对端持久接纳。队列满或连接已关闭时返回 false，背压会关闭连接并归还未发送缓冲区。既有 `Send`/`SendWithType` 保持无返回值。`OnMessage` 中的字节切片只在回调期间有效，异步保留须复制。
+
+`Conn.Context()` 从升级请求派生并在 `Close()` 时取消；不要把 `core.Ctx` 放入连接或 goroutine。连接关闭会停止读写、移除默认管理器连接并释放排队缓存，读写循环退出后 `OnClose` 调用一次。配置和回调在注册 Handler 前设置。
 
 按用户推送消息：
 

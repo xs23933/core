@@ -795,6 +795,9 @@ go func(id string) {
 
 ### 3.13 长连接规范
 
+WebSocket 必须复用 `websocket.New().WithOptions(websocket.Options{...}).OnConnect(...).OnMessage(...).OnClose(...).Handler()`，不要在业务复制 upgrader 或读写循环。`OnMessage` 保持 `func(*websocket.Conn, websocket.MessageType, []byte)`。Options 支持 `Subprotocols`、`RequireSubprotocol`、`CheckOrigin`、`ReadLimit`、`ReadTimeout`、`WriteTimeout` 和 `HandshakeTimeout`。完整消息含分片受累计 ReadLimit 约束；固定协议、来源和超时需业务显式开启，零值保持原无限制默认。`TrySend([]byte) bool` 及 `TrySendWithType` 只确认入队，背压返回 false 并关闭，不能当作网络或业务 ACK。`Conn.Context()` 来自 `c.Request().Context()`，Close 时取消；Core HTTP Ctx 没有 StdContext 方法。OnClose 在读写结束后调用一次，关闭归还未发送缓冲区；回调字节异步使用必须先复制。
+
+
 Core 支持：
 
 * SSE（Server-Sent Events）

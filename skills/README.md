@@ -8,7 +8,7 @@ skills/
 ├── core-grpc.md             # gRPC 服务端（轻量 GRPCCtx / 可信 Gateway 客户端 IP / TLS/interceptor / RegisterGRPCService / EnableGRPC / EnableEtcdRegistry / 响应 Header/Cookie）
 ├── core-grpc-client.md      # gRPC 客户端（GrpcClient / GrpcClientAt / 每服务 TLS / etcd discovery）
 ├── core-gateway.md          # etcd HTTP/gRPC 网关（core-client-ip / 自动/手动路由、负载均衡、请求 metadata / 响应 Header/Cookie）
-├── core-websocket.md        # WebSocket 处理（连接管理/按用户推送/广播）
+├── core-websocket.md        # WebSocket 处理（Options/累计读限/超时/可靠入队/连接清理/按用户推送）
 ├── core-sse.md              # SSE 服务端推送（SSEWrite/SSESend/EventHub）
 ├── core-page.md             # 分页查询实现、共享 Where 字段/排序校验与 ErrInvalidQuery
 ├── core-utils.md            # 工具函数、Map/Array、加密与密码

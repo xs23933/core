@@ -40,11 +40,9 @@ func TestBatchQueueFullPreservesAlreadyQueuedPayload(t *testing.T) {
 	if !c.closed.Load() {
 		t.Fatal("queue overflow did not close connection")
 	}
-	// 首条消息已成功入队，Close 不能把其缓冲区作为剩余批量再次归还并清空。
-	msg := <-c.send
-	defer putBuffer(msg.data)
-	if got := string(*msg.data); got != "first-owned-by-send-queue" {
-		t.Fatalf("queued payload corrupted after batch overflow: %q", got)
+	// 关闭只丢弃尚未写出的消息，并归还全部排队缓冲区。
+	if len(c.send) != 0 {
+		t.Fatal("关闭后保留发送缓存")
 	}
 	if len(c.batchMsgs) != 0 {
 		t.Fatal("closed connection retained batch ownership")

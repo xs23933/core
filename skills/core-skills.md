@@ -53,7 +53,7 @@ skills/
 ├── core-grpc.md             # gRPC 服务端（轻量 GRPCCtx / 可信 Gateway 客户端 IP / TLS/interceptor/注册/启动/etcd 注册/共用端口约束/响应 Header/Cookie）
 ├── core-grpc-client.md      # gRPC 客户端（服务发现/明确 target/每服务 TLS/MustGrpcClient）
 ├── core-gateway.md          # etcd HTTP/gRPC 网关（core-client-ip / 自动/手动路由、负载均衡、请求 metadata/响应 Header/Cookie）
-├── core-websocket.md        # WebSocket 连接管理/按用户推送/广播/心跳
+├── core-websocket.md        # WebSocket Options/累计读限/超时/可靠入队/连接清理/按用户推送
 ├── core-sse.md              # SSE 服务端推送（SSEWrite/SSESend/EventHub）
 ├── core-page.md             # 分页查询（经典分页/滚动分页/条件构建）
 ├── core-utils.md            # 工具函数（Map/Array/加密/密码/切片）
