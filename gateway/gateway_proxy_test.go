@@ -2,6 +2,8 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -9,6 +11,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/descriptorpb"
@@ -292,4 +295,85 @@ func TestReflectionProxyInvokeReturnsInvalidArgumentForParseFailure(t *testing.T
 
 func testPtr[T any](v T) *T {
 	return &v
+}
+
+func TestProtoJSONMarshalCodeDefault(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		kind     descriptorpb.FieldDescriptorProto_Type
+		presence string
+		input    string
+		want     string
+	}{
+		{"zero", descriptorpb.FieldDescriptorProto_TYPE_INT32, "", `{}`, `{"code":0}`},
+		{"nonzero", descriptorpb.FieldDescriptorProto_TYPE_INT32, "", `{"code":7}`, `{"code":7}`},
+		{"int64", descriptorpb.FieldDescriptorProto_TYPE_INT64, "", `{}`, `{"code":"0"}`},
+		{"uint32", descriptorpb.FieldDescriptorProto_TYPE_UINT32, "", `{}`, `{"code":0}`},
+		{"uint64", descriptorpb.FieldDescriptorProto_TYPE_UINT64, "", `{}`, `{"code":"0"}`},
+		{"float", descriptorpb.FieldDescriptorProto_TYPE_FLOAT, "", `{}`, `{}`},
+		{"proto2 absent", descriptorpb.FieldDescriptorProto_TYPE_INT32, "proto2", `{}`, `{}`},
+		{"string", descriptorpb.FieldDescriptorProto_TYPE_STRING, "", `{}`, `{}`},
+		{"repeated", descriptorpb.FieldDescriptorProto_TYPE_INT32, "repeated", `{}`, `{}`},
+		{"optional absent", descriptorpb.FieldDescriptorProto_TYPE_INT32, "optional", `{}`, `{}`},
+		{"optional present", descriptorpb.FieldDescriptorProto_TYPE_INT32, "optional", `{"code":0}`, `{"code":0}`},
+		{"oneof absent", descriptorpb.FieldDescriptorProto_TYPE_INT32, "oneof", `{}`, `{}`},
+		{"oneof present", descriptorpb.FieldDescriptorProto_TYPE_INT32, "oneof", `{"code":0}`, `{"code":0}`},
+		{"no code", descriptorpb.FieldDescriptorProto_TYPE_INT32, "none", `{}`, `{}`},
+		{"nested unchanged", descriptorpb.FieldDescriptorProto_TYPE_INT32, "", `{"data":{}}`, `{"code":0,"data":{}}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			code := &descriptorpb.FieldDescriptorProto{Name: testPtr("code"), Number: testPtr[int32](1), Type: tt.kind.Enum(), Label: descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum()}
+			response := &descriptorpb.DescriptorProto{Name: testPtr("Response"), Field: []*descriptorpb.FieldDescriptorProto{
+				code,
+				{Name: testPtr("error"), Number: testPtr[int32](2), Type: descriptorpb.FieldDescriptorProto_TYPE_STRING.Enum()},
+				{Name: testPtr("items"), Number: testPtr[int32](3), Type: descriptorpb.FieldDescriptorProto_TYPE_STRING.Enum(), Label: descriptorpb.FieldDescriptorProto_LABEL_REPEATED.Enum()},
+				{Name: testPtr("data"), Number: testPtr[int32](4), Type: descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(), TypeName: testPtr(".test.Inner")},
+			}}
+			switch tt.presence {
+			case "none":
+				response.Field = response.Field[1:]
+			case "repeated":
+				code.Label = descriptorpb.FieldDescriptorProto_LABEL_REPEATED.Enum()
+			case "optional", "oneof":
+				response.OneofDecl = []*descriptorpb.OneofDescriptorProto{{Name: testPtr("choice")}}
+				code.OneofIndex = testPtr[int32](0)
+				if tt.presence == "optional" {
+					code.Proto3Optional = testPtr(true)
+				}
+			}
+			syntax := "proto3"
+			if tt.presence == "proto2" {
+				syntax = "proto2"
+			}
+			file, err := protodesc.NewFile(&descriptorpb.FileDescriptorProto{
+				Name: testPtr("code.proto"), Package: testPtr("test"), Syntax: testPtr(syntax),
+				MessageType: []*descriptorpb.DescriptorProto{response, {Name: testPtr("Inner"), Field: []*descriptorpb.FieldDescriptorProto{{Name: testPtr("code"), Number: testPtr[int32](1), Type: descriptorpb.FieldDescriptorProto_TYPE_INT32.Enum()}}}},
+			}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			msg := dynamicpb.NewMessage(file.Messages().ByName("Response"))
+			if err := protoJSONUnmarshal([]byte(tt.input), msg, nil); err != nil {
+				t.Fatal(err)
+			}
+			before := proto.Clone(msg)
+			out, err := protoJSONMarshal(msg, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got, want any
+			if err := json.Unmarshal(out, &got); err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal([]byte(tt.want), &want); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("got %s, want %s", out, tt.want)
+			}
+			if !proto.Equal(msg, before) {
+				t.Fatal("marshal mutated input")
+			}
+		})
+	}
 }

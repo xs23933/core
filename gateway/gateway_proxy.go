@@ -419,10 +419,42 @@ func protoJSONMarshal(msg proto.Message, resolver interface {
 	protoregistry.MessageTypeResolver
 	protoregistry.ExtensionTypeResolver
 }) ([]byte, error) {
-	return (&protojson.MarshalOptions{
+	body, err := (&protojson.MarshalOptions{
 		UseProtoNames: true,
 		Resolver:      resolver,
 	}).Marshal(msg)
+	if err != nil || msg == nil {
+		return body, err
+	}
+	reflected := msg.ProtoReflect()
+	if !reflected.IsValid() {
+		return body, nil
+	}
+	code := reflected.Descriptor().Fields().ByName("code")
+	// Preserve presence semantics and leave every other field to protojson.
+	if code == nil || code.IsList() || code.IsMap() || code.HasPresence() || reflected.Has(code) {
+		return body, nil
+	}
+	var zero string
+	switch code.Kind() {
+	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind,
+		protoreflect.Uint32Kind, protoreflect.Fixed32Kind:
+		zero = "0"
+	case protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind,
+		protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
+		zero = `"0"` // ProtoJSON represents 64-bit integers as strings.
+	default:
+		return body, nil
+	}
+	// Keep the original ProtoJSON bytes (including Any and custom well-known types).
+	if len(body) < 2 || body[0] != '{' || body[len(body)-1] != '}' {
+		return body, nil
+	}
+	result := append([]byte(`{"code":`), zero...)
+	if len(body) > 2 {
+		result = append(result, ',')
+	}
+	return append(result, body[1:]...), nil
 }
 
 // Methods 返回所有已注册的方法
