@@ -82,7 +82,21 @@ func (app *Core) preparePath(uri string) string {
 		return "/"
 	}
 	if uri[0] != '/' {
-		return "/" + uri
+		uri = "/" + uri
+	}
+	if !app.caseSensitive {
+		segments := strings.Split(uri, "/")
+		for i, segment := range segments {
+			if segment == "" || segment[0] == ':' || segment[0] == '*' {
+				continue
+			}
+			buf := []byte(segment)
+			for j, b := range buf {
+				buf[j] = foldRouteByte(b)
+			}
+			segments[i] = string(buf)
+		}
+		uri = strings.Join(segments, "/")
 	}
 	return uri
 }
@@ -150,7 +164,7 @@ func (app *Core) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	)
 	if root != nil {
 		app.routeLocks[methodIdx].RLock()
-		handlers, ok = root.match(c.Path(), c)
+		handlers, ok = root.match(c.Path(), c, !app.caseSensitive)
 		if !ok {
 			fallbackHandlers = append(c.handlers[:0], root.middlewares...)
 		}

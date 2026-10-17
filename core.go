@@ -61,8 +61,9 @@ type Core struct {
 	startupOnce       sync.Once
 	startupErr        error
 
-	trees      []*RouteNode
-	routeLocks []sync.RWMutex
+	trees         []*RouteNode
+	routeLocks    []sync.RWMutex
+	caseSensitive bool
 
 	Conf           Options
 	trustedProxies []*net.IPNet
@@ -229,6 +230,7 @@ func New(options ...Options) *Core {
 		app.MaxMultipartMemory = app.Conf.GetInt64("max_multipart_memory", defaultMultipartMemory)
 	}
 	Conf = app.Conf
+	app.caseSensitive = app.Conf.GetBool("case-sensitive", true)
 
 	var proxyErr error
 	app.trustedProxies, proxyErr = parseCIDRs(app.Conf["trusted_proxies"])

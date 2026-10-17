@@ -596,6 +596,8 @@ func (Handler) UploadMultiple(c core.Ctx) {
 ### 9. WebSocket 支持
 
 ```go
+package main
+
 import (
     "net/http"
     "time"
@@ -603,6 +605,7 @@ import (
     "github.com/xs23933/core/v3/websocket"
 )
 
+func main() {
 app := core.New()
 app.GET("/ws", websocket.New().
     WithOptions(websocket.Options{
@@ -622,6 +625,8 @@ app.GET("/ws", websocket.New().
     }).
     OnClose(func(conn *websocket.Conn) { core.Info("websocket closed") }).
     Handler())
+if err := app.Run(); err != nil { core.Erro("websocket stopped error_type=%T", err) }
+}
 ```
 
 `WithOptions` 可省略。零配置保持原行为：允许任意 Origin、不要求子协议、不限制消息大小或读写等待。需要设备或敏感通道时，调用方必须先鉴权并显式配置以上边界；框架不解释业务身份。
@@ -2261,9 +2266,12 @@ app := core.New(core.Options{
 
 ### 配置选项
 
+设置 `case-sensitive: false` 可让 HTTP 路由的 ASCII 静态路径忽略大小写，例如 `/transferIn` 和 `/transferin` 访问同一接口；未配置或设置为 `true` 时保留大小写敏感行为。此配置在 `core.New` 时读取，自动 Handler、显式路由、Group、路径中间件和 `RemoveHandle` 使用相同规则。参数名、参数值、query、`c.Path()` 和原始 URL 保留大小写；非 ASCII 路径仍精确匹配。开启后仅静态路径大小写不同的同方法路由视为同一路由，后注册的 handler 覆盖前者。
+
 | 选项            | 类型   | 默认值    | 说明             |
 | --------------- | ------ | --------- | ---------------- |
 | `debug`         | bool   | `false`   | 调试模式         |
+| `case-sensitive` | bool | `true` | HTTP 静态路径是否区分 ASCII 大小写 |
 | `listen`        | string | `":8080"` | 监听地址         |
 | `network`       | string | `"tcp4"`  | 网络协议         |
 | `prefork`       | bool   | `false`   | 是否启用 prefork |
@@ -2912,7 +2920,13 @@ func (h *Handler) GetByID(c core.Ctx) error {}
 
 ## 版本历史
 
-### v3.1.0 (当前版本)
+### v3.1.57 (当前版本)
+
+- 修复 HTTP 路由树未应用 `case-sensitive: false` 的问题，支持 `/transferIn` 与 `/transferin` 兼容；默认保持大小写敏感。
+- 保留参数名、参数值、query 和原始 URL，统一注册、中间件、Group 及移除行为，并补充回归测试。
+- 完善 WebSocket 可运行示例，修正队列释放测试命名。
+
+### v3.1.0
 
 - 支持 Go 1.24
 - 性能优化，提升 30% 吞吐量

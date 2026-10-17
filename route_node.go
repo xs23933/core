@@ -29,6 +29,14 @@ type RouteNode struct {
 
 const linearChildSearchThreshold = 8
 
+// foldRouteByte folds ASCII route literals without changing byte offsets or parameter values.
+func foldRouteByte(b byte) byte {
+	if b >= 'A' && b <= 'Z' {
+		return b + ('a' - 'A')
+	}
+	return b
+}
+
 // lcp 返回两个字符串的最长公共前缀长度
 func lcp(a, b string) int {
 	n := min(len(b), len(a))
@@ -318,12 +326,13 @@ func routeParamName(path string) string {
 
 // match 匹配路径，返回 handler 链和是否匹配成功。
 // 这是路由查找的主入口，供 route.go 调用。
-func (n *RouteNode) match(path string, ctx Ctx) (HandlerFuncs, bool) {
+func (n *RouteNode) match(path string, ctx Ctx, ignoreCase ...bool) (HandlerFuncs, bool) {
 	var chain HandlerFuncs
 	if baseCtx, ok := ctx.(*BaseCtx); ok {
 		chain = baseCtx.handlers[:0]
 	}
-	matched, ok := n.matchPath(strings.Trim(path, "/"), ctx, chain)
+	insensitive := len(ignoreCase) > 0 && ignoreCase[0]
+	matched, ok := n.matchPath(strings.Trim(path, "/"), ctx, chain, insensitive)
 	if !ok {
 		return nil, false
 	}
@@ -331,7 +340,7 @@ func (n *RouteNode) match(path string, ctx Ctx) (HandlerFuncs, bool) {
 }
 
 // matchPath 递归路径匹配
-func (n *RouteNode) matchPath(path string, ctx Ctx, chain HandlerFuncs) (HandlerFuncs, bool) {
+func (n *RouteNode) matchPath(path string, ctx Ctx, chain HandlerFuncs, insensitive bool) (HandlerFuncs, bool) {
 	// 空路径：检查本节点 handlers 和特殊子节点（可选参数、通配符）
 	if path == "" {
 		childChain := append(chain, n.middlewares...)
@@ -358,13 +367,19 @@ func (n *RouteNode) matchPath(path string, ctx Ctx, chain HandlerFuncs) (Handler
 	// （父节点的 matchChildren 已消费参数值）
 	if n.nType == param || n.nType == params || n.nType == catchAll {
 		childChain := append(chain, n.middlewares...)
-		return n.matchChildren(path, ctx, childChain)
+		return n.matchChildren(path, ctx, childChain, insensitive)
 	}
 
 	// static/root 节点：前缀匹配
 	if n.nType == static || n.nType == root {
 		if n.path != "" {
 			commonLen := lcp(path, n.path)
+			if insensitive {
+				commonLen = 0
+				for commonLen < len(path) && commonLen < len(n.path) && foldRouteByte(path[commonLen]) == n.path[commonLen] {
+					commonLen++
+				}
+			}
 			if commonLen < len(n.path) {
 				return chain, false
 			}
@@ -377,11 +392,11 @@ func (n *RouteNode) matchPath(path string, ctx Ctx, chain HandlerFuncs) (Handler
 			if remaining == "" {
 				return n.matchFallback(ctx, childChain)
 			}
-			return n.matchChildren(remaining, ctx, childChain)
+			return n.matchChildren(remaining, ctx, childChain, insensitive)
 		}
 		// n.path == "" (仅 root 可能出现): 直接匹配子节点
 		childChain := append(chain, n.middlewares...)
-		return n.matchChildren(path, ctx, childChain)
+		return n.matchChildren(path, ctx, childChain, insensitive)
 	}
 
 	return chain, false
@@ -409,14 +424,18 @@ func (n *RouteNode) matchFallback(ctx Ctx, chain HandlerFuncs) (HandlerFuncs, bo
 }
 
 // matchChildren 在当前节点的所有子节点中匹配路径
-func (n *RouteNode) matchChildren(path string, ctx Ctx, chain HandlerFuncs) (HandlerFuncs, bool) {
+func (n *RouteNode) matchChildren(path string, ctx Ctx, chain HandlerFuncs, insensitive bool) (HandlerFuncs, bool) {
 	fallbackChain := chain
 
 	// 3a. 先匹配静态子节点（优先级最高）
 	if len(path) > 0 {
-		child := n.findChild(path[0])
+		first := path[0]
+		if insensitive {
+			first = foldRouteByte(first)
+		}
+		child := n.findChild(first)
 		if child != nil {
-			matched, ok := child.matchPath(path, ctx, chain)
+			matched, ok := child.matchPath(path, ctx, chain, insensitive)
 			if ok {
 				return matched, true
 			}
@@ -442,7 +461,7 @@ func (n *RouteNode) matchChildren(path string, ctx Ctx, chain HandlerFuncs) (Han
 		oldVal, hadParam := saveParam(ctx, paramName)
 		ctx.SetParams(paramName, paramVal)
 
-		matched, ok := n.paramChild.matchPath(rest, ctx, fallbackChain)
+		matched, ok := n.paramChild.matchPath(rest, ctx, fallbackChain, insensitive)
 		if ok {
 			return matched, true
 		}

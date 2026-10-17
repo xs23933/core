@@ -32,6 +32,9 @@ Core Framework 优先级：
 ## 2. 核心规范 (AI 强制规则)
 
 ### 2.1 自动路由规范
+
+HTTP 路由默认区分大小写；在配置中设置 `case-sensitive: false` 可让 ASCII 静态路径如 `/transferIn` 与 `/transferin` 兼容。配置在 `core.New` 时固定，适用于 Handler、Group、中间件、显式注册及移除；参数名和值、query 和原始 URL 不变，非 ASCII 路径精确匹配。同方法且仅静态路径大小写不同的注册以后者覆盖前者。
+
 AI 在生成 Handler 时必须严格遵守以下命名约定，禁止手动配置 `router.GET(...)`。
 
 - **Handler 结构体**: 必须以 `Handler` 结尾，并嵌入 `core.Handler`。

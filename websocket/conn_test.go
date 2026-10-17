@@ -32,7 +32,7 @@ func TestPutBufferDropsOversizedBuffers(t *testing.T) {
 	}
 }
 
-func TestBatchQueueFullPreservesAlreadyQueuedPayload(t *testing.T) {
+func TestBatchQueueFullClosesAndReleasesAllOwnedPayload(t *testing.T) {
 	c := &Conn{send: make(chan *message, 1)}
 	c.EnableBatch(BatchConfig{MaxSize: 2, MaxDelay: time.Hour})
 	c.SendBatchWithType(TextMessage, []byte("first-owned-by-send-queue"))

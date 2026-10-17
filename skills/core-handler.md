@@ -59,6 +59,8 @@ Core 默认注册 `GET /health`，返回 `204 No Content`。业务程序需要�
 
 ### 3. 前缀设置
 
+HTTP 路由默认区分大小写。配置 `case-sensitive: false`（在 `core.New` 时读取）可使 ASCII 静态路径 `/transferIn` 与 `/transferin` 兼容，自动 Handler、显式路由、Group、路径中间件及移除均生效。参数名、参数值、query 和原始路径保持大小写；非 ASCII 路径仍精确匹配。开启后同方法且仅静态路径大小写不同的注册以后者覆盖前者，业务应避免重复定义。
+
 ```go
 func (h *XxxHandler) Init() {
     h.Prefix("/api/v1/xxx")  // 覆盖默认前缀
