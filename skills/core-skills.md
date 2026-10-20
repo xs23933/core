@@ -52,7 +52,7 @@ skills/
 ├── core-middleware.md       # 中间件开发（CORS/限流/Metrics/RequestID）
 ├── core-grpc.md             # gRPC 服务端（轻量 GRPCCtx / 可信 Gateway 客户端 IP / TLS/interceptor/注册/启动/etcd 注册/共用端口约束/响应 Header/Cookie）
 ├── core-grpc-client.md      # gRPC 客户端（服务发现/明确 target/每服务 TLS/MustGrpcClient）
-├── core-gateway.md          # etcd HTTP/gRPC 网关（core-client-ip / 自动/手动路由、负载均衡、请求 metadata/响应 Header/Cookie）
+├── core-gateway.md          # etcd HTTP/gRPC 网关（本地未发布 ExactJSONBinding / core-client-ip / 自动/手动路由、负载均衡、请求 metadata/响应 Header/Cookie）
 ├── core-websocket.md        # WebSocket Options/累计读限/超时/可靠入队/连接清理/按用户推送
 ├── core-sse.md              # SSE 服务端推送（SSEWrite/SSESend/EventHub）
 ├── core-page.md             # 分页查询（经典分页/滚动分页/条件构建）
@@ -274,6 +274,7 @@ conn := app.MustGrpcClient("user-service")       // 失败 panic，适合 main �
 - 自动路由命名（proto package + service + method → HTTP 路径）
 - 同一 `service_name` 下多 `service_id` 轮询
 - 请求 Metadata 透传（authorization/x-request-id/x-user-id）
+- 本地未发布 `RegisterExactJSONBinding`：显式服务/方法的原始 body 与固定字段精确 JSON number；逐调用核验 descriptor，最多 32MiB 接收，不改变默认方法行为（详见 core-gateway.md）
 - 专用 initial response metadata → HTTP Header/多个 Set-Cookie（错误响应支持，保留 header 过滤）
 - 管理接口：路由 CRUD（仅 loopback 访问）
 

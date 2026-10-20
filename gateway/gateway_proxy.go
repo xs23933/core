@@ -234,6 +234,10 @@ func (p *ReflectionProxy) Invoke(ctx context.Context, fullMethod string, jsonReq
 // InvokeWithHeaders returns initial response metadata even when the RPC fails.
 // Trailers are intentionally not bridged to HTTP response headers.
 func (p *ReflectionProxy) InvokeWithHeaders(ctx context.Context, fullMethod string, jsonReq []byte) ([]byte, metadata.MD, error) {
+	return p.invokeWithHeaders(ctx, fullMethod, jsonReq, nil)
+}
+
+func (p *ReflectionProxy) invokeWithHeaders(ctx context.Context, fullMethod string, jsonReq []byte, binding *ExactJSONBinding) ([]byte, metadata.MD, error) {
 	var cached *MethodDescriptor
 	if p != nil && p.schema != nil {
 		cached = p.schema.methods[fullMethod]
@@ -249,17 +253,31 @@ func (p *ReflectionProxy) InvokeWithHeaders(ctx context.Context, fullMethod stri
 	desc := cached
 
 	req := desc.NewRequest()
-	if err := protoJSONUnmarshal(jsonReq, req, desc.Resolver); err != nil {
+	if binding != nil {
+		if err := binding.validateDescriptor(desc); err != nil {
+			return nil, nil, status.Error(codes.Internal, err.Error())
+		}
+		reflected := req.ProtoReflect()
+		reflected.Set(reflected.Descriptor().Fields().ByName("raw_body"), protoreflect.ValueOfBytes(append([]byte(nil), jsonReq...)))
+	} else if err := protoJSONUnmarshal(jsonReq, req, desc.Resolver); err != nil {
 		core.Erro("[Gateway] gRPC request parse failed: grpc=%s json_bytes=%d err=%v", fullMethod, len(jsonReq), err)
 		return nil, nil, status.Errorf(codes.InvalidArgument, "parse request failed: %v", err)
 	}
 
 	resp := desc.NewResponse()
 	var headers metadata.MD
-	if err := p.conn.Invoke(ctx, fullMethod, req, resp, grpc.Header(&headers)); err != nil {
+	opts := []grpc.CallOption{grpc.Header(&headers)}
+	if binding != nil {
+		opts = append(opts, grpc.MaxCallRecvMsgSize(binding.MaxRecvBytes))
+	}
+	if err := p.conn.Invoke(ctx, fullMethod, req, resp, opts...); err != nil {
 		return nil, headers, err
 	}
 
+	if binding != nil {
+		body, err := binding.marshalResponse(resp, desc.Resolver)
+		return body, headers, err
+	}
 	body, err := protoJSONMarshal(resp, desc.Resolver)
 	return body, headers, err
 }

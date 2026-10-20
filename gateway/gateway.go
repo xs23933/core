@@ -118,6 +118,8 @@ func (s *serviceInstance) HTTPAddr() string {
 
 // EtcdGateway etcd 网关
 type EtcdGateway struct {
+	exactJSONBindings sync.Map // immutable *ExactJSONBinding by service + method
+
 	app         *core.Core
 	etcdCli     *clientv3.Client
 	prefix      string
@@ -1154,8 +1156,9 @@ func (gw *EtcdGateway) unregisterRoute(route *Route) {
 
 func (gw *EtcdGateway) createProxyHandler(route *Route) core.HandlerFunc {
 	return func(ctx core.Ctx) error {
+		binding := gw.exactJSONBinding(route.ServiceName, route.GRPCMethod)
 		var rawBody []byte
-		if ctx.Method() != "GET" {
+		if ctx.Method() != "GET" || binding != nil {
 			var err error
 			rawBody, err = readAndResetBody(ctx.Request(), gw.maxRequestBodyBytes())
 			if errors.Is(err, errRequestBodyTooLarge) {
@@ -1182,23 +1185,28 @@ func (gw *EtcdGateway) createProxyHandler(route *Route) core.HandlerFunc {
 			})
 		}
 
-		var bodyMap core.Map
-		if ctx.Method() != "GET" && len(rawBody) > 0 {
-			if err := sonic.Unmarshal(rawBody, &bodyMap); err != nil {
-				core.Erro("[Gateway] gRPC proxy bind body failed: method=%s path=%s grpc=%s err=%v",
-					ctx.Method(), ctx.Path(), route.GRPCMethod, err)
+		var jsonReq []byte
+		if binding != nil {
+			if ctx.Request().URL.RawQuery != "" {
+				return ctx.Status(http.StatusBadRequest).JSON(core.Map{"code": 400, "msg": "query not allowed for exact JSON method"})
 			}
-		}
-		reqBody := mergeGRPCRequestBody(ctx.ParamsMaps(), ctx.Request().URL.Query(), bodyMap)
-		appendGatewayRequestMetadata(reqBody, ctx.Request().Header, rawBody)
-
-		jsonReq, err := sonic.Marshal(reqBody)
-		if err != nil {
-			core.Erro("[Gateway] gRPC proxy marshal request failed: method=%s path=%s grpc=%s err=%v",
-				ctx.Method(), ctx.Path(), route.GRPCMethod, err)
-			return ctx.Status(http.StatusBadRequest).JSON(core.Map{
-				"code": 400, "msg": "invalid request body",
-			})
+			// Original bytes go directly into the verified bytes field. No JSON
+			// parser, body merge, query or path value can alter the payload.
+			jsonReq = rawBody
+		} else {
+			var bodyMap core.Map
+			if ctx.Method() != "GET" && len(rawBody) > 0 {
+				if err := sonic.Unmarshal(rawBody, &bodyMap); err != nil {
+					core.Erro("[Gateway] gRPC proxy bind body failed: method=%s path=%s grpc=%s err=%v", ctx.Method(), ctx.Path(), route.GRPCMethod, err)
+				}
+			}
+			reqBody := mergeGRPCRequestBody(ctx.ParamsMaps(), ctx.Request().URL.Query(), bodyMap)
+			appendGatewayRequestMetadata(reqBody, ctx.Request().Header, rawBody)
+			var err error
+			jsonReq, err = sonic.Marshal(reqBody)
+			if err != nil {
+				return ctx.Status(http.StatusBadRequest).JSON(core.Map{"code": 400, "msg": "invalid request body"})
+			}
 		}
 		md := metadata.New(nil)
 		appendHTTPHeadersToMetadata(md, ctx.Request().Header)
@@ -1222,11 +1230,11 @@ func (gw *EtcdGateway) createProxyHandler(route *Route) core.HandlerFunc {
 		callCtx, cancel := context.WithTimeout(grpcCtx, requestTimeout)
 		defer cancel()
 
-		jsonResp, responseHeaders, err := proxy.InvokeWithHeaders(callCtx, route.GRPCMethod, jsonReq)
+		jsonResp, responseHeaders, err := proxy.invokeWithHeaders(callCtx, route.GRPCMethod, jsonReq, binding)
 		if err != nil && gatewayRequestCanRetry(ctx.Method()) && status.Code(err) == codes.Unavailable {
 			if pool := gw.connPool.Get(route.ServiceName); pool != nil {
 				if alternate := pool.GetForMethod(route.GRPCMethod, proxy); alternate != nil {
-					jsonResp, responseHeaders, err = alternate.InvokeWithHeaders(callCtx, route.GRPCMethod, jsonReq)
+					jsonResp, responseHeaders, err = alternate.invokeWithHeaders(callCtx, route.GRPCMethod, jsonReq, binding)
 				}
 			}
 		}

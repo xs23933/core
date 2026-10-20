@@ -21,6 +21,7 @@ tags: [go, core-framework, gateway, grpc, etcd, http, reflection]
 - "网关管理接口"
 - "网关 metadata / x-user-id"
 - "gRPC 响应 header / Set-Cookie"
+- "RegisterExactJSONBinding / 精确 JSON number / 原始 body bytes"
 
 ## 1. 核心链路
 
@@ -458,4 +459,16 @@ Gateway 可使用 Go 标准库首次自动创建私有 CA，后端自动申请�
 
 ### Gateway gRPC 响应中的零值 code
 
-Gateway 对 gRPC 响应仅补齐顶层 proto 原名为 `code`、不带 presence 的单值整数字段：零值仍输出 `code: 0`；64 位整数按 ProtoJSON 输出 `code: "0"`。非零值保持原值。未定义 code、optional/proto2/oneof、其他类型及嵌套 code 保持原序列化语义。不会补齐 error、data 或空数组，不会添加响应外层；HTTP 反向代理和普通 HTTP Handler 不受影响。已有接口若依赖零值 code 缺省，需要适配此响应变化。
+未注册 ExactJSONBinding 的默认 Gateway 对 gRPC 响应仅补齐顶层 proto 原名为 `code`、不带 presence 的单值整数字段：零值仍输出 `code: 0`；64 位整数按 ProtoJSON 输出 `code: "0"`。非零值保持原值。未定义 code、optional/proto2/oneof、其他类型及嵌套 code 保持原序列化语义。不会补齐 error、data 或空数组，不会添加响应外层；HTTP 反向代理和普通 HTTP Handler 不受影响。已有接口若依赖零值 code 缺省，需要适配此响应变化。
+
+
+## 精确 JSON 数字绑定（本地未发布）
+
+当前工作区的 `(*EtcdGateway).RegisterExactJSONBinding(ExactJSONBinding) error` 尚未发布。NewEtcdGateway 成功后、Run 前显式注册。配置字段为 `ServiceName`、`FullMethod`、`RequestMessage`、`ResponseMessage`、`MoneyPaths`、`IntegerPaths`、`MaxRecvBytes`；完整示例与权威契约见 [README 精确绑定小节](../README.md#gateway-精确-json-数字绑定本地未发布)。
+
+- 请求 descriptor 只准单一 bytes raw_body。原 HTTP body 直接写入，不经 sonic/map/ProtoJSON 请求转换，不与 query/path/body 合并；query 返回 400，认证头沿用 metadata，单值校验由服务负责。
+- 每次 RPC 前核验当前 descriptor；响应 code 为 int32、data 为 message。路径用原 proto 字段名和重复 message 的 [*]，金额仅 string，整数为 string 或 signed 64 位字段。
+- 仅声明路径转换为精确 number；金额最多 8 位，缩放后 signed int64；整数 signed int64，无 float 或任意 raw JSON 出口。其它字符串/ID 不变。
+- 绑定响应保留普通默认值/空数组。成功缺 data、指定叶子缺失/null、错误类型或溢出返回 500；非零业务 code 可无 data，提供 data 时仍须完整校验。
+- 每绑定接收上限必须为 1..32MiB，只在该次调用覆盖，默认方法不变。重复注册拒绝、注册时复制切片，并发安全；写请求不重放。
+- 不把该能力当成鉴权、服务暴露白名单、业务 JSON 校验或已发布 Core 的现有能力。
