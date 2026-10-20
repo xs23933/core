@@ -2989,4 +2989,33 @@ Gateway 可使用 Go 标准库首次自动创建私有 CA，后端自动申请�
 
 ### Gateway gRPC 响应中的零值 code
 
-Gateway 对 gRPC 响应仅补齐顶层 proto 原名为 `code`、不带 presence 的单值整数字段：零值仍输出 `code: 0`；64 位整数按 ProtoJSON 输出 `code: "0"`。非零值保持原值。未定义 code、optional/proto2/oneof、其他类型及嵌套 code 保持原序列化语义。不会补齐 error、data 或空数组，不会添加响应外层；HTTP 反向代理和普通 HTTP Handler 不受影响。已有接口若依赖零值 code 缺省，需要适配此响应变化。
+未注册 ExactJSONBinding 的默认 Gateway 对 gRPC 响应仅补齐顶层 proto 原名为 `code`、不带 presence 的单值整数字段：零值仍输出 `code: 0`；64 位整数按 ProtoJSON 输出 `code: "0"`。非零值保持原值。未定义 code、optional/proto2/oneof、其他类型及嵌套 code 保持原序列化语义。不会补齐 error、data 或空数组，不会添加响应外层；HTTP 反向代理和普通 HTTP Handler 不受影响。已有接口若依赖零值 code 缺省，需要适配此响应变化。
+
+### Gateway 精确 JSON 数字绑定（本地未发布）
+
+当前工作区新增 `(*gateway.EtcdGateway).RegisterExactJSONBinding`，尚未提交、打标签或发布；不能假设已发布版本具备此 API。它只作用于显式绑定的逻辑服务名和完整 gRPC 方法，未绑定方法沿用现有 ProtoJSON 行为。
+
+在 `NewEtcdGateway(app)` 成功后、`app.Run()` 前注册并处理错误：
+
+```go
+err = gw.RegisterExactJSONBinding(gateway.ExactJSONBinding{
+    ServiceName: "account-service",
+    FullMethod: "/example.v1.AccountService/PostTransfer",
+    RequestMessage: "example.v1.RawRequest",
+    ResponseMessage: "example.v1.TransferResponse",
+    MoneyPaths: []string{"data.amount", "data.rows[*].balance"},
+    IntegerPaths: []string{"data.rows[*].created_at"},
+    MaxRecvBytes: 32 << 20,
+})
+if err != nil {
+    return err
+}
+```
+
+请求 message 必须仅包含一个 `bytes raw_body` 字段。Gateway 不解析请求 JSON，不合并 query/body/path 参数，直接把原始 HTTP body 字节写入该字段；任何 query 均返回 400。金额指数写法、空白、签名所需字节保持原样，严格 JSON 与业务金额校验归业务服务。HTTP headers 沿用 metadata 桥接及可信 `core-client-ip` 规则，不从 body 的 `headers` 取值；业务认证仍须验证所需 header 的单值性。
+
+响应必须具有 `int32 code` 和普通 message `data`。每次调用在 RPC 前校验当前 reflection descriptor 的请求/响应全名、容器、数组及选定叶子类型。路径使用 protobuf 原字段名（大小写保留）；仅 `[*]` 表示重复 message。金额叶子必须为 string，整数叶子可为 string 或有符号 64 位整数，支持 optional 但成功响应必须实际提供相应叶子。绑定响应使用 `UseProtoNames` 与 `EmitDefaultValues`，因此普通零值和空数组可显式输出。
+
+仅声明路径的十进制字符串转为不加引号的 JSON number：金额最多 8 位小数，精确缩放 10^8 后必须处于 signed int64 范围；整数必须处于 signed int64 范围。过程不使用 float；不接受指数、前导加号、非法前导零或超界。未声明字段（包括 ID）保留原 ProtoJSON 类型。成功必须有对象 `data`；非零业务 code 可以省略 data，若提供 data 仍校验全部声明路径。字段缺失/null、错误类型、容器错误、精度或范围错误均返回 HTTP 500，不回退字符串或透传任意 JSON 文本。
+
+`MaxRecvBytes` 必须在 1～33554432 之间，仅覆盖该绑定调用的 gRPC 接收上限；HTTP body 仍受 `gateway.max_request_body_bytes` 限制。重复注册拒绝且不覆盖；配置切片在注册时复制，注册和读取并发安全。响应 metadata、gRPC 错误映射及现有读请求重试规则继续使用公共链路；写请求不重放。
