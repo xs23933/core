@@ -38,6 +38,8 @@ app.StaticFile("/", "./dist/index.html", core.StaticConfig{})
 
 ## 缓存规则
 
+静态处理器结束时会提交无正文响应状态，不依赖可选 StaticConfig 或 gzip；HEAD 不发送正文，目录跳转保持 301，条件请求保持 304。不传 StaticConfig 时仍不添加 Cache-Control。默认状态修复自 v3.1.62 提供；回归命令为 `go test . -run TestStaticDefaultStatuses -count=1`。
+
 | 情况 | 框架添加的 Cache-Control |
 | --- | --- |
 | 不传配置 | 不添加 |

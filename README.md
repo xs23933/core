@@ -2,6 +2,8 @@
 
 v3.1.61 新增可配置 MIME 类型的 gzip 响应压缩，以及 Static 系列 API 的可选长缓存配置（默认 7 天、HTML 重新验证、显式 immutable）；同时修复静态文件提前返回 404 和已写出响应追加错误文本的问题。用法与接口兼容说明见下文“gzip 压缩与静态文件缓存”。
 
+v3.1.62 修复默认静态无正文状态提交：四种 Static API 不传 StaticConfig 时，目录跳转仍保持 301，条件请求保持 304，HEAD 不发送正文；缓存仍为可选，不会自动添加 Cache-Control。
+
 v3.1.60 起，NSQ 消费者默认继承最近成功 `InitNSQ` 的 `nsq.auth_secret`，非空 `NSQConsumerConfig.AuthSecret` 显式覆盖，`CloseNSQ` 清空默认凭据；见 [NSQ 认证合同](skills/core-nsq.md)。
 
 生产配置可通过 `CORE_CONFIG_KEY_FILE` 指定含恰好 32 字节原始密钥的普通文件（限制为 root/运行用户可读）。`--generate`、`.dat` 加载和保存共用此密钥；配置错误、解密失败或无效 YAML 均拒绝默认回退并使用脱敏错误。未设置时保持旧流程。配置密钥不改变业务 `AESKey` 和 AES API；切换密钥必须重新生成 `.dat`。完整约束见 [独立配置密钥](skills/core-utils.md)。

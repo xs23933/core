@@ -1,5 +1,7 @@
 # [AI Context] Core Framework v3
 
+v3.1.62 修复四种 Static API 的默认无正文状态提交，不依赖 StaticConfig 或 gzip；目录跳转保持 301、条件请求保持 304、HEAD 不发送正文。不传 StaticConfig 时仍不添加 Cache-Control。回归见 static_status_test.go。
+
 v3.1.61 提供 middleware/gzip 和 StaticConfig 静态长缓存；默认压缩文本类响应，图片默认不压缩，HTML 使用 no-cache。不传 StaticConfig 保留旧缓存行为。静态方法新增可变配置参数，Ctx 新增 SetResponseWriter；已提交响应遇到 handler 错误只记录、不追加错误文本。详见 skills/core-middleware.md、skills/core-static.md。
 
 v3.1.60 起，NSQ Consumer（含 Builder）创建时继承最近成功 InitNSQ 的 nsq.auth_secret，NSQConsumerConfig.AuthSecret 非空覆盖，CloseNSQ 清空默认凭据，读写受锁保护；见 skills/core-nsq.md。

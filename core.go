@@ -720,8 +720,16 @@ func (app *Core) staticFileHandler(relativePath string, handler HandlerFunc) Rou
 	if strings.Contains(relativePath, ":") || strings.Contains(relativePath, "*") {
 		panic("URL parameters can not be used when serving a static file")
 	}
-	app.GET(relativePath, handler)
-	app.HEAD(relativePath, handler)
+	serve := func(c Ctx) error {
+		if err := handler(c); err != nil {
+			return err
+		}
+		// 静态单文件的 HEAD 和条件请求可能没有正文，仍须提交状态码。
+		c.Response().DoWriteHeader()
+		return nil
+	}
+	app.GET(relativePath, serve)
+	app.HEAD(relativePath, serve)
 	return app
 }
 
@@ -731,6 +739,8 @@ func (app *Core) staticHandler(relativePath string, fs http.FileSystem) HandlerF
 
 	return HandlerFunc(func(c Ctx) error {
 		fileServer.ServeHTTP(c.Response(), c.Request())
+		// 文件响应结束后提交无正文状态，不依赖可选缓存或压缩中间件。
+		c.Response().DoWriteHeader()
 		return nil
 	})
 }
