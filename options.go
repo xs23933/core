@@ -372,13 +372,13 @@ func checkGenerate(configFile string) bool {
 			os.Exit(1)
 		}
 
-		encryptedBuf, err := EncryptAESBytes(yamlBuf)
+		encryptedBuf, err := encryptConfigBytes(yamlBuf)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "[generate] encrypt failed: %v\n", err)
 			os.Exit(1)
 		}
 
-		if err := os.WriteFile(configFile, encryptedBuf, 0644); err != nil {
+		if err := os.WriteFile(configFile, encryptedBuf, configDatFileMode()); err != nil {
 			fmt.Fprintf(os.Stderr, "[generate] write %s failed: %v\n", configFile, err)
 			os.Exit(1)
 		}
@@ -398,13 +398,13 @@ func checkGenerate(configFile string) bool {
 			os.Exit(1)
 		}
 
-		encryptedBuf, err := EncryptAESBytes(yamlBuf)
+		encryptedBuf, err := encryptConfigBytes(yamlBuf)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "[generate] encrypt failed: %v\n", err)
 			os.Exit(1)
 		}
 
-		if err := os.WriteFile(datFile, encryptedBuf, 0644); err != nil {
+		if err := os.WriteFile(datFile, encryptedBuf, configDatFileMode()); err != nil {
 			fmt.Fprintf(os.Stderr, "[generate] write %s failed: %v\n", datFile, err)
 			os.Exit(1)
 		}
@@ -419,12 +419,20 @@ func checkGenerate(configFile string) bool {
 }
 
 func loadEncryptedConfig(datFile string, defaultConf Options) Options {
+	if _, configured := os.LookupEnv("CORE_CONFIG_KEY_FILE"); configured {
+		conf, err := loadKeyedEncryptedConfig(datFile)
+		if err != nil {
+			panic(err)
+		}
+		confFile = datFile
+		return conf
+	}
 	yamlFile, _ := strings.CutSuffix(datFile, ".dat")
 	yamlFile += ".default.yaml"
 
 	if yamlBuf, err := os.ReadFile(yamlFile); err == nil {
 		D("Update config(%s) from %s", datFile, yamlFile)
-		if encryptedBuf, err := EncryptAESBytes(yamlBuf); err == nil {
+		if encryptedBuf, err := encryptConfigBytes(yamlBuf); err == nil {
 			if err := os.WriteFile(datFile, encryptedBuf, 0644); err != nil {
 				Erro("Write %s failed: %v", datFile, err)
 			}
@@ -446,7 +454,7 @@ func loadEncryptedConfig(datFile string, defaultConf Options) Options {
 		return createDefaultConfig(yamlFile, datFile)
 	}
 
-	decryptedBuf, err := DecryptAESBytes(encryptedBuf)
+	decryptedBuf, err := decryptConfigBytes(encryptedBuf)
 	if err != nil {
 		// 解密失败，重新创建配置
 		return createDefaultConfig(yamlFile, datFile)
@@ -499,7 +507,7 @@ func createDefaultConfig(yamlFile, datFile string) Options {
 
 	// 写入 dat 文件（加密）
 	if datFile != "" {
-		encryptedBuf, _ := EncryptAESBytes(yml)
+		encryptedBuf, _ := encryptConfigBytes(yml)
 		if err := os.WriteFile(datFile, encryptedBuf, 0644); err != nil {
 			Erro("write %s failed: %v", datFile, err)
 		}
@@ -515,12 +523,16 @@ func SaveConfigFile(conf map[string]any) error {
 		return err
 	}
 	if strings.HasSuffix(confFile, ".dat") {
-		yml, err = EncryptAESBytes(yml)
+		yml, err = encryptConfigBytes(yml)
 		if err != nil {
 			return err
 		}
 	}
-	return os.WriteFile(confFile, yml, 0644)
+	mode := os.FileMode(0644)
+	if strings.HasSuffix(confFile, ".dat") {
+		mode = configDatFileMode()
+	}
+	return os.WriteFile(confFile, yml, mode)
 }
 
 var (

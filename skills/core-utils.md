@@ -6,6 +6,14 @@ tags: [go, core-framework, utils, crypto, map, array]
 
 # Core Utils 开发技能
 
+## 独立配置加密密钥
+
+生产环境可设置 `CORE_CONFIG_KEY_FILE=/etc/app/config.key`。文件必须为当前进程可读的普通文件，内容恰好为 32 字节原始 AES-256 密钥，不是十六进制或 Base64 文本，不自动去除换行。通过可信部署渠道生成，限制为 root 和运行用户可读，例如 0600 或受控服务组 0640。环境变量只保存路径，密钥不进入命令行或日志。
+
+同一密钥用于 `--generate -f config.yaml`、从 `config.default.yaml` 生成 `.dat`、`LoadConfigFile("config.dat")` 和 `SaveConfigFile` 的 `.dat` 写入。显式配置后，空路径、不可读文件、非普通文件、错误长度、错误密钥、损坏密文、非法 YAML 和写入失败均失败关闭；`LoadConfigFile` 因既有签名不返回 error，使用脱敏 panic，禁止默认值回退或覆盖损坏密文。已有 `.default.yaml` 自动更新流程仍可用。
+
+未设置环境变量时保持旧加密流程。切换密钥须使用可信明文重新生成 `.dat`。配置密钥不会修改 `core.AESKey` 或业务 `EncryptAES` / `DecryptAES` 的语义；生产业务 AES 密钥仍须独立配置。
+
 ## 触发条件
 
 当用户请求以下内容时激活此 Skill：

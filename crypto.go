@@ -36,11 +36,15 @@ func EncryptAES(plaintext string) (string, error) {
 
 // EncryptAESBytes AES-256-GCM 加密
 func EncryptAESBytes(plaintext []byte) ([]byte, error) {
+	return encryptAESBytesWithKey(plaintext, AESKey)
+}
+
+func encryptAESBytesWithKey(plaintext, key []byte) ([]byte, error) {
 	if len(plaintext) == 0 {
 		return nil, nil
 	}
 
-	block, err := aes.NewCipher(AESKey)
+	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, err
 	}
@@ -83,11 +87,15 @@ func DecryptAES(ciphertext string) (string, error) {
 
 // DecryptAESBytes AES-256-GCM 解密
 func DecryptAESBytes(ciphertext []byte) ([]byte, error) {
+	return decryptAESBytesWithKey(ciphertext, AESKey)
+}
+
+func decryptAESBytesWithKey(ciphertext, key []byte) ([]byte, error) {
 	if len(ciphertext) == 0 {
 		return nil, nil
 	}
 
-	block, err := aes.NewCipher(AESKey)
+	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, err
 	}

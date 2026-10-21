@@ -57,6 +57,7 @@ var (
 	nsqProducerOnce sync.Once
 	nsqConsumers    []*NSQConsumer
 	nsqMu           sync.Mutex
+	nsqAuthSecret   string
 )
 
 // NSQProducer 封装 nsq.Producer
@@ -116,7 +117,10 @@ func InitNSQ(conf Options, debug bool) error {
 	if err != nil {
 		return err
 	}
+	nsqMu.Lock()
 	nsqProducer = p
+	nsqAuthSecret = cfg.AuthSecret
+	nsqMu.Unlock()
 	D("NSQ initialized, nsqd=%s", addr)
 	return nil
 }
@@ -181,6 +185,7 @@ func (p *NSQProducer) Stop() {
 
 // NSQConsumerConfig 消费者配置
 type NSQConsumerConfig struct {
+	AuthSecret         string        // 非空时显式覆盖，否则继承最近成功 InitNSQ 的认证凭据。
 	Topic              string        // Topic 名称（必填）
 	Channel            string        // Channel 名称（必填）
 	NSQDs              []string      // 直连 nsqd 地址列表（如 ["127.0.0.1:4150"]）
@@ -222,6 +227,12 @@ func NewNSQConsumer(conf NSQConsumerConfig) (*NSQConsumer, error) {
 	}
 
 	cfg := nsq.NewConfig()
+	cfg.AuthSecret = conf.AuthSecret
+	if cfg.AuthSecret == "" {
+		nsqMu.Lock()
+		cfg.AuthSecret = nsqAuthSecret
+		nsqMu.Unlock()
+	}
 	cfg.MaxInFlight = conf.MaxInFlight
 	cfg.MaxAttempts = conf.MaxAttempts
 	cfg.MaxBackoffDuration = conf.MaxBackoff
@@ -388,17 +399,16 @@ func NSQParse[T any](msg *nsq.Message) (*T, error) {
 
 // CloseNSQ 关闭所有 NSQ 连接
 func CloseNSQ() {
-	if nsqProducer != nil {
-		nsqProducer.Stop()
-		nsqProducer = nil
-	}
-
 	nsqMu.Lock()
-	defer nsqMu.Unlock()
-	for _, c := range nsqConsumers {
-		c.Stop()
+	producer, consumers := nsqProducer, nsqConsumers
+	nsqProducer, nsqConsumers, nsqAuthSecret = nil, nil, ""
+	nsqMu.Unlock()
+	if producer != nil {
+		producer.Stop()
 	}
-	nsqConsumers = nil
+	for _, consumer := range consumers {
+		consumer.Stop()
+	}
 	D("NSQ all connections closed")
 }
 

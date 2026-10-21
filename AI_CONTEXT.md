@@ -1,5 +1,9 @@
 # [AI Context] Core Framework v3
 
+v3.1.60 起，NSQ Consumer（含 Builder）创建时继承最近成功 InitNSQ 的 nsq.auth_secret，NSQConsumerConfig.AuthSecret 非空覆盖，CloseNSQ 清空默认凭据，读写受锁保护；见 skills/core-nsq.md。
+
+配置 `.dat` 的可选独立密钥来自 CORE_CONFIG_KEY_FILE 指定的普通文件，恰好 32 字节原始内容，用于 --generate、LoadConfigFile 和 SaveConfigFile。显式设置后失败关闭，LoadConfigFile 使用脱敏 panic，不生成默认配置；未设置保持旧流程。不得改变业务 AESKey；密钥文件限制到 root/运行用户可读，详见 skills/core-utils.md。
+
 带点协议值可直接进入枚举 values：ToFixed 将点及连字符转换为常量名下划线，原 wire 值保持不变；无需在业务代码追加映射或伪造生成文件。
 
 枚举边界：生成的 Scan 支持 int64/uint8/uint16/uint32/float64/string/[]byte；数值输入必须为 0～255 的整数，拒绝负数、溢出和非有限浮点且不修改原值。EnumString 对越界索引返回空串，EnumMarshalJSON/EnumMarshalText 返回错误；EnumUnmarshalJSON 在转换前检查数值范围，并支持 256 项映射。字符串解析沿用现行合同，领域取值仍由调用方校验。修改模板后须重新生成业务枚举。

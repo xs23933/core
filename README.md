@@ -1,5 +1,9 @@
 # Core Web Framework v3 - 完整帮助文档
 
+v3.1.60 起，NSQ 消费者默认继承最近成功 `InitNSQ` 的 `nsq.auth_secret`，非空 `NSQConsumerConfig.AuthSecret` 显式覆盖，`CloseNSQ` 清空默认凭据；见 [NSQ 认证合同](skills/core-nsq.md)。
+
+生产配置可通过 `CORE_CONFIG_KEY_FILE` 指定含恰好 32 字节原始密钥的普通文件（限制为 root/运行用户可读）。`--generate`、`.dat` 加载和保存共用此密钥；配置错误、解密失败或无效 YAML 均拒绝默认回退并使用脱敏错误。未设置时保持旧流程。配置密钥不改变业务 `AESKey` 和 AES API；切换密钥必须重新生成 `.dat`。完整约束见 [独立配置密钥](skills/core-utils.md)。
+
 带点协议值可直接进入枚举 values：ToFixed 将点及连字符转换为常量名下划线，原 wire 值保持不变；无需在业务代码追加映射或伪造生成文件。
 
 枚举边界：生成的 Scan 支持 int64/uint8/uint16/uint32/float64/string/[]byte；数值输入必须为 0～255 的整数，拒绝负数、溢出和非有限浮点且不修改原值。EnumString 对越界索引返回空串，EnumMarshalJSON/EnumMarshalText 返回错误；EnumUnmarshalJSON 在转换前检查数值范围，并支持 256 项映射。字符串解析沿用现行合同，领域取值仍由调用方校验。修改模板后须重新生成业务枚举。

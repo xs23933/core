@@ -1,4 +1,5 @@
 ```sh
+# 配置加密密钥：core-utils.md；NSQ 认证继承：core-nsq.md。
 skills/
 ├── core-skills.md           # 技能模块总览（功能概述/使用规范/最佳实践）
 ├── core-handler.md          # 创建 RESTful Handler

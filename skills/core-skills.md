@@ -1,5 +1,7 @@
 # Core Framework v3 技能模块总览（core-skills.md）
 
+配置 `.dat` 的独立密钥文件与失败关闭见 [core-utils.md](core-utils.md)；NSQ 认证继承和显式覆盖见 [core-nsq.md](core-nsq.md)。
+
 ## 一、项目概述
 
 ### 1.1 框架简介

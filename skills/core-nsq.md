@@ -6,6 +6,8 @@ tags: [go, core-framework, nsq, message-queue]
 
 # Core NSQ 封装
 
+`InitNSQ` 成功后，后续 `NewNSQConsumer`（含 Builder）默认继承该次 `nsq.auth_secret`。`NSQConsumerConfig.AuthSecret` 非空时显式覆盖；凭据在消费者创建时确定，已有消费者不受后续初始化影响。默认凭据受锁保护，`CloseNSQ` 清空默认值；未配置认证时保持原行为。lookupd 发现和直连使用同一配置，go-nsq 在 IDENTIFY 返回 `auth_required` 后发送 AUTH。不得在日志记录凭据。
+
 ## 概述
 
 Core 框架内置 NSQ 封装，基于 `github.com/nsqio/go-nsq`，提供：
