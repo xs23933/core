@@ -2991,9 +2991,9 @@ Gateway 可使用 Go 标准库首次自动创建私有 CA，后端自动申请�
 
 未注册 ExactJSONBinding 的默认 Gateway 对 gRPC 响应仅补齐顶层 proto 原名为 `code`、不带 presence 的单值整数字段：零值仍输出 `code: 0`；64 位整数按 ProtoJSON 输出 `code: "0"`。非零值保持原值。未定义 code、optional/proto2/oneof、其他类型及嵌套 code 保持原序列化语义。不会补齐 error、data 或空数组，不会添加响应外层；HTTP 反向代理和普通 HTTP Handler 不受影响。已有接口若依赖零值 code 缺省，需要适配此响应变化。
 
-### Gateway 精确 JSON 数字绑定（本地未发布）
+### Gateway 精确 JSON 数字绑定（v3.1.59 起）
 
-当前工作区新增 `(*gateway.EtcdGateway).RegisterExactJSONBinding`，尚未提交、打标签或发布；不能假设已发布版本具备此 API。它只作用于显式绑定的逻辑服务名和完整 gRPC 方法，未绑定方法沿用现有 ProtoJSON 行为。
+自 v3.1.59 起提供 `(*gateway.EtcdGateway).RegisterExactJSONBinding`。它只作用于显式绑定的逻辑服务名和完整 gRPC 方法，未绑定方法沿用现有 ProtoJSON 行为。
 
 在 `NewEtcdGateway(app)` 成功后、`app.Run()` 前注册并处理错误：
 
@@ -3019,3 +3019,13 @@ if err != nil {
 仅声明路径的十进制字符串转为不加引号的 JSON number：金额最多 8 位小数，精确缩放 10^8 后必须处于 signed int64 范围；整数必须处于 signed int64 范围。过程不使用 float；不接受指数、前导加号、非法前导零或超界。未声明字段（包括 ID）保留原 ProtoJSON 类型。成功必须有对象 `data`；非零业务 code 可以省略 data，若提供 data 仍校验全部声明路径。字段缺失/null、错误类型、容器错误、精度或范围错误均返回 HTTP 500，不回退字符串或透传任意 JSON 文本。
 
 `MaxRecvBytes` 必须在 1～33554432 之间，仅覆盖该绑定调用的 gRPC 接收上限；HTTP body 仍受 `gateway.max_request_body_bytes` 限制。重复注册拒绝且不覆盖；配置切片在注册时复制，注册和读取并发安全。响应 metadata、gRPC 错误映射及现有读请求重试规则继续使用公共链路；写请求不重放。
+
+## 动态域名 ACME 证书
+
+内置引擎预占回环临时端口，并将 CertMagic solver 固定到该受管理器完整授权保护的 listener；公开挑战入口使用其它端口或外部转发时，也不会自动产生无保护的公网 :80 入口。
+
+`certificate` 包提供业务授权的精确 hostname 证书生命周期：`New(Config)`、`Ensure(ctx, hostname)`、`Remove(ctx, hostname)`、`Status(ctx, hostname)`、`GetCertificate`、`HTTPHandler`、`TLSConfig` 和 `Close`。Ensure 后台申请，未知域名不会在 TLS 握手中触发签发；续期、挑战和新握手均重新检查显式 Authorize 回调。移除绑定后拒绝新握手并停止续期，私钥保留在专用持久存储。
+
+应用在 Run 前使用 `app.UseCertificateManager(manager, ":80")`，现有 `listen: ":443"` 提供 HTTPS，Core 托管挑战 listener 和关闭。该能力与静态 acme/certmagic 配置互斥；生产使用持久 StorageDir，多实例使用具备锁能力的共享 Storage，并将公网 HTTP-01 请求送达挑战 handler。默认生产 CA，Config.CA 可切换 staging/本地 directory，测试应注入 Engine，不访问公网 CA。
+
+状态提供 pending、issuing、ready、renewing、failed、expired、removed，以及公开失败码和证书有效期；续期失败可继续提供旧的有效证书，过期和授权未知则拒绝。详细 API、示例、跨实例和安全边界见 [动态证书说明](skills/core-certificates.md)。

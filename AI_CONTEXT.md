@@ -613,7 +613,7 @@ return app.Listen(":8080")
 * 内部客户端用 `app.GrpcClient("user-service")` 或启动期的 `app.MustGrpcClient("user-service")`；已有明确地址时用 `app.GrpcClientAt("user-service", target)`。
 * 某服务需要 TLS 时，在首次 dial 前调用一次 `ConfigureGRPCClient(serviceName, GRPCClientConfig{TransportCredentials: ...})`。Core 按服务隔离并克隆 credentials；配置服务禁止再传不透明旧 dial options。
 * 网关启动用 `app.EnableEtcdDiscovery(nil)` + `gateway.NewEtcdGateway(app)`。
-* 本地未发布能力：`gw.RegisterExactJSONBinding(gateway.ExactJSONBinding{ServiceName, FullMethod, RequestMessage, ResponseMessage, MoneyPaths, IntegerPaths, MaxRecvBytes})` 在 NewEtcdGateway 后、Run 前显式注册。仅绑定方法原 body→唯一 bytes raw_body，拒绝 query；响应 descriptor 逐次核验，指定金额 string 和整数路径以精确 JSON number 输出，其余字段及未绑定方法保持原行为；零值/空数组显式输出，成功缺失 data/指定字段或超界返回 500，非零 code 允许缺失 data。接收上限仅该调用且最多 32MiB。完整约束见 README 的精确 JSON 数字绑定小节，不得视为已发布 API。
+* v3.1.59 起提供：`gw.RegisterExactJSONBinding(gateway.ExactJSONBinding{ServiceName, FullMethod, RequestMessage, ResponseMessage, MoneyPaths, IntegerPaths, MaxRecvBytes})` 在 NewEtcdGateway 后、Run 前显式注册。仅绑定方法原 body→唯一 bytes raw_body，拒绝 query；响应 descriptor 逐次核验，指定金额 string 和整数路径以精确 JSON number 输出，其余字段及未绑定方法保持原行为；零值/空数组显式输出，成功缺失 data/指定字段或超界返回 500，非零 code 允许缺失 data。接收上限仅该调用且最多 32MiB。完整约束见 README 的精确 JSON 数字绑定小节。
 * Gateway 按发现到的逻辑服务名选择 `ConfigureGRPCClient` 配置；必须在 `NewEtcdGateway` 前配置。
 * Gateway 首次请求优先选择 Ready 连接；没有 Ready 时只允许已核验方法的 Idle 连接由正常 RPC 唤醒，备用实例重试仍只选择 Ready，不选择 Connecting、TransientFailure 或 Shutdown。
 * 同一服务的多个 `service_id` 参与轮询；`GET`/`HEAD` 连接失败只换一个实例重试一次，写请求不重放。gRPC 全部离线时保留自动路由并返回 `503`。
@@ -1249,3 +1249,9 @@ HTTP-only 应用可启用工作负载身份进行出站 mTLS，`EnableEtcdRegist
 ### Gateway gRPC 响应中的零值 code
 
 未注册 ExactJSONBinding 的默认 Gateway 对 gRPC 响应仅补齐顶层 proto 原名为 `code`、不带 presence 的单值整数字段：零值仍输出 `code: 0`；64 位整数按 ProtoJSON 输出 `code: "0"`。非零值保持原值。未定义 code、optional/proto2/oneof、其他类型及嵌套 code 保持原序列化语义。不会补齐 error、data 或空数组，不会添加响应外层；HTTP 反向代理和普通 HTTP Handler 不受影响。已有接口若依赖零值 code 缺省，需要适配此响应变化。
+
+## 动态精确域名证书
+
+内置引擎预绑定回环临时端口并明确设置 solver 的 ListenHost/AltHTTPPort；内部 listener 同样检查域名成员、Remove/关闭状态和实时 Authorize，禁止自动产生无保护的公网 :80 入口。
+
+租户域名使用独立 `certificate.New(certificate.Config{StorageDir, Email, CA, Authorize})`；必须显式授权，调用 `Ensure(ctx, hostname)` 后台申请，`Remove` 拒绝新握手和续期，`Status` 只返回非敏感状态。管理器使用专用 CertMagic HTTP-01 与持久 Storage，拒绝未知 SNI、泛域名和任意按需签发；授权检查覆盖申请、续期、TLS 和挑战。应用启动前 `app.UseCertificateManager(manager, ":80")` 接入原 HTTPS listener，listen 配置设为 :443；与旧 acme/certmagic 互斥，Core 关闭时释放资源。业务负责绑定 generation、所有权验证、域名清单同步和当前授权事实。完整合同见 [skills/core-certificates.md](skills/core-certificates.md)。

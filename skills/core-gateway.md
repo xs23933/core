@@ -462,9 +462,9 @@ Gateway 可使用 Go 标准库首次自动创建私有 CA，后端自动申请�
 未注册 ExactJSONBinding 的默认 Gateway 对 gRPC 响应仅补齐顶层 proto 原名为 `code`、不带 presence 的单值整数字段：零值仍输出 `code: 0`；64 位整数按 ProtoJSON 输出 `code: "0"`。非零值保持原值。未定义 code、optional/proto2/oneof、其他类型及嵌套 code 保持原序列化语义。不会补齐 error、data 或空数组，不会添加响应外层；HTTP 反向代理和普通 HTTP Handler 不受影响。已有接口若依赖零值 code 缺省，需要适配此响应变化。
 
 
-## 精确 JSON 数字绑定（本地未发布）
+## 精确 JSON 数字绑定（v3.1.59 起）
 
-当前工作区的 `(*EtcdGateway).RegisterExactJSONBinding(ExactJSONBinding) error` 尚未发布。NewEtcdGateway 成功后、Run 前显式注册。配置字段为 `ServiceName`、`FullMethod`、`RequestMessage`、`ResponseMessage`、`MoneyPaths`、`IntegerPaths`、`MaxRecvBytes`；完整示例与权威契约见 [README 精确绑定小节](../README.md#gateway-精确-json-数字绑定本地未发布)。
+自 v3.1.59 起提供 `(*EtcdGateway).RegisterExactJSONBinding(ExactJSONBinding) error`。NewEtcdGateway 成功后、Run 前显式注册。配置字段为 `ServiceName`、`FullMethod`、`RequestMessage`、`ResponseMessage`、`MoneyPaths`、`IntegerPaths`、`MaxRecvBytes`；完整示例与权威契约见 [README 精确绑定小节](../README.md#gateway-精确-json-数字绑定v3159-起)。
 
 - 请求 descriptor 只准单一 bytes raw_body。原 HTTP body 直接写入，不经 sonic/map/ProtoJSON 请求转换，不与 query/path/body 合并；query 返回 400，认证头沿用 metadata，单值校验由服务负责。
 - 每次 RPC 前核验当前 descriptor；响应 code 为 int32、data 为 message。路径用原 proto 字段名和重复 message 的 [*]，金额仅 string，整数为 string 或 signed 64 位字段。

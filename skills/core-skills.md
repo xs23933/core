@@ -52,7 +52,7 @@ skills/
 ├── core-middleware.md       # 中间件开发（CORS/限流/Metrics/RequestID）
 ├── core-grpc.md             # gRPC 服务端（轻量 GRPCCtx / 可信 Gateway 客户端 IP / TLS/interceptor/注册/启动/etcd 注册/共用端口约束/响应 Header/Cookie）
 ├── core-grpc-client.md      # gRPC 客户端（服务发现/明确 target/每服务 TLS/MustGrpcClient）
-├── core-gateway.md          # etcd HTTP/gRPC 网关（本地未发布 ExactJSONBinding / core-client-ip / 自动/手动路由、负载均衡、请求 metadata/响应 Header/Cookie）
+├── core-gateway.md          # etcd HTTP/gRPC 网关（v3.1.59 起提供 ExactJSONBinding / core-client-ip / 自动/手动路由、负载均衡、请求 metadata/响应 Header/Cookie）
 ├── core-websocket.md        # WebSocket Options/累计读限/超时/可靠入队/连接清理/按用户推送
 ├── core-sse.md              # SSE 服务端推送（SSEWrite/SSESend/EventHub）
 ├── core-page.md             # 分页查询（经典分页/滚动分页/条件构建）
@@ -274,7 +274,7 @@ conn := app.MustGrpcClient("user-service")       // 失败 panic，适合 main �
 - 自动路由命名（proto package + service + method → HTTP 路径）
 - 同一 `service_name` 下多 `service_id` 轮询
 - 请求 Metadata 透传（authorization/x-request-id/x-user-id）
-- 本地未发布 `RegisterExactJSONBinding`：显式服务/方法的原始 body 与固定字段精确 JSON number；逐调用核验 descriptor，最多 32MiB 接收，不改变默认方法行为（详见 core-gateway.md）
+- v3.1.59 起提供 `RegisterExactJSONBinding`：显式服务/方法的原始 body 与固定字段精确 JSON number；逐调用核验 descriptor，最多 32MiB 接收，不改变默认方法行为（详见 core-gateway.md）
 - 专用 initial response metadata → HTTP Header/多个 Set-Cookie（错误响应支持，保留 header 过滤）
 - 管理接口：路由 CRUD（仅 loopback 访问）
 
@@ -1063,3 +1063,7 @@ func main() {
 Gateway 可使用 Go 标准库首次自动创建私有 CA，后端自动申请、本地保存和续期，服务端、服务间客户端和 Gateway reflection 复用本进程身份。使用前必须在首次创建 gRPC server/client 前调用 `app.EnableWorkloadIdentity()`；启用后禁止明文回退或逐目标显式 transport 冲突配置。完整配置、引导认证、独立端口、根信任更新和验收边界见 [工作负载身份说明](../workload/README.md)。
 
 后端跨服务器可预置 `workload.root_sha256`（根证书 DER SHA-256），Core 从内部签发入口 `GET /root.pem` 无凭据下载，校验指纹及本次 HTTPS 链/主机名后原子缓存，再申请身份。每次启动校验缓存，拒绝不匹配/损坏缓存的静默覆盖；默认缓存位于本进程 state_dir，不依赖 Gateway 共享文件。指纹必须由可信部署渠道预置，详见工作负载说明。
+
+## 动态域名证书
+
+租户自定义域名、动态 HTTPS、ACME HTTP-01、证书状态或续期任务，先阅读 [core-certificates.md](core-certificates.md)。使用独立 certificate.Manager 和显式 Authorize，不启用无约束按需签发或泛域名转换。

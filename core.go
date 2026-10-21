@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/quic-go/quic-go/http3"
+	"github.com/xs23933/core/v3/certificate"
 	"github.com/xs23933/core/v3/etcd"
 	"github.com/xs23933/core/v3/middleware/view"
 	"github.com/xs23933/core/v3/reuseport"
@@ -85,6 +86,9 @@ type Core struct {
 	networkProto       string
 	Views              view.IEngine
 	TextEngine         view.ITextEngine
+	// 动态证书管理独立于旧的静态 ACME 配置。
+	dynamicCertificateManager *certificate.Manager
+	dynamicCertificateHTTP    *http.Server
 	// acme
 	certManager *autocert.Manager
 
@@ -376,6 +380,13 @@ func (app *Core) Serve(ln net.Listener) error {
 	}
 	defer app.shutdown()
 
+	if app.dynamicCertificateManager != nil {
+		if err := app.Server.ServeTLS(ln, "", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			return err
+		}
+		return nil
+	}
+
 	// 优先使用 certMagic
 	if app.certMagicEnabled || app.certMagicConfig.Email != "" {
 		app.eg.Go(func() error {
@@ -530,6 +541,9 @@ func (app *Core) prepareServeOnce() error {
 }
 
 func (app *Core) prepareTLSForServe() error {
+	if app.dynamicCertificateManager != nil {
+		return app.prepareDynamicCertificateTLS()
+	}
 	if app.certMagicEnabled || app.certMagicConfig.Email != "" {
 		if app.certMagicEnabled {
 			if err := app.setupCertMagic(); err != nil {

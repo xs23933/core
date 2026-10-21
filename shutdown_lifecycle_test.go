@@ -185,6 +185,10 @@ func TestStartupPublishesReadyAfterRouteCatalog(t *testing.T) {
 		t.Fatal(err)
 	}
 	app.shutdown()
+	// 等待上一实例的关闭 watcher 退出，再创建会重新配置全局日志的新实例。
+	if err := app.eg.Wait(); err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
 	if stage.Load() != 3 {
 		t.Fatal("ready not published")
 	}
@@ -196,6 +200,10 @@ func TestStartupPublishesReadyAfterRouteCatalog(t *testing.T) {
 		t.Fatal("startup accepted failed catalog")
 	}
 	app.shutdown()
+	// 等待上一实例的关闭 watcher 退出，再创建会重新配置全局日志的新实例。
+	if err := app.eg.Wait(); err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
 	if stage.Load() != 1 {
 		t.Fatal("ready published after failed startup")
 	}
