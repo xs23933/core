@@ -1,5 +1,7 @@
 # [AI Context] Core Framework v3
 
+v3.1.61 提供 middleware/gzip 和 StaticConfig 静态长缓存；默认压缩文本类响应，图片默认不压缩，HTML 使用 no-cache。不传 StaticConfig 保留旧缓存行为。静态方法新增可变配置参数，Ctx 新增 SetResponseWriter；已提交响应遇到 handler 错误只记录、不追加错误文本。详见 skills/core-middleware.md、skills/core-static.md。
+
 v3.1.60 起，NSQ Consumer（含 Builder）创建时继承最近成功 InitNSQ 的 nsq.auth_secret，NSQConsumerConfig.AuthSecret 非空覆盖，CloseNSQ 清空默认凭据，读写受锁保护；见 skills/core-nsq.md。
 
 配置 `.dat` 的可选独立密钥来自 CORE_CONFIG_KEY_FILE 指定的普通文件，恰好 32 字节原始内容，用于 --generate、LoadConfigFile 和 SaveConfigFile。显式设置后失败关闭，LoadConfigFile 使用脱敏 panic，不生成默认配置；未设置保持旧流程。不得改变业务 AESKey；密钥文件限制到 root/运行用户可读，详见 skills/core-utils.md。
@@ -577,6 +579,12 @@ func AccessLog() core.HandlerFunc {
 ```
 
 未匹配显式路由的请求会先执行全局中间件，再由框架 fallback handler 返回 404；路径级中间件不会执行。显式注册的 `core.Logger()` 因此可记录 404。`IsRouteFallback(c)` 仅用于识别未匹配的 OPTIONS 预检 fallback，不会将普通 404 标记为 OPTIONS fallback。
+
+响应压缩使用 `middleware/gzip.New(config...)`：默认 MIME 为 JSON、HTML、CSS、JS、纯文本、XML、SVG，阈值 1024 字节，级别为标准库默认值。非 nil 的 `ContentTypes` 替换默认列表，空切片禁用；`MinLength < 0` 取消阈值，`Skip` 排除请求。按 `Accept-Encoding`/q 协商，添加 Vary；跳过 HEAD/CONNECT/Upgrade/Range、204/304、SSE、已有 Content-Encoding、no-transform，默认不压缩 PNG/WebP/JPEG。只缓冲阈值前缀，达到阈值后流式发送；提前 Flush/DoWriteHeader 会保持原始编码。详见 skills/core-middleware.md。
+
+静态长缓存通过 `app.Static(path, root, core.StaticConfig{...})` 显式开启，`StaticFS`、`StaticFile`、`StaticFileFS` 同样支持可选配置。不传配置保持旧缓存行为；传空配置默认 7 天，`MaxAge` 是 time.Duration，负数表示 no-cache；HTML/index 页面使用 no-cache，已有 Cache-Control 优先，重定向/错误及动态 API 不添加长缓存。`Immutable: true` 仅用于内容变化即更换 URL 的资源，可配合一年 MaxAge。详见 skills/core-static.md。
+
+中间件包装响应时可用 `original := c.Response(); c.SetResponseWriter(wrapped)`，必须在返回前恢复原 writer，不得跨请求保存。Core 在响应写出后遇到 handler 错误只记录错误，不追加错误文本；未写出时保持原有错误响应。
 
 ### 3.8 gRPC 与网关
 

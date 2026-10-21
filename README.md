@@ -1,5 +1,7 @@
 # Core Web Framework v3 - 完整帮助文档
 
+v3.1.61 新增可配置 MIME 类型的 gzip 响应压缩，以及 Static 系列 API 的可选长缓存配置（默认 7 天、HTML 重新验证、显式 immutable）；同时修复静态文件提前返回 404 和已写出响应追加错误文本的问题。用法与接口兼容说明见下文“gzip 压缩与静态文件缓存”。
+
 v3.1.60 起，NSQ 消费者默认继承最近成功 `InitNSQ` 的 `nsq.auth_secret`，非空 `NSQConsumerConfig.AuthSecret` 显式覆盖，`CloseNSQ` 清空默认凭据；见 [NSQ 认证合同](skills/core-nsq.md)。
 
 生产配置可通过 `CORE_CONFIG_KEY_FILE` 指定含恰好 32 字节原始密钥的普通文件（限制为 root/运行用户可读）。`--generate`、`.dat` 加载和保存共用此密钥；配置错误、解密失败或无效 YAML 均拒绝默认回退并使用脱敏错误。未设置时保持旧流程。配置密钥不改变业务 `AESKey` 和 AES API；切换密钥必须重新生成 `.dat`。完整约束见 [独立配置密钥](skills/core-utils.md)。
@@ -530,6 +532,39 @@ app.Use(requestid.New())  // 请求ID
 app.Use(cors.New())       // CORS 支持
 app.Use(core.Logger())    // 显式启用请求日志；Recovery 由 core.New() 自动注册
 ```
+
+#### gzip 压缩与静态文件缓存
+
+```go
+import (
+    "time"
+
+    "github.com/xs23933/core/v3"
+    "github.com/xs23933/core/v3/middleware/gzip"
+)
+
+app.Use(gzip.New())
+
+// 显式启用静态缓存：默认 7 天，HTML 始终 no-cache。
+app.Static("/static", "./static", core.StaticConfig{})
+
+// 仅用于内容变化时 URL 也变化的资源，例如 app.a12bc34.js。
+app.Static("/assets", "./dist/assets", core.StaticConfig{
+    MaxAge:    365 * 24 * time.Hour,
+    Immutable: true,
+})
+app.StaticFile("/", "./dist/index.html", core.StaticConfig{})
+```
+
+gzip 默认压缩 JSON、HTML、CSS、JS、纯文本、XML、SVG；PNG、WebP、JPEG 默认不压缩。默认阈值为 1024 字节，级别为标准库 `gzip.DefaultCompression`。`gzip.Config` 支持 `ContentTypes`（非 nil 时替换默认 MIME 列表，空切片禁用）、`Level`、`MinLength`（0 使用默认值，负数取消阈值）、`Skip`。MIME 匹配忽略大小写及 `charset` 等参数；未设置响应类型时从首段数据推断。非法 MIME 类型或压缩级别会使中间件返回配置错误，不能静默回退。
+
+中间件根据 `Accept-Encoding`（含 q 值）协商并添加 `Vary: Accept-Encoding`。HEAD、CONNECT、Upgrade、Range、204/304、SSE、已有 `Content-Encoding` 和 `Cache-Control: no-transform` 跳过压缩；压缩时移除原始 `Content-Length`、`Accept-Ranges` 和内容摘要，将强 ETag 转为弱 ETag。只缓存不足阈值的前缀，之后流式压缩；在达到阈值前显式 `Flush`/`DoWriteHeader` 会立即发送原始内容。中间件必须在响应写出前执行。
+
+静态缓存配置也适用于 `StaticFS(relativePath, fs, config...)`、`StaticFile(relativePath, filename, config...)` 和 `StaticFileFS(relativePath, filename, fs, config...)`。不传配置保留原来的缓存行为；传入 `StaticConfig{}` 后，成功的静态资源使用 `Cache-Control: public, max-age=604800`。`MaxAge` 是 `time.Duration`，按整秒输出；负数或小于一秒的正数使用 `no-cache`。HTML（含目录默认 index 页面）始终使用 `no-cache`，允许保存但每次使用前需要重新验证。已有 `Cache-Control` 优先，不给动态 API、重定向或错误响应添加长缓存；条件请求与 Range 由标准库继续处理。只有明确启用 `Immutable` 时才追加 `immutable`，框架不会猜测文件名是否包含内容 hash。
+
+响应已写出后再返回 handler 错误时，Core 记录错误，不再追加错误文本或改写状态，避免破坏已发送的压缩、二进制或流式内容；未写出时仍按原有规则返回错误响应。
+
+兼容性：原有静态方法调用无需修改；如果下游自行声明了包含这些方法的接口，或将方法赋给固定参数的函数类型，需要同步追加可变参数 `...core.StaticConfig`。`core.Ctx` 新增 `SetResponseWriter`；内嵌 `core.BaseCtx` 的上下文自动继承，自行维护的 Ctx 包装器或 mock 需同步支持该方法。
 
 ### 7. 验证器
 

@@ -681,15 +681,15 @@ func (app *Core) ALL(path string, handler any, middleware ...any) Router {
 	return app.Add([]string{MethodAll}, path, handler, middleware...)
 }
 
-func (app *Core) Static(relativePath, root string) Router {
-	return app.StaticFS(relativePath, Dir(root, false))
+func (app *Core) Static(relativePath, root string, config ...StaticConfig) Router {
+	return app.StaticFS(relativePath, Dir(root, false), config...)
 }
 
-func (app *Core) StaticFS(relativePath string, fs http.FileSystem) Router {
+func (app *Core) StaticFS(relativePath string, fs http.FileSystem, config ...StaticConfig) Router {
 	if strings.Contains(relativePath, ":") || strings.Contains(relativePath, "*") {
 		panic("URL parameters can not be used when serving a static folder")
 	}
-	handle := app.staticHandler(relativePath, fs)
+	handle := withStaticCache(app.staticHandler(relativePath, fs), "", config)
 	uri := path.Join(relativePath, "*")
 	app.GET(uri, handle)
 	app.HEAD(uri, handle)
@@ -699,21 +699,21 @@ func (app *Core) StaticFS(relativePath string, fs http.FileSystem) Router {
 // StaticFile static file
 //
 // app.StaticFile("/favicon.ico", "./favicon.ico")
-func (app *Core) StaticFile(relativePath, dirname string) Router {
-	return app.staticFileHandler(relativePath, func(c Ctx) error {
+func (app *Core) StaticFile(relativePath, dirname string, config ...StaticConfig) Router {
+	return app.staticFileHandler(relativePath, withStaticCache(func(c Ctx) error {
 		c.File(dirname)
 		return nil
-	})
+	}, dirname, config))
 }
 
 // StaticFileFS works just like `StaticFile` but a custom `http.FileSystem` can be used instead..
 //
 // app.StaticFileFS("favicon.ico", "./resources/favicon.ico", Dir{".", false})
-func (app *Core) StaticFileFS(relativePath, dirname string, fs http.FileSystem) Router {
-	return app.staticFileHandler(relativePath, func(c Ctx) error {
+func (app *Core) StaticFileFS(relativePath, dirname string, fs http.FileSystem, config ...StaticConfig) Router {
+	return app.staticFileHandler(relativePath, withStaticCache(func(c Ctx) error {
 		c.FileFromFS(dirname, fs)
 		return nil
-	})
+	}, dirname, config))
 }
 
 func (app *Core) staticFileHandler(relativePath string, handler HandlerFunc) Router {
@@ -730,9 +730,6 @@ func (app *Core) staticHandler(relativePath string, fs http.FileSystem) HandlerF
 	fileServer := http.StripPrefix(absolutePath, http.FileServer(fs))
 
 	return HandlerFunc(func(c Ctx) error {
-		if _, noListing := fs.(*onlyFilesFS); noListing {
-			c.SendStatus(StatusNotFound)
-		}
 		fileServer.ServeHTTP(c.Response(), c.Request())
 		return nil
 	})

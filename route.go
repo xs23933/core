@@ -188,6 +188,10 @@ func (app *Core) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	c.handlers = handlers
 	c.indexHandler = -1
 	if err := c.Next(); err != nil {
+		if c.Response().Written() {
+			Erro("handler failed after response was written: %v", err)
+			return
+		}
 		code, message := errorStatus(err)
 		c.SendStatus(code, message)
 	}

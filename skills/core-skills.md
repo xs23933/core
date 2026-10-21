@@ -33,7 +33,8 @@ Core Framework v3 是一个轻量级企业级 Go Web 框架，模块路径为 `g
 - **双协议兼容**：Service 层同时支持 HTTP 和 gRPC 调用
 - **多数据库支持**：MySQL、PostgreSQL、SQLite、ClickHouse 统一 GORM 接口
 - **服务治理**：内建 etcd 注册发现、gRPC 网关自动路由映射
-- **中间件生态**：CORS、限流、Metrics、RequestID 开箱即用
+- **中间件生态**：CORS、限流、Metrics、RequestID、可配置 MIME 的 gzip 响应压缩
+- **静态文件缓存**：Static 系列 API 可选 StaticConfig，默认 7 天、HTML no-cache、显式 immutable
 - **缓存体系**：Redis 封装 + Cache 包装器（singleflight 防击穿、空值缓存）
 - **消息队列**：NSQ Producer/Consumer 完整封装
 - **文件处理**：单文件/多文件上传、自动校验、路径管理
@@ -51,7 +52,8 @@ skills/
 ├── core-handler.md          # RESTful Handler 创建与自动路由注册
 ├── core-model.md            # 数据模型定义、GORM 类型、分页查询、事务
 ├── core-service.md          # 业务逻辑层编写（兼容 HTTP/gRPC）
-├── core-middleware.md       # 中间件开发（CORS/限流/Metrics/RequestID）
+├── core-middleware.md       # 中间件开发（CORS/限流/Metrics/RequestID/gzip）
+├── core-static.md           # 静态文件、可选长缓存、HTML 重新验证
 ├── core-grpc.md             # gRPC 服务端（轻量 GRPCCtx / 可信 Gateway 客户端 IP / TLS/interceptor/注册/启动/etcd 注册/共用端口约束/响应 Header/Cookie）
 ├── core-grpc-client.md      # gRPC 客户端（服务发现/明确 target/每服务 TLS/MustGrpcClient）
 ├── core-gateway.md          # etcd HTTP/gRPC 网关（v3.1.59 起提供 ExactJSONBinding / core-client-ip / 自动/手动路由、负载均衡、请求 metadata/响应 Header/Cookie）

@@ -1,7 +1,7 @@
 ---
 name: core-middleware
-description: Core Framework 中间件开发与组合，包含 requestid、cors、metrics、ratelimit、bodylimit、timeout、security、otel、etag、monitor 以及自定义中间件规范
-tags: [go, core-framework, middleware, cors, metrics, ratelimit, requestid, bodylimit, timeout, security, otel, etag, monitor]
+description: Core Framework 中间件开发与组合，包含 gzip、requestid、cors、metrics、ratelimit、bodylimit、timeout、security、otel、etag、monitor 以及自定义中间件规范
+tags: [go, core-framework, middleware, gzip, cors, metrics, ratelimit, requestid, bodylimit, timeout, security, otel, etag, monitor]
 ---
 
 # Core Middleware 技能
@@ -17,6 +17,7 @@ tags: [go, core-framework, middleware, cors, metrics, ratelimit, requestid, body
 - "限流"
 - "统一日志/耗时"
 - "请求体大小限制" / "安全头" / "超时" / "ETag" / "健康检查" / "OpenTelemetry" / "监控"
+- "gzip" / "响应压缩" / "压缩内容类型"
 
 ## 1. 中间件签名
 
@@ -242,6 +243,32 @@ if err := app.ShutdownWithTimeout(30 * time.Second); err != nil {
     log.Fatal("shutdown failed:", err)
 }
 ```
+
+## 16. gzip 响应压缩
+
+```go
+import "github.com/xs23933/core/v3/middleware/gzip"
+
+app.Use(gzip.New())
+// 或覆盖配置：非 nil 的 ContentTypes 替换整个默认列表。
+app.Use(gzip.New(gzip.Config{
+    ContentTypes: []string{"application/json", "text/html", "text/css", "text/javascript", "application/javascript"},
+    MinLength: 1024,
+    Skip: func(c core.Ctx) bool { return c.Path() == "/private/export" },
+}))
+```
+
+上述两种注册方式选择一种，不要重复安装。默认类型为 `application/json`、`text/html`、`text/css`、`text/javascript`、`application/javascript`、`text/plain`、`application/xml`、`text/xml`、`image/svg+xml`。PNG/WebP/JPEG 默认不压缩。
+
+- `ContentTypes: nil` 保留默认；非 nil 空切片禁用压缩。MIME 匹配忽略大小写和 charset 等参数。
+- `Level: 0` 使用标准库默认压缩级别；其它值使用 `compress/gzip` 级别（如 BestSpeed、BestCompression、HuffmanOnly）。无效级别或 MIME 会使中间件返回配置错误。
+- `MinLength: 0` 使用默认 1024 字节；负数取消阈值。只缓冲不足阈值的前缀，之后流式发送，不缓冲整份文件。
+- 协商 `Accept-Encoding`，尊重 `gzip;q=0` 并设置 `Vary: Accept-Encoding`；压缩后删除原始长度、Accept-Ranges、内容摘要，强 ETag 转弱 ETag。
+- HEAD/CONNECT/Upgrade/Range、204/304、SSE、已有 Content-Encoding、`Cache-Control: no-transform` 均跳过压缩。
+- 提前 Flush/DoWriteHeader 会提交原始响应，不等待阈值；已开始压缩后 Flush 同步刷新 gzip 与底层响应。SSE 始终直接发送。
+- 当前响应已提交后返回错误，Core 只记录错误，不追加明文或重写状态，避免损坏压缩流。未提交前保持原有错误处理。
+- 响应包装使用 `c.SetResponseWriter(wrapped)`，中间件退出时必须恢复原 writer。压缩池在请求结束时清除对请求 writer 的引用。
+- 静态资源的浏览器/CDN 长缓存独立由 [core-static.md](core-static.md) 的 `StaticConfig` 控制。
 
 ## 生成代码时避免
 

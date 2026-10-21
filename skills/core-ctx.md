@@ -113,6 +113,17 @@ c.SendStatus(404, "Not Found")
 
 ## 🎯 常见场景模板
 
+### 响应 writer 包装（框架中间件）
+
+中间件需要拦截响应时，先保存 `original := c.Response()`，再调用
+`c.SetResponseWriter(wrapped)`，并 `defer c.SetResponseWriter(original)`。
+包装器必须实现 `core.ResponseWriter`（包括 WriteString、DoWriteHeader、Flush
+和 Hijack 等行为），不得将 writer 或 Ctx 保存到请求生命周期之外。
+一般业务 Handler 直接使用响应便捷方法，无需包装 writer。
+
+响应写出后返回错误，Core 记录错误，不会继续追加错误文本或重写状态。
+未写出前的错误仍由框架返回；不要依赖先写出半份响应再返回错误来生成结构化错误页。
+
 ### 场景 1：标准 CRUD - 获取资源
 
 ```go

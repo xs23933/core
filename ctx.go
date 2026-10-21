@@ -34,6 +34,7 @@ type Ctx interface {
 	Ctx() context.Context
 	Host() string
 	Response() ResponseWriter                                              // Response() return http.ResponseWriter
+	SetResponseWriter(ResponseWriter)                                      // Replace the writer for the current request; middleware must restore it.
 	Request() *http.Request                                                // Request() return *http.Request
 	RedirectJS(to string, msg ...string)                                   // use js redirect
 	Redirect(to string, stCode ...int) error                               // base redirect
@@ -1619,6 +1620,12 @@ func (c *BaseCtx) Request() *http.Request {
 // ResponseWriter implements Ctx.
 func (c *BaseCtx) Response() ResponseWriter {
 	return c.W
+}
+
+// SetResponseWriter replaces the current response writer. Middleware must restore
+// the previous writer before returning; the writer must not outlive the request.
+func (c *BaseCtx) SetResponseWriter(w ResponseWriter) {
+	c.W = w
 }
 
 func (app *Core) AcquireCtx(w http.ResponseWriter, r *http.Request) *BaseCtx {
