@@ -44,3 +44,7 @@ StorageDir 必须是持久化的专用目录；默认创建权限 0700，证书�
 UseCertificateManager 必须在 Run/Serve 前调用，与已有 TLSConfig、acme 或 certmagic 冲突时返回错误。成功后 Core 托管 manager.Close 和可选 HTTP listener；失败时调用方负责关闭 manager。HTTPS 仍由原有 listener 提供，不另启 HTTPS 或 HTTP/3 listener。HTTP 地址必须由公网 80 转发可达；HTTP handler 只处理挑战，其它路径返回 404，不提供无条件重定向。
 
 如果 HTTP-01 由其它进程/入口转发，可用空 httpAddress，另将 manager.HTTPHandler(next) 接到实际接收挑战的入口。内置引擎始终预占独立的 127.0.0.1 临时端口，并显式将 CertMagic HTTP-01 solver 指向该已监听端口，避免 solver 自行绑定公网 80。内部 listener 默认拒绝请求，管理器接入后也必须经过相同的域名成员、Remove/关闭状态和实时 Authorize 检查；公开挑战入口使用 :80、其它端口或外部转发时均执行相同约束。引擎关闭时释放内部 listener。多实例共享存储只解决证书与挑战数据协调，仍须部署正确的公网挑战路由。
+
+## 既有静态 CertMagic 的维护
+
+修复旧版 `certmagic` / on-demand 时，独立 Cache 的 `GetConfigForCert` 必须返回用于首次管理和 TLS 握手的同一个 Config，保留 Storage、Issuers、DNS solver 和 subject transformer；不得用共享 `NewDefault()` 缓存配合局部覆盖。失败及关闭路径停止缓存。回归应实际调用 `Cache.RenewManagedCertificates`，确认从实例目录重载新证书，避免仅测试同步续期。外部 Caddy/Nginx 手动加载 PEM 文件时，需要部署层另行重载。

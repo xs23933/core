@@ -105,24 +105,7 @@ func (app *Core) setupCertMagic() error {
 		}
 	}
 
-	// 配置 CertMagic 使用 DNS-01 挑战
-	certmagic.DefaultACME.Agreed = true
-	certmagic.DefaultACME.Email = app.certMagicConfig.Email
-	// 使用生产环境（测试时可以先换成 staging）
-
-	// 关键：设置 DNS 挑战的提供商
-	certmagic.DefaultACME.DNS01Solver = &certmagic.DNS01Solver{
-		DNSManager: certmagic.DNSManager{
-			DNSProvider: dnsProvider,
-		},
-	}
-
-	// 可选：禁用 HTTP-01 和 TLS-ALPN-01 挑战（只用 DNS-01）
-	certmagic.DefaultACME.DisableHTTPChallenge = true
-	certmagic.DefaultACME.DisableTLSALPNChallenge = true
-
-	storage := &certmagic.FileStorage{Path: app.certMagicConfig.CacheDir}
-	magic := certmagic.NewDefault()
+	magic, cache := app.newCertMagicConfig()
 
 	// 关键：使用 NewACMEIssuer 函数创建 ACMEIssuer [citation:9]
 	acmeIssuer := certmagic.NewACMEIssuer(magic, certmagic.ACMEIssuer{
@@ -138,9 +121,6 @@ func (app *Core) setupCertMagic() error {
 			},
 		},
 	})
-	if app.certMagicConfig.CacheDir != "" {
-		magic.Storage = storage
-	}
 
 	// 测试环境用 Staging CA [citation:9]
 	// if app.Debug {
@@ -161,8 +141,10 @@ func (app *Core) setupCertMagic() error {
 	ctx := context.Background()
 	err := magic.ManageSync(ctx, app.certMagicConfig.Domains)
 	if err != nil {
+		cache.Stop()
 		return fmt.Errorf("failed to manage certificates: %w", err)
 	}
+	app.OnShutdown(cache.Stop)
 	// 其他共享可调用
 	app.Server.TLSConfig = magic.TLSConfig()
 
@@ -189,10 +171,12 @@ func (app *Core) onDemand(email, path string) error {
 	// }
 
 	// 配置 onDemand 获得证书
-	certmagic.DefaultACME.Agreed = true // 同意 Let's Encrypt 的条款
-	certmagic.DefaultACME.Email = email
+	magic, cache := app.newCertMagicConfig()
+	magic.Issuers = []certmagic.Issuer{certmagic.NewACMEIssuer(magic, certmagic.ACMEIssuer{
+		Email:  email,
+		Agreed: true,
+	})}
 
-	magic := certmagic.NewDefault()
 	magic.OnDemand = &certmagic.OnDemandConfig{
 		DecisionFunc: func(ctx context.Context, name string) error {
 			return nil
@@ -209,14 +193,34 @@ func (app *Core) onDemand(email, path string) error {
 
 	if path != "" {
 		if err := ensureCertMagicCacheDir(path); err != nil {
+			cache.Stop()
 			return err
 		}
 		magic.Storage = &certmagic.FileStorage{Path: path}
 	}
 
 	app.Server.TLSConfig = magic.TLSConfig()
+	app.OnShutdown(cache.Stop)
 
 	return nil
+}
+
+// Each cache must renew with the same config used to obtain and serve its certs.
+// NewDefault's shared cache reconstructs a default config, losing local storage
+// and issuer overrides during background maintenance.
+func (app *Core) newCertMagicConfig() (*certmagic.Config, *certmagic.Cache) {
+	var magic *certmagic.Config
+	cache := certmagic.NewCache(certmagic.CacheOptions{
+		GetConfigForCert: func(certmagic.Certificate) (*certmagic.Config, error) {
+			return magic, nil
+		},
+	})
+	config := certmagic.Config{}
+	if app.certMagicConfig.CacheDir != "" {
+		config.Storage = &certmagic.FileStorage{Path: app.certMagicConfig.CacheDir}
+	}
+	magic = certmagic.New(cache, config)
+	return magic, cache
 }
 
 func ensureCertMagicCacheDir(path string) error {

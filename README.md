@@ -3070,3 +3070,7 @@ if err != nil {
 应用在 Run 前使用 `app.UseCertificateManager(manager, ":80")`，现有 `listen: ":443"` 提供 HTTPS，Core 托管挑战 listener 和关闭。该能力与静态 acme/certmagic 配置互斥；生产使用持久 StorageDir，多实例使用具备锁能力的共享 Storage，并将公网 HTTP-01 请求送达挑战 handler。默认生产 CA，Config.CA 可切换 staging/本地 directory，测试应注入 Engine，不访问公网 CA。
 
 状态提供 pending、issuing、ready、renewing、failed、expired、removed，以及公开失败码和证书有效期；续期失败可继续提供旧的有效证书，过期和授权未知则拒绝。详细 API、示例、跨实例和安全边界见 [动态证书说明](skills/core-certificates.md)。
+
+### 静态 CertMagic 证书维护
+
+`certmagic`（Cloudflare DNS-01）与旧版 on-demand 模式为每个 Core 实例创建独立缓存，后台维护复用该实例的存储和签发配置；`certmagic.cache` 默认 `./certs`，服务用户必须可写。启动失败和 Core 关闭时停止维护缓存。外部 Caddy/Nginx 若手动加载这些 PEM 文件，必须在续期后重新加载；Core 更新文件不会刷新其它进程的证书缓存。

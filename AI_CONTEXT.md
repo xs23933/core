@@ -1269,3 +1269,5 @@ HTTP-only 应用可启用工作负载身份进行出站 mTLS，`EnableEtcdRegist
 内置引擎预绑定回环临时端口并明确设置 solver 的 ListenHost/AltHTTPPort；内部 listener 同样检查域名成员、Remove/关闭状态和实时 Authorize，禁止自动产生无保护的公网 :80 入口。
 
 租户域名使用独立 `certificate.New(certificate.Config{StorageDir, Email, CA, Authorize})`；必须显式授权，调用 `Ensure(ctx, hostname)` 后台申请，`Remove` 拒绝新握手和续期，`Status` 只返回非敏感状态。管理器使用专用 CertMagic HTTP-01 与持久 Storage，拒绝未知 SNI、泛域名和任意按需签发；授权检查覆盖申请、续期、TLS 和挑战。应用启动前 `app.UseCertificateManager(manager, ":80")` 接入原 HTTPS listener，listen 配置设为 :443；与旧 acme/certmagic 互斥，Core 关闭时释放资源。业务负责绑定 generation、所有权验证、域名清单同步和当前授权事实。完整合同见 [skills/core-certificates.md](skills/core-certificates.md)。
+
+静态 CertMagic 与旧版 on-demand 的维护缓存必须返回实例自身的 Config，不能用 `NewDefault()` 后局部覆盖 Storage/Issuers；其共享缓存的维护回调会重建默认配置、丢失这些覆盖。缓存应在启动失败及 Core 关闭时停止。外部反代手动加载 PEM 时需另行重载。
