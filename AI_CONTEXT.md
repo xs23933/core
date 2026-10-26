@@ -12,6 +12,8 @@ v3.1.60 起，NSQ Consumer（含 Builder）创建时继承最近成功 InitNSQ �
 
 枚举边界：生成的 Scan 支持 int64/uint8/uint16/uint32/float64/string/[]byte；数值输入必须为 0～255 的整数，拒绝负数、溢出和非有限浮点且不修改原值。EnumString 对越界索引返回空串，EnumMarshalJSON/EnumMarshalText 返回错误；EnumUnmarshalJSON 在转换前检查数值范围，并支持 256 项映射。字符串解析沿用现行合同，领域取值仍由调用方校验。修改模板后须重新生成业务枚举。
 
+monitor 资源采集使用固定间隔缓存：必须安装 `monitor.New`，`Snapshot()`、JSON 与 Prometheus Handler 只读快照。默认常规 5 秒、FD/磁盘/cgroup 慢采集 30 秒；`Config.DiskPath` 只对指定本地目录所在文件系统执行 statfs。CPU 使用 Linux 累计进程 CPU 差分，单核 100%，以 `cpu_available` 判断有效性；`max_fds` 为软限制，`max_fds_hard` 为硬限制，`fd_available` 判断两者与计数有效性。新增 RSS、主机内存/Swap、CPU、load、PSI、磁盘容量/inode、cgroup v2 有限配额用可空值表达未知；非 Linux 不伪造系统零值。`host_id` 为内核 boot_id SHA-256，`sampled_at`/`resource_sampled_at` 表达新鲜度；跨服务投影禁止携带 `disk_path`。详见 README 与 skills/core-middleware.md。 `disk_id` 是同一主机启动身份与文件系统设备号的 SHA-256；不同磁盘分别聚合，未取得主机身份时为空，不包含监控路径。
+
 ## 1. 框架身份
 - **名称**: Core Framework
 - **语言**: Go (Golang 1.24+)

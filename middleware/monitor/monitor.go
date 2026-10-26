@@ -2,20 +2,16 @@
 //
 // 使用方式:
 //
-//	// 方式 1: 仅暴露 Prometheus /metrics 端点
-//	app.Get("/metrics", monitor.PrometheusHandler())
-//
-//	// 方式 2: 启动后台周期性采集 + JSON endpoint
+//	// 启动后台周期性采集，再暴露 JSON 或 Prometheus 端点
 //	app.Use(monitor.New(monitor.Config{Interval: 5 * time.Second}))
 //	app.Get("/sys/stats", monitor.StatsHandler())
+//	app.Get("/metrics", monitor.PrometheusHandler())
 //
-// 零开销 — 后台 goroutine 每 Interval 采集一次，不影响请求处理。
+// 后台固定间隔采集并缓存；请求只读取快照，不执行系统探测。
 package monitor
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
 	"runtime"
 	"strings"
 	"sync"
@@ -28,11 +24,11 @@ import (
 // Stats 服务器运行时统计
 type Stats struct {
 	// CPU 相关
-	NumGoroutine  int     `json:"num_goroutine"`
-	NumCPU        int     `json:"num_cpu"`
-	GoMaxProcs    int     `json:"gomaxprocs"`
-	NumCgoCall    int64   `json:"num_cgo_call"`
-	CPUPercent    float64 `json:"cpu_percent"` // 近似值
+	NumGoroutine int     `json:"num_goroutine"`
+	NumCPU       int     `json:"num_cpu"`
+	GoMaxProcs   int     `json:"gomaxprocs"`
+	NumCgoCall   int64   `json:"num_cgo_call"`
+	CPUPercent   float64 `json:"cpu_percent"` // 进程 CPU，单核满载为 100；以 CPUAvailable 判断有效性
 
 	// 内存相关 (bytes)
 	Alloc      uint64 `json:"alloc"`
@@ -50,34 +46,78 @@ type Stats struct {
 
 	// 系统资源
 	OpenFDs     int64 `json:"open_fds"`     // 当前进程打开的文件描述符数
-	MaxFDs      int64 `json:"max_fds"`      // 系统允许的最大文件描述符
+	MaxFDs      int64 `json:"max_fds"`      // 当前进程文件描述符软限制；-1 表示无限制
 	NumConns    int64 `json:"num_conns"`    // 框架追踪的网络连接数
 	NumRequests int64 `json:"num_requests"` // 累计请求数（通过中间件计数）
 
-	// 内部字段
-	prevCPUTime time.Time
-	prevCPUUsed float64
+	// 不支持、读取失败及首次 CPU 差分采样均显式标记为不可用。
+	SampledAt                  time.Time  `json:"sampled_at"`
+	HostID                     string     `json:"host_id"`
+	ResourceSampledAt          *time.Time `json:"resource_sampled_at"`
+	CPUAvailable               bool       `json:"cpu_available"`
+	FDAvailable                bool       `json:"fd_available"`
+	MaxFDsHard                 int64      `json:"max_fds_hard"`
+	ProcessRSSBytes            *uint64    `json:"process_rss_bytes"`
+	ProcessThreads             *uint64    `json:"process_threads"`
+	HostCPUPercent             *float64   `json:"host_cpu_percent"`
+	HostCPUCount               *int       `json:"host_cpu_count"`
+	HostMemoryTotalBytes       *uint64    `json:"host_memory_total_bytes"`
+	HostMemoryAvailableBytes   *uint64    `json:"host_memory_available_bytes"`
+	HostSwapTotalBytes         *uint64    `json:"host_swap_total_bytes"`
+	HostSwapFreeBytes          *uint64    `json:"host_swap_free_bytes"`
+	HostLoad1                  *float64   `json:"host_load1"`
+	HostLoad5                  *float64   `json:"host_load5"`
+	HostLoad15                 *float64   `json:"host_load15"`
+	DiskID                     string     `json:"disk_id"`
+	DiskPath                   string     `json:"disk_path"`
+	DiskTotalBytes             *uint64    `json:"disk_total_bytes"`
+	DiskAvailableBytes         *uint64    `json:"disk_available_bytes"`
+	DiskInodesTotal            *uint64    `json:"disk_inodes_total"`
+	DiskInodesAvailable        *uint64    `json:"disk_inodes_available"`
+	DiskSampledAt              *time.Time `json:"disk_sampled_at"`
+	PressureCPUSomeAvg10       *float64   `json:"pressure_cpu_some_avg10"`
+	PressureMemorySomeAvg10    *float64   `json:"pressure_memory_some_avg10"`
+	PressureIOSomeAvg10        *float64   `json:"pressure_io_some_avg10"`
+	CgroupMemoryAvailableBytes *uint64    `json:"cgroup_memory_available_bytes"`
+	CgroupPidsAvailable        *uint64    `json:"cgroup_pids_available"`
+	CgroupMemoryCurrentBytes   *uint64    `json:"cgroup_memory_current_bytes"`
+	CgroupMemoryLimitBytes     *uint64    `json:"cgroup_memory_limit_bytes"`
+	CgroupPidsCurrent          *uint64    `json:"cgroup_pids_current"`
+	CgroupPidsLimit            *uint64    `json:"cgroup_pids_limit"`
+	CgroupCPULimitCores        *float64   `json:"cgroup_cpu_limit_cores"`
 }
 
 // Config 监控配置
 type Config struct {
 	// Interval 采集间隔，默认 5s
 	Interval time.Duration
+	// ResourceInterval 为文件描述符、磁盘与 cgroup 的采集间隔，默认 30s。
+	ResourceInterval time.Duration
+	// DiskPath 指定本机数据目录，默认当前目录；只执行该目录所在文件系统的 statfs。
+	DiskPath string
 	// Skip 可选跳过函数
 	Skip func(c core.Ctx) bool
 }
 
 var DefaultConfig = Config{
-	Interval: 5 * time.Second,
+	Interval:         5 * time.Second,
+	ResourceInterval: 30 * time.Second,
+	DiskPath:         ".",
 }
 
 // Collector 运行时数据采集器
 type Collector struct {
-	stats  atomic.Value // *Stats
-	mu     sync.Mutex
-	conns  atomic.Int64
-	reqs   atomic.Int64
-	closed chan struct{}
+	stats              atomic.Value // *Stats
+	mu                 sync.Mutex
+	conns              atomic.Int64
+	reqs               atomic.Int64
+	closed             chan struct{}
+	startOnce          sync.Once
+	resourceInterval   time.Duration
+	diskPath           string
+	previousCPU        cpuSnapshot
+	slowStats          *Stats
+	lastResourceSample time.Time
 }
 
 var defaultCollector = &Collector{
@@ -96,6 +136,11 @@ func DecConns() { defaultCollector.conns.Add(-1) }
 
 // IncRequests 增加请求计数（供中间件调用）
 func IncRequests() { defaultCollector.reqs.Add(1) }
+
+// Snapshot 返回进程级采集器的缓存快照；调用者应只读使用其中的可空指标。
+func Snapshot() Stats {
+	return *defaultCollector.stats.Load().(*Stats)
+}
 
 // StatsHandler 返回 JSON 格式的系统状态 handler。
 func StatsHandler() core.HandlerFunc {
@@ -123,12 +168,21 @@ func PrometheusHandler() core.HandlerFunc {
 		writeMetric("core_memory_heap_inuse_bytes", "Heap bytes in use", "gauge", s.HeapInuse)
 		writeMetric("core_memory_sys_bytes", "Bytes obtained from system", "gauge", s.Sys)
 		writeMetric("core_gc_pause_seconds", "GC pause time in seconds", "gauge", fmt.Sprintf("%.6f", s.GCPauseMs/1000))
-		writeMetric("core_open_fds", "Open file descriptors", "gauge", s.OpenFDs)
-		writeMetric("core_max_fds", "Max file descriptors", "gauge", s.MaxFDs)
+		if s.FDAvailable {
+			writeMetric("core_open_fds", "Open file descriptors", "gauge", s.OpenFDs)
+			writeMetric("core_max_fds", "Process soft file descriptor limit (-1 means unlimited)", "gauge", s.MaxFDs)
+		}
 		writeMetric("core_connections", "Active connections", "gauge", s.NumConns)
 		writeMetric("core_requests_total", "Total requests", "counter", s.NumRequests)
-		writeMetric("core_cpu_percent", "Approximate CPU usage percent", "gauge",
-			fmt.Sprintf("%.2f", s.CPUPercent))
+		if s.FDAvailable {
+			writeMetric("core_max_fds_hard", "Process hard file descriptor limit (-1 means unlimited)", "gauge", s.MaxFDsHard)
+		}
+		if s.CPUAvailable {
+			writeMetric("core_cpu_percent", "Process CPU usage percent (one core = 100)", "gauge", fmt.Sprintf("%.2f", s.CPUPercent))
+		}
+		writeMetric("core_cpu_available", "Process CPU sample availability", "gauge", boolMetric(s.CPUAvailable))
+		writeMetric("core_fd_available", "Process file descriptor sample availability", "gauge", boolMetric(s.FDAvailable))
+		writeResourceMetrics(writeMetric, s)
 
 		c.SetHeader("Content-Type", "text/plain; version=0.0.4")
 		return c.SendString(b.String())
@@ -142,13 +196,19 @@ func New(conf ...Config) core.HandlerFunc {
 		if conf[0].Interval > 0 {
 			cfg.Interval = conf[0].Interval
 		}
+		if conf[0].ResourceInterval > 0 {
+			cfg.ResourceInterval = conf[0].ResourceInterval
+		}
+		if conf[0].DiskPath != "" {
+			cfg.DiskPath = conf[0].DiskPath
+		}
 		if conf[0].Skip != nil {
 			cfg.Skip = conf[0].Skip
 		}
 	}
 
-	// 启动后台采集
-	go defaultCollector.collectLoop(cfg.Interval)
+	// 进程级采集器只启动一次，避免重复安装中间件产生多个采集循环。
+	defaultCollector.start(cfg)
 
 	return func(c core.Ctx) error {
 		IncRequests()
@@ -157,6 +217,22 @@ func New(conf ...Config) core.HandlerFunc {
 		}
 		return c.Next()
 	}
+}
+
+func (m *Collector) start(cfg Config) {
+	m.startOnce.Do(func() {
+		if cfg.Interval < time.Second {
+			cfg.Interval = time.Second
+		}
+		if cfg.ResourceInterval < cfg.Interval {
+			cfg.ResourceInterval = cfg.Interval
+		}
+		m.resourceInterval = cfg.ResourceInterval
+		m.diskPath = cfg.DiskPath
+		m.stats.Store(m.collect())
+		go m.collectLoop(cfg.Interval)
+	})
+
 }
 
 func (m *Collector) collectLoop(interval time.Duration) {
@@ -175,10 +251,10 @@ func (m *Collector) collectLoop(interval time.Duration) {
 }
 
 func (m *Collector) collect() *Stats {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	var mem runtime.MemStats
 	runtime.ReadMemStats(&mem)
-
-	prev := m.stats.Load().(*Stats)
 
 	s := &Stats{
 		NumGoroutine: runtime.NumGoroutine(),
@@ -203,53 +279,69 @@ func (m *Collector) collect() *Stats {
 		s.GCPauseMs = float64(mem.PauseTotalNs) / float64(s.NumGC) / 1e6
 	}
 
-	// CPU 近似值（两次采样间的差值 / 时间差）
-	now := time.Now()
-	cpuTime := now
-	cpuUsed := float64(s.NumGoroutine)
-	if !prev.prevCPUTime.IsZero() {
-		elapsed := cpuTime.Sub(prev.prevCPUTime).Seconds()
-		if elapsed > 0 {
-			s.CPUPercent = (cpuUsed/elapsed)*100*0.01 + prev.CPUPercent*0.99
-		}
-	}
-	s.prevCPUTime = cpuTime
-	s.prevCPUUsed = cpuUsed
-
-	// 文件描述符
-	if fds, maxFds, err := getFDCount(); err == nil {
-		s.OpenFDs = fds
-		s.MaxFDs = maxFds
-	}
-
+	collectResources(m, s, time.Now())
 	return s
 }
 
-func getFDCount() (openFDs, maxFDs int64, err error) {
-	entries, err := os.ReadDir("/proc/self/fd")
-	if err != nil {
-		// macOS: 尝试用 lsof 替代
-		return 0, 0, err
+func boolMetric(value bool) int {
+	if value {
+		return 1
 	}
-	openFDs = int64(len(entries))
-
-	// 读取系统限制
-	data, err := os.ReadFile("/proc/self/limits")
-	if err == nil {
-		for _, line := range strings.Split(string(data), "\n") {
-			if strings.HasPrefix(line, "Max open files") {
-				var soft, hard int64
-				if _, scanErr := fmt.Sscanf(line, "Max open files %d %d", &soft, &hard); scanErr == nil {
-					maxFDs = hard
-				}
-				break
-			}
-		}
-	}
-	return openFDs, maxFDs, nil
+	return 0
 }
 
-func init() {
-	// 注册自定义 JSON 序列化类型以避免循环依赖
-	_ = json.Marshal // ensure json imported
+func writeResourceMetrics(write func(string, string, string, any), s *Stats) {
+	metrics := []struct {
+		name  string
+		value *uint64
+	}{
+		{"core_process_rss_bytes", s.ProcessRSSBytes},
+		{"core_process_threads", s.ProcessThreads},
+		{"core_host_memory_total_bytes", s.HostMemoryTotalBytes},
+		{"core_host_memory_available_bytes", s.HostMemoryAvailableBytes},
+		{"core_host_swap_total_bytes", s.HostSwapTotalBytes},
+		{"core_host_swap_free_bytes", s.HostSwapFreeBytes},
+		{"core_disk_total_bytes", s.DiskTotalBytes},
+		{"core_disk_available_bytes", s.DiskAvailableBytes},
+		{"core_disk_inodes_total", s.DiskInodesTotal},
+		{"core_disk_inodes_available", s.DiskInodesAvailable},
+		{"core_cgroup_memory_current_bytes", s.CgroupMemoryCurrentBytes},
+		{"core_cgroup_memory_limit_bytes", s.CgroupMemoryLimitBytes},
+		{"core_cgroup_memory_available_bytes", s.CgroupMemoryAvailableBytes},
+		{"core_cgroup_pids_available", s.CgroupPidsAvailable},
+		{"core_cgroup_pids_current", s.CgroupPidsCurrent},
+		{"core_cgroup_pids_limit", s.CgroupPidsLimit},
+	}
+	for _, metric := range metrics {
+		if metric.value != nil {
+			write(metric.name, metric.name, "gauge", *metric.value)
+		}
+	}
+	floatMetrics := []struct {
+		name  string
+		value *float64
+	}{
+		{"core_host_cpu_percent", s.HostCPUPercent},
+		{"core_host_load1", s.HostLoad1},
+		{"core_host_load5", s.HostLoad5},
+		{"core_host_load15", s.HostLoad15},
+		{"core_pressure_cpu_some_avg10", s.PressureCPUSomeAvg10},
+		{"core_pressure_memory_some_avg10", s.PressureMemorySomeAvg10},
+		{"core_pressure_io_some_avg10", s.PressureIOSomeAvg10},
+		{"core_cgroup_cpu_limit_cores", s.CgroupCPULimitCores},
+	}
+	for _, metric := range floatMetrics {
+		if metric.value != nil {
+			write(metric.name, metric.name, "gauge", *metric.value)
+		}
+	}
+	if s.HostCPUCount != nil {
+		write("core_host_cpu_count", "Visible host CPU count", "gauge", *s.HostCPUCount)
+	}
+	if !s.SampledAt.IsZero() {
+		write("core_stats_sample_timestamp_seconds", "Last regular sample timestamp", "gauge", s.SampledAt.Unix())
+	}
+	if s.ResourceSampledAt != nil {
+		write("core_resource_sample_timestamp_seconds", "Last resource sample timestamp", "gauge", s.ResourceSampledAt.Unix())
+	}
 }

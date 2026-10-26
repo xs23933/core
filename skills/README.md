@@ -5,7 +5,7 @@ skills/
 ├── core-handler.md          # 创建 RESTful Handler
 ├── core-model.md            # 定义数据模型
 ├── core-service.md          # 编写业务逻辑层
-├── core-middleware.md       # 开发中间件、gzip 响应压缩
+├── core-middleware.md       # 开发中间件、gzip 响应压缩、monitor 进程/主机资源快照
 ├── core-static.md           # 静态文件与可选浏览器/CDN 长缓存
 ├── core-grpc.md             # gRPC 服务端（轻量 GRPCCtx / 可信 Gateway 客户端 IP / TLS/interceptor / RegisterGRPCService / EnableGRPC / EnableEtcdRegistry / 响应 Header/Cookie）
 ├── core-grpc-client.md      # gRPC 客户端（GrpcClient / GrpcClientAt / 每服务 TLS / etcd discovery）

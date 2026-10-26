@@ -1,5 +1,7 @@
 # Core Web Framework v3 - 完整帮助文档
 
+v3.1.64 修正 Linux monitor 的真实 CPU、FD 软硬限制与未知值语义，增加主机／进程／文件系统／cgroup 资源指标以及只读缓存 Snapshot；默认基础采样 5 秒、慢采样 30 秒。
+
 v3.1.61 新增可配置 MIME 类型的 gzip 响应压缩，以及 Static 系列 API 的可选长缓存配置（默认 7 天、HTML 重新验证、显式 immutable）；同时修复静态文件提前返回 404 和已写出响应追加错误文本的问题。用法与接口兼容说明见下文“gzip 压缩与静态文件缓存”。
 
 v3.1.62 修复默认静态无正文状态提交：四种 Static API 不传 StaticConfig 时，目录跳转仍保持 301，条件请求保持 304，HEAD 不发送正文；缓存仍为可选，不会自动添加 Cache-Control。
@@ -534,6 +536,33 @@ app.Use(requestid.New())  // 请求ID
 app.Use(cors.New())       // CORS 支持
 app.Use(core.Logger())    // 显式启用请求日志；Recovery 由 core.New() 自动注册
 ```
+
+#### 运行时与主机资源监控
+
+```go
+import "github.com/xs23933/core/v3/middleware/monitor"
+
+app.Use(monitor.New(monitor.Config{
+    Interval: 5 * time.Second,
+    ResourceInterval: 30 * time.Second,
+    DiskPath: "/var/lib/my-service",
+}))
+app.GET("/sys/stats", monitor.StatsHandler())
+app.GET("/metrics", monitor.PrometheusHandler())
+// 读取同一份缓存，不触发系统采集；其中的可空指标仅供只读使用。
+stats := monitor.Snapshot()
+_ = stats
+```
+
+`monitor.New` 首次安装时立即采集，随后以固定间隔缓存；重复安装复用首次配置及同一个进程级采集循环。`Interval` 最小 1 秒，`ResourceInterval` 默认 30 秒且不短于 `Interval`。请求和 `Snapshot` 只读快照；单独注册 Handler 不会启动采集，必须安装 `monitor.New`。后台循环在进程退出时结束。
+
+原有 Go 内存、GC、goroutine、连接和请求 JSON 字段保留。`cpu_percent` 改为 Linux `/proc/self/stat` 用户态与内核态累计 CPU 时间相邻采样差分，使用 `/proc/stat` 累计时间归一化，单核满载为 100、多核可超过 100；首次采样、CPU 热插拔或计数器回退时 `cpu_available=false`。`host_cpu_percent` 为可见内核的全部 CPU 忙碌比例（0–100，不含 idle/iowait，guest 不重复计数），不等同于容器 CPU 配额占用率。`max_fds` 修正为当前进程软限制，`max_fds_hard` 提供硬限制；`fd_available` 表示计数与限制均有效，限制 `-1` 表示无限制。
+
+Linux 新指标使用可空数值，缺失、权限不足或不支持返回 JSON `null`：`process_rss_bytes`、`process_threads`；`host_cpu_count`、`host_memory_total_bytes`、`host_memory_available_bytes`、`host_swap_total_bytes`、`host_swap_free_bytes`；`host_load1/5/15`；`pressure_cpu_some_avg10`、`pressure_memory_some_avg10`、`pressure_io_some_avg10`。PSI 是最近 10 秒至少一个任务等待对应资源的百分比。macOS 等非 Linux 平台继续提供 Go 运行时指标，系统指标为 `null` 或对应可用标记为 `false`，不能当成健康零值。
+
+慢采集只对 `DiskPath` 所在本地文件系统执行一次 `statfs`，不扫描目录树或枚举所有挂载。`disk_total_bytes`、`disk_available_bytes` 使用当前用户可用块数，`disk_inodes_total/available` 在文件系统提供 inode 容量时有效；`disk_path` 仅用于本地受保护的诊断，跨服务投影应按白名单移除路径。FD 目录分批计数，超过 131072 项时本轮不可用。cgroup v2 提供 `cgroup_memory_current_bytes`、`cgroup_memory_limit_bytes`、`cgroup_pids_current/limit`、`cgroup_cpu_limit_cores`，有限限制取当前及最多 64 层可见祖先的最小值；无限制或读取不到有限限制时 limit 为 `null`。不支持 cgroup v1，无法观察挂载根外的祖先约束；cgroup memory/pids 的当前值包含当前组的全部进程，不能用单进程 RSS 替代。 `cgroup_memory_available_bytes` 与 `cgroup_pids_available` 取各可见祖先自身 limit-current 的最小值，以包含同父组其它进程占用；受限祖先读取失败时为 `null`，耗尽时为 0。不要用叶组 current 除以继承 limit 推断祖先余量。
+
+`sampled_at` 为常规采集时间；`resource_sampled_at` 为 FD、磁盘、cgroup 与主机标识的慢采集时间，`disk_sampled_at` 仅在磁盘读取成功时返回。监控消费方应检查快照新鲜度与可用性。`host_id` 是 Linux `boot_id` 的 SHA-256，可聚合同一内核启动下的服务，重启后变化；获取失败时为空，不包含原始主机名、IP 或 boot_id。Prometheus 对未知的 CPU、FD 与新增资源指标省略对应序列，并额外提供 `core_cpu_available`、`core_fd_available`。 `disk_id` 是同一主机启动身份与文件系统设备号的 SHA-256；不同磁盘分别聚合，未取得主机身份时为空，不包含监控路径。
 
 #### gzip 压缩与静态文件缓存
 

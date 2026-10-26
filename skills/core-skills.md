@@ -1071,3 +1071,7 @@ Gateway 可使用 Go 标准库首次自动创建私有 CA，后端自动申请�
 ## 动态域名证书
 
 租户自定义域名、动态 HTTPS、ACME HTTP-01、证书状态或续期任务，先阅读 [core-certificates.md](core-certificates.md)。使用独立 certificate.Manager 和显式 Authorize，不启用无约束按需签发或泛域名转换。
+
+## monitor 资源快照
+
+`middleware/monitor` 提供固定间隔的 Go、Linux 进程/主机与 cgroup v2 资源快照，常规 5 秒、FD/指定本地目录 statfs/cgroup 30 秒；`Snapshot()` 只读缓存。CPU 单核 100%，软/硬 FD 限制分开，可空指标及可用标记表达未知，`host_id` 使用 boot_id SHA-256，采样时间标记新鲜度。完整合同与投影边界见 [core-middleware.md](core-middleware.md#11-服务器监控-monitor)。

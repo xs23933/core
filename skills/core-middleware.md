@@ -180,16 +180,27 @@ app.Use(etag.New())
 ## 11. 服务器监控 (monitor)
 
 ```go
-// 方式 1：仅 Prometheus endpoint
-app.Get("/metrics", monitor.PrometheusHandler())
-
-// 方式 2：后台采集 + JSON endpoint
-app.Use(monitor.New(monitor.Config{Interval: 5 * time.Second}))
-app.Get("/sys/stats", monitor.StatsHandler())
+// 必须先启动采集；单独注册 Handler 不会启动后台任务。
+app.Use(monitor.New(monitor.Config{
+    Interval: 5 * time.Second,
+    ResourceInterval: 30 * time.Second,
+    DiskPath: "/var/lib/my-service",
+}))
+app.GET("/sys/stats", monitor.StatsHandler())
+app.GET("/metrics", monitor.PrometheusHandler())
+// 只读缓存，不触发文件或系统调用；可空字段只读使用。
+stats := monitor.Snapshot()
+_ = stats
 ```
 
-暴露指标：CPU 使用率、内存 (Alloc/HeapAlloc/Sys)、GC 次数/暂停时间、Goroutine 数量、打开文件描述符数、连接数、累计请求数。
-支持 JSON (`/sys/stats`) 和 Prometheus (`/metrics`) 两种输出格式。
+- 首次安装立即采集，后续固定间隔缓存；重复安装复用首次配置和同一个进程级循环。`Interval` 最小 1 秒，`ResourceInterval` 不短于常规间隔，默认 30 秒。循环在进程退出时结束。
+- `cpu_percent` 为 Linux 进程累计 CPU 的采样差分，单核 100%，多核可超过 100；首次采样与无效差分以 `cpu_available=false` 表示。`host_cpu_percent` 为可见内核全部 CPU 忙碌比例，不含 idle/iowait，不代表容器配额使用率。
+- `max_fds` 是当前进程软限制，`max_fds_hard` 是硬限制，`-1` 为无限制；`fd_available=false` 时不得显示为健康零值。FD 每轮最多计数 131072 项，超预算不可用。
+- 保留 Go 内存/GC/goroutine 等原 JSON 字段。新增 RSS/线程、主机总内存/可用内存/Swap、load、PSI、磁盘容量/inode、cgroup v2 当前值与有限限制；可空字段遇到未知或不支持返回 `null`。非 Linux 仅提供 Go 运行时指标，不执行外部命令探测。PSI `*_some_avg10` 单位为百分比。
+- `DiskPath` 必须选择本地数据目录；只对所在文件系统执行 statfs，不扫描文件或其它挂载。跨服务消息/前端投影按白名单排除 `disk_path`。
+- cgroup v2 有限配额取当前与最多 64 层可见祖先的最小值；无限制或不可读取时 limit 为 `null`，不支持 cgroup v1，也无法越过挂载根观察祖先。cgroup memory/pids 当前值包含当前组全部进程。 `cgroup_memory_available_bytes` 与 `cgroup_pids_available` 取各可见祖先自身 limit-current 的最小值，以包含同父组其它进程占用；受限祖先读取失败时为 `null`，耗尽时为 0。不要用叶组 current 除以继承 limit 推断祖先余量。
+- `sampled_at`、`resource_sampled_at`、`disk_sampled_at` 表达采样新鲜度；后者仅在成功读到磁盘值时存在。`host_id` 是 Linux boot_id 的 SHA-256，同一内核启动下聚合，重启改变，失败为空；不传原始主机名、IP、boot_id。 `disk_id` 是同一主机启动身份与文件系统设备号的 SHA-256；不同磁盘分别聚合，未取得主机身份时为空，不包含监控路径。
+- Prometheus 省略未知 CPU、FD 与新增资源序列，并提供 CPU/FD 可用性 gauge。不要将采集失效、缓存过期或缺字段解释成正常。
 
 ## 12. 健康检查探针
 
