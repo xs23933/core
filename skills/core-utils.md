@@ -14,6 +14,17 @@ tags: [go, core-framework, utils, crypto, map, array]
 
 未设置环境变量时保持旧加密流程。切换密钥须使用可信明文重新生成 `.dat`。配置密钥不会修改 `core.AESKey` 或业务 `EncryptAES` / `DecryptAES` 的语义；生产业务 AES 密钥仍须独立配置。
 
+
+## 原子加密配置文件
+
+`CurrentConfigFile() string` 返回最近一次成功加载配置时记录的绝对路径；尚未成功加载时为空。管理接口必须从可信启动事实取得路径，禁止接受浏览器提供的文件路径。
+
+`NewEncryptedConfigFile(path) (*EncryptedConfigFile, error)` 仅操作已有 `.dat`，不调用 `LoadConfigFile`、生成默认配置或展开环境变量。`Snapshot() (Options, string, error)` 返回原始 YAML 配置及密文 SHA-256 小写十六进制版本，保留未知字段和秘密值的语义。`Prepare(expectedRevision string, next Options) (string, error)` 校验版本后 fsync 仅含密文的预备文件；`Commit(expectedRevision, preparedRevision string) error` 校验密文、密钥、YAML 与正式版本，原子 rename 并 fsync 目录。重复提交已生效版本幂等成功；`Discard(preparedRevision string) error` 清理未使用预备文件。调用方可持久化版本以在进程重启后继续 Commit。
+
+并发写入通过永久 `.lock` 文件和跨进程 flock 串行化，获取锁最多等待 5 秒；不可删除正在使用的锁文件。正式文件、预备文件与锁文件由写入 API 以 0600 保存，目录须由部署侧授权服务用户写入。仅支持受信且无符号链接的规范绝对路径，拒绝非普通文件、非法版本、损坏密文、坏密钥和同名 `.default.yaml` 模板（启动流程会以模板覆盖 `.dat`）。密文读取上限 8 MiB，Prepare 的 YAML 上限 4 MiB；配置须为单个非空映射文档。错误仅返回 `ErrConfigFileConflict` 或 `ErrConfigFileUnavailable`，不泄露路径、密钥、明文或底层错误；通过 `errors.Is` 判断。独立配置密钥沿用 `CORE_CONFIG_KEY_FILE`，不改变业务 AESKey。
+
+原子文件交换只负责磁盘持久化，不等于运行时已应用；业务 owner 须另行完成授权、幂等、审计和运行态生效流程。原有 LoadConfigFile / SaveConfigFile 接口不自动加入此锁协议，禁止与新 API 并发写入同一文件。
+
 ## 触发条件
 
 当用户请求以下内容时激活此 Skill：

@@ -136,6 +136,7 @@ func (app *Core) shutdownWithContext(ctx context.Context) error {
 	app.shutdownOnce.Do(func() {
 		app.mutex.Lock()
 		app.shutdownStarted = true
+		app.servingReady = false
 		app.shutdownDone = make(chan struct{})
 		app.shutdownContext = ctx
 		app.mutex.Unlock()

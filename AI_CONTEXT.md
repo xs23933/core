@@ -1,5 +1,7 @@
 # [AI Context] Core Framework v3
 
+
+加密配置原子编辑提供 `CurrentConfigFile`、`NewEncryptedConfigFile` 及 Snapshot / Prepare / Commit / Discard，支持密文版本 CAS、跨进程锁和重启恢复；拒绝模板、链接与损坏配置，部署目录必须可写。文件提交不代表运行时已应用，完整合同见 [原子配置文件](skills/core-utils.md#原子加密配置文件)。
 v3.1.62 修复四种 Static API 的默认无正文状态提交，不依赖 StaticConfig 或 gzip；目录跳转保持 301、条件请求保持 304、HEAD 不发送正文。不传 StaticConfig 时仍不添加 Cache-Control。回归见 static_status_test.go。
 
 v3.1.61 提供 middleware/gzip 和 StaticConfig 静态长缓存；默认压缩文本类响应，图片默认不压缩，HTML 使用 no-cache。不传 StaticConfig 保留旧缓存行为。静态方法新增可变配置参数，Ctx 新增 SetResponseWriter；已提交响应遇到 handler 错误只记录、不追加错误文本。详见 skills/core-middleware.md、skills/core-static.md。
@@ -632,6 +634,7 @@ return app.Listen(":8080")
 * v3.1.59 起提供：`gw.RegisterExactJSONBinding(gateway.ExactJSONBinding{ServiceName, FullMethod, RequestMessage, ResponseMessage, MoneyPaths, IntegerPaths, MaxRecvBytes})` 在 NewEtcdGateway 后、Run 前显式注册。仅绑定方法原 body→唯一 bytes raw_body，拒绝 query；响应 descriptor 逐次核验，指定金额 string 和整数路径以精确 JSON number 输出，其余字段及未绑定方法保持原行为；零值/空数组显式输出，成功缺失 data/指定字段或超界返回 500，非零 code 允许缺失 data。接收上限仅该调用且最多 32MiB。完整约束见 README 的精确 JSON 数字绑定小节。
 * Gateway 按发现到的逻辑服务名选择 `ConfigureGRPCClient` 配置；必须在 `NewEtcdGateway` 前配置。
 * Gateway 首次请求优先选择 Ready 连接；没有 Ready 时只允许已核验方法的 Idle 连接由正常 RPC 唤醒，备用实例重试仍只选择 Ready，不选择 Connecting、TransientFailure 或 Shutdown。
+* Gateway 在实例删除、未就绪或换代时先摘除并禁止旧 proxy 的新调用，再等已进入的 unary RPC 完成后关闭连接；没有自动强杀期限。`ReflectionProxy.Drain()` 返回共享完成通道，显式 `Close()` 仍强制关闭。HTTP 摘除不取消在途反代；业务 owner 必须另行停止新业务/领取并排空异步任务后才进入最终进程关闭。
 * 同一服务的多个 `service_id` 参与轮询；`GET`/`HEAD` 连接失败只换一个实例重试一次，写请求不重放。gRPC 全部离线时保留自动路由并返回 `503`。
 * HTTP Handler 自动发布默认关闭；开启 `gateway.auto_http_routes.enabled` 时必须设置 `include_prefixes`，可用 `exclude_prefixes` 排除内部路径，并配置 Gateway 可访问的 `etcd.http_addr`。
 * HTTP 自动发布只收集嵌入 `core.Handler` 后按方法名生成的路由；`app.GET/POST` 等手写路由不收集。启动时同步一次完整目录，不创建周期 worker。
@@ -641,6 +644,8 @@ return app.Listen(":8080")
 服务注册携带每进程唯一 `generation`，同 ID/地址重启也重新 reflection。每个期望实例保留一个恢复任务，连接/reflection 超时后以 0.5 秒递增、最多 5 秒的间隔重试，熔断冷却后继续尝试；删除、换代或关闭取消任务。Registry 丢租恢复通过 CAS 防旧代覆盖，正常退出先撤注册，异常退出由 TTL 摘除。滚动升级采用方法并集，RPC descriptor 冲突返回 503，写请求不自动重放。
 
 `GrpcClient("service-name")` 的 resolver 每连接绑定 Discovery；相同配置复用，改变 namespace/endpoints/etcd 身份返回 `ErrEtcdDiscoveryConfigurationChanged`，应新建 Core 实例迁移。直接 `etcd.NewRegistry` 默认没有 ready 字段、兼容立即可服务。
+
+`ServingReady()` 仅在工作负载、传输、自动路由同步与注册就绪均成功后返回 true，开始关闭后返回 false；用于启动进度，不替代业务依赖健康检查。
 
 `ShutdownWithTimeout` 使用独立 deadline，先撤注册，再同时排空 HTTP/HTTP3/gRPC，最后关闭业务依赖与 Discovery；超时强制关闭 transport。信号退出默认 10 秒，可配置 `shutdown_timeout: "10s"`。重复调用共享首个退出任务，后来短期限只停止该调用等待。无 context 的旧 shutdown hook 无法强制取消，后台清理需它自行返回，但不延长调用方期限。
 

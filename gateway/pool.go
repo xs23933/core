@@ -25,12 +25,11 @@ func defaultReflectionProxyConnector(ctx context.Context, app *core.Core, servic
 	return newReflectionProxyForServiceContext(ctx, app, serviceName, addr, schema)
 }
 
-// ServicePool owns connection-bearing proxies and shares immutable codecs
-// only after each process has reflected an identical protocol fingerprint.
-// The request hot path reads a sorted copy-on-write snapshot without locks or allocation.
+// ServicePool 管理代理连接，仅在各进程反射协议指纹一致后共享不可变编解码器。
+// 请求热路径读取已排序的写时复制快照，不加锁或分配内存。
 type ServicePool struct {
 	name        string
-	state       atomic.Value // servicePoolState, copy-on-write
+	state       atomic.Value // servicePoolState，写时复制
 	idx         atomic.Uint64
 	mu          sync.Mutex
 	app         *core.Core
@@ -39,6 +38,8 @@ type ServicePool struct {
 	generations map[string]string
 	schema      *ReflectionSchema
 	closed      bool
+	retiring    map[*ReflectionProxy]struct{}
+	onRetired   func()
 }
 
 type servicePoolState struct {
@@ -62,6 +63,7 @@ func newServicePoolWithConnector(app *core.Core, name string, connector reflecti
 		connector:   connector,
 		desired:     make(map[string]string),
 		generations: make(map[string]string),
+		retiring:    make(map[*ReflectionProxy]struct{}),
 	}
 	p.storeState(servicePoolState{byID: make(map[string]*ReflectionProxy)})
 	return p
@@ -170,7 +172,7 @@ func (p *ServicePool) AddOrUpdateInstance(instanceID, addr string) (*ReflectionP
 	return p.AddOrUpdateInstanceContext(context.Background(), instanceID, addr)
 }
 
-// SetDesiredGeneration invalidates an installed previous process immediately.
+// SetDesiredGeneration 立即停止旧进程的新调用准入，并保留连接至在途调用完成。
 func (p *ServicePool) SetDesiredGeneration(instanceID, addr, generation string) bool {
 	if p == nil || instanceID == "" || addr == "" {
 		return false
@@ -184,7 +186,10 @@ func (p *ServicePool) SetDesiredGeneration(instanceID, addr, generation string) 
 	p.generations[instanceID] = generation
 	state := p.loadState()
 	old := state.byID[instanceID]
+	var done <-chan struct{}
+	var idle bool
 	if old != nil && (old.addr != addr || old.generation != generation) {
+		done, idle = p.retireProxyLocked(old)
 		next := copyServicePoolByID(state, 0)
 		delete(next, instanceID)
 		p.storeState(sortedServicePoolState(next))
@@ -193,12 +198,12 @@ func (p *ServicePool) SetDesiredGeneration(instanceID, addr, generation string) 
 	}
 	p.mu.Unlock()
 	if old != nil {
-		_ = old.Close()
+		p.finishRetirement(old, done, idle)
 	}
 	return true
 }
 
-// Every candidate reflects its own process before codecs can be shared.
+// 每个候选连接必须独立反射所属进程，之后才能共享编解码器。
 func (p *ServicePool) AddOrUpdateInstanceContext(ctx context.Context, instanceID, addr string) (*ReflectionProxy, bool, error) {
 	if p == nil {
 		return nil, false, errors.New("gateway: service pool is nil")
@@ -267,12 +272,17 @@ func (p *ServicePool) addOrUpdateGeneration(ctx context.Context, instanceID, add
 	}
 	next := copyServicePoolByID(state, 1)
 	old := next[instanceID]
+	var done <-chan struct{}
+	var idle bool
+	if old != nil {
+		done, idle = p.retireProxyLocked(old)
+	}
 	next[instanceID] = proxy
 	p.storeState(sortedServicePoolState(next))
 	p.schema = proxy.schema
 	p.mu.Unlock()
 	if old != nil {
-		_ = old.Close()
+		p.finishRetirement(old, done, idle)
 	}
 	return proxy, true, nil
 }
@@ -301,10 +311,9 @@ func (p *ServicePool) GetForMethod(method string, excluded *ReflectionProxy) *Re
 		if proxy != excluded && proxy.isReady() {
 			return proxy
 		}
-		// A first RPC wakes a normally idle channel without dialing or reflecting
-		// here. Alternate-instance retries remain limited to Ready connections.
-		// Honor the test readiness hook before inspecting a possibly mock conn.
-		if excluded == nil && idle == nil && proxy != nil && proxy.ready == nil && proxy.conn != nil && proxy.conn.GetState() == connectivity.Idle {
+		// 首个 RPC 可唤醒空闲连接，此处不拨号或反射；备用重试仍只使用 Ready 连接。
+		// 必须先遵循就绪钩子，避免读取可能用于测试的连接替身。
+		if excluded == nil && idle == nil && proxy != nil && !proxy.draining.Load() && proxy.ready == nil && proxy.conn != nil && proxy.conn.GetState() == connectivity.Idle {
 			idle = proxy
 		}
 	}
@@ -332,6 +341,7 @@ func (p *ServicePool) removeInstance(instanceID string, clearDesired bool) bool 
 		return false
 	}
 	nextByID := copyServicePoolByID(state, 0)
+	done, idle := p.retireProxyLocked(proxy)
 	delete(nextByID, instanceID)
 	p.storeState(sortedServicePoolState(nextByID))
 	p.schema = nil
@@ -340,11 +350,42 @@ func (p *ServicePool) removeInstance(instanceID string, clearDesired bool) bool 
 		break
 	}
 	p.mu.Unlock()
-	_ = proxy.Close()
+	p.finishRetirement(proxy, done, idle)
 	return true
 }
 
-// RemoveInstance removes the desired marker and the installed connection.
+// retireProxyLocked 在快照更新前关闭旧实例准入，防止旧快照持有者开始新调用。
+func (p *ServicePool) retireProxyLocked(proxy *ReflectionProxy) (<-chan struct{}, bool) {
+	if p.retiring == nil {
+		p.retiring = make(map[*ReflectionProxy]struct{})
+	}
+	p.retiring[proxy] = struct{}{}
+	return proxy.startDrain()
+}
+
+// finishRetirement 保留在途连接的所有权，确保最终 Close 也能清理尚未完成的排空。
+func (p *ServicePool) finishRetirement(proxy *ReflectionProxy, done <-chan struct{}, idle bool) {
+	if idle {
+		_ = proxy.Close()
+	}
+	forget := func() {
+		p.mu.Lock()
+		delete(p.retiring, proxy)
+		onRetired := p.onRetired
+		p.mu.Unlock()
+		if onRetired != nil {
+			onRetired()
+		}
+	}
+	select {
+	case <-done:
+		forget()
+	default:
+		go func() { <-done; forget() }()
+	}
+}
+
+// RemoveInstance 删除期望标记并摘除已安装实例，在途调用结束后关闭连接。
 func (p *ServicePool) RemoveInstance(instanceID string) {
 	p.removeInstance(instanceID, true)
 }
@@ -356,7 +397,7 @@ func (p *ServicePool) RemoveInstanceIfUndesired(instanceID string) bool {
 }
 
 func (p *ReflectionProxy) isReady() bool {
-	if p == nil {
+	if p == nil || p.draining.Load() {
 		return false
 	}
 	if p.ready != nil {
@@ -365,8 +406,7 @@ func (p *ReflectionProxy) isReady() bool {
 	return p.conn != nil && p.conn.GetState() == connectivity.Ready
 }
 
-// Get returns a proxy using deterministic round-robin over the pre-sorted
-// snapshot. It performs no sorting, reflection, dialing, or allocation.
+// Get 在预排序快照中确定性轮询，不执行排序、反射、拨号或内存分配。
 func (p *ServicePool) Get() *ReflectionProxy {
 	all := p.loadState().all
 	n := len(all)
@@ -381,7 +421,13 @@ func (p *ServicePool) Get() *ReflectionProxy {
 			return proxy
 		}
 	}
-	return all[int(start%uint64(n))]
+	for offset := 0; offset < n; offset++ {
+		proxy := all[(int(start)+offset)%n]
+		if !proxy.draining.Load() {
+			return proxy
+		}
+	}
+	return nil
 }
 
 // GetExcept returns a ready proxy other than excluded. It is used for one
@@ -436,12 +482,17 @@ func (p *ServicePool) Close() {
 	}
 	p.closed = true
 	state := p.loadState()
+	retiring := p.retiring
+	p.retiring = make(map[*ReflectionProxy]struct{})
 	p.storeState(servicePoolState{byID: make(map[string]*ReflectionProxy)})
 	p.desired = make(map[string]string)
 	p.generations = make(map[string]string)
 	p.schema = nil
 	p.mu.Unlock()
 	for _, proxy := range state.byID {
+		_ = proxy.Close()
+	}
+	for proxy := range retiring {
 		_ = proxy.Close()
 	}
 }
@@ -452,7 +503,7 @@ func (p *ServicePool) markClosedIfRemovable() bool {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.closed || len(p.loadState().byID) != 0 || len(p.desired) != 0 {
+	if p.closed || len(p.loadState().byID) != 0 || len(p.desired) != 0 || len(p.retiring) != 0 {
 		return false
 	}
 	p.closed = true
@@ -509,6 +560,7 @@ func (cp *ConnectionPool) GetOrCreate(app *core.Core, serviceName string) *Servi
 		next[name] = existing
 	}
 	pool := newServicePoolWithConnector(app, serviceName, cp.connector)
+	pool.onRetired = func() { cp.RemoveIfEmpty(serviceName, pool) }
 	next[serviceName] = pool
 	cp.storePools(next)
 	return pool
@@ -528,6 +580,7 @@ func (cp *ConnectionPool) SetDesiredInstance(app *core.Core, serviceName, instan
 			next[name] = existing
 		}
 		pool = newServicePoolWithConnector(app, serviceName, cp.connector)
+		pool.onRetired = func() { cp.RemoveIfEmpty(serviceName, pool) }
 		next[serviceName] = pool
 		cp.storePools(next)
 	}

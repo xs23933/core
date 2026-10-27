@@ -56,7 +56,7 @@ skills/
 ├── core-static.md           # 静态文件、可选长缓存、HTML 重新验证
 ├── core-grpc.md             # gRPC 服务端（轻量 GRPCCtx / 可信 Gateway 客户端 IP / TLS/interceptor/注册/启动/etcd 注册/共用端口约束/响应 Header/Cookie）
 ├── core-grpc-client.md      # gRPC 客户端（服务发现/明确 target/每服务 TLS/MustGrpcClient）
-├── core-gateway.md          # etcd HTTP/gRPC 网关（v3.1.59 起提供 ExactJSONBinding / core-client-ip / 自动/手动路由、负载均衡、请求 metadata/响应 Header/Cookie）
+├── core-gateway.md          # etcd HTTP/gRPC 网关（实例撤换连接排空 / ExactJSONBinding / core-client-ip / 自动/手动路由、负载均衡、请求 metadata/响应 Header/Cookie）
 ├── core-websocket.md        # WebSocket Options/累计读限/超时/可靠入队/连接清理/按用户推送
 ├── core-sse.md              # SSE 服务端推送（SSEWrite/SSESend/EventHub）
 ├── core-page.md             # 分页查询（经典分页/滚动分页/条件构建）
@@ -1075,3 +1075,5 @@ Gateway 可使用 Go 标准库首次自动创建私有 CA，后端自动申请�
 ## monitor 资源快照
 
 `middleware/monitor` 提供固定间隔的 Go、Linux 进程/主机与 cgroup v2 资源快照，常规 5 秒、FD/指定本地目录 statfs/cgroup 30 秒；`Snapshot()` 只读缓存。CPU 单核 100%，软/硬 FD 限制分开，可空指标及可用标记表达未知，`host_id` 使用 boot_id SHA-256，采样时间标记新鲜度。完整合同与投影边界见 [core-middleware.md](core-middleware.md#11-服务器监控-monitor)。
+
+- 原子加密配置文件与 CurrentConfigFile、密文 CAS、跨进程锁及持久预备文件恢复：见 [core-utils.md](core-utils.md#原子加密配置文件)。

@@ -42,6 +42,7 @@ tags: [go, core-framework, gateway, grpc, etcd, http, reflection]
 - Gateway 首次请求优先选择 Ready 连接；没有 Ready 时只允许已核验方法的 Idle 连接由正常 RPC 唤醒，备用实例重试仍只选择 Ready，不选择 Connecting、TransientFailure 或 Shutdown。
 - 滚动发布时自动路由使用已接入实例的方法并集；新增方法只选择支持它的实例。相同 RPC 的协议指纹不一致时，该 RPC 暂时返回 503，避免混用 codec；其它无冲突 RPC 继续服务。不兼容升级应使用新的 RPC/服务版本，或等待旧代全部退出。
 - 删除部分实例会更新方法并集；全部实例离线保留最后的路由并返回 503。手工路由仍优先于自动路由；`gateway.grpc_service_excludes` 和 `gateway/public_routes` 的既有职责不变。
+- 实例删除、`ready:false`、代次或地址替换时，旧连接立即退出选择并禁止新调用；已进入的 unary RPC 完成后才关闭连接。`ReflectionProxy.Drain()` 非阻塞返回共享完成通道，不自动强杀；`Close()` 仍用于显式最终强制清理。池保留排空连接的所有权，避免最终退出遗漏旧连接。HTTP 摘除不取消在途反代。业务服务必须在最终退出前自行停止新业务/消息领取并排空异步工作，不能把传输层在途数量当成业务已完成。
 
 ## 2. 网关启动模板
 

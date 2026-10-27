@@ -118,6 +118,7 @@ type Core struct {
 	automaticHTTPRoutes       []automaticHTTPRoute
 	automaticHTTPRouteIndexes map[string]int
 	shutdownHooks             []func()
+	servingReady              bool
 	grpcReflectionRegistered  bool
 }
 
@@ -537,7 +538,13 @@ func (app *Core) prepareServeOnce() error {
 	if err := syncCoreAutomaticHTTPRoutesForServe(app, app.Ctx); err != nil {
 		return err
 	}
-	return markCoreEtcdRegistryReadyForServe(app, app.Ctx)
+	if err := markCoreEtcdRegistryReadyForServe(app, app.Ctx); err != nil {
+		return err
+	}
+	app.mutex.Lock()
+	app.servingReady = true
+	app.mutex.Unlock()
+	return nil
 }
 
 func (app *Core) prepareTLSForServe() error {

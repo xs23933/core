@@ -585,6 +585,8 @@ func registerAutomaticHTTPRouteTestModule(t *testing.T, app *Core, instance Modu
 	modulesMu.Unlock()
 	t.Cleanup(func() {
 		app.stop()
+		// 等待模块与停机观察协程退出，避免泄漏到下一个独立 Core 实例。
+		_ = app.eg.Wait()
 		modulesMu.Lock()
 		delete(modules, id)
 		modulesMu.Unlock()
@@ -600,6 +602,8 @@ func registerAutomaticHTTPRouteFactoryTestModule(t *testing.T, app *Core, factor
 	modulesMu.Unlock()
 	t.Cleanup(func() {
 		app.stop()
+		// 等待模块与停机观察协程退出，避免泄漏到下一个独立 Core 实例。
+		_ = app.eg.Wait()
 		modulesMu.Lock()
 		delete(modules, id)
 		modulesMu.Unlock()

@@ -1,5 +1,7 @@
 # Core Web Framework v3 - 完整帮助文档
 
+
+加密配置原子编辑提供 `CurrentConfigFile`、`NewEncryptedConfigFile` 及 Snapshot / Prepare / Commit / Discard，支持密文版本 CAS、跨进程锁和重启恢复；拒绝模板、链接与损坏配置，部署目录必须可写。文件提交不代表运行时已应用，完整合同见 [原子配置文件](skills/core-utils.md#原子加密配置文件)。
 v3.1.64 修正 Linux monitor 的真实 CPU、FD 软硬限制与未知值语义，增加主机／进程／文件系统／cgroup 资源指标以及只读缓存 Snapshot；默认基础采样 5 秒、慢采样 30 秒。
 
 v3.1.61 新增可配置 MIME 类型的 gzip 响应压缩，以及 Static 系列 API 的可选长缓存配置（默认 7 天、HTML 重新验证、显式 immutable）；同时修复静态文件提前返回 404 和已写出响应追加错误文本的问题。用法与接口兼容说明见下文“gzip 压缩与静态文件缓存”。
@@ -1093,6 +1095,8 @@ Gateway 的每个 `ServicePool` 使用 etcd 中的逻辑服务名选择 Core 客
 同一逻辑服务的多个 `service_id` 会参与轮询。`GET`/`HEAD` 遇到上游连接失败时，Gateway 最多改用另一个实例重试一次；写请求不会自动重放。gRPC 服务全部离线时，已自动生成的路由会保留并返回 `503`，实例恢复后继续使用原路由。
 
 Gateway 首次请求优先选择 Ready 连接；没有 Ready 时只允许已核验方法的 Idle 连接由正常 RPC 唤醒，备用实例重试仍只选择 Ready，不选择 Connecting、TransientFailure 或 Shutdown。
+
+实例删除、`ready:false` 或进程代次/地址替换时，Gateway 立即将旧实例移出调度并关闭新调用准入，已进入的 unary RPC 继续通过旧连接完成，最后一个调用返回后才关闭连接。排空不设置自动强杀期限；持有旧 proxy 引用的新调用返回 `Unavailable`。`ReflectionProxy.Drain()` 返回关闭完成通道，重复调用共享该通道；`Close()` 仍立即强制关闭，用于显式最终清理。HTTP 反代摘除同样只影响后续选择，不取消已代理请求。服务自身仍须停止新业务、调度和消息领取，并等待异步业务安全收尾后再触发进程关闭；此能力不替代业务幂等、结果恢复或 `ShutdownWithTimeout` 的最终超时边界。
 
 当请求返回 `service <name> unavailable` 时，优先看 Gateway 日志中的 `state={...}` 诊断字段：
 

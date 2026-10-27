@@ -425,6 +425,7 @@ func loadEncryptedConfig(datFile string, defaultConf Options) Options {
 			panic(err)
 		}
 		confFile = datFile
+		recordCurrentConfigFile(datFile)
 		return conf
 	}
 	yamlFile, _ := strings.CutSuffix(datFile, ".dat")
@@ -446,6 +447,7 @@ func loadEncryptedConfig(datFile string, defaultConf Options) Options {
 			return defaultConf
 		}
 		confFile = datFile
+		recordCurrentConfigFile(datFile)
 		return conf
 	}
 
@@ -466,6 +468,7 @@ func loadEncryptedConfig(datFile string, defaultConf Options) Options {
 	}
 
 	confFile = datFile
+	recordCurrentConfigFile(datFile)
 	return conf
 }
 
@@ -481,6 +484,7 @@ func loadYamlConfig(yamlFile string, defaultConf Options) Options {
 	}
 
 	confFile = yamlFile
+	recordCurrentConfigFile(yamlFile)
 	return conf
 }
 

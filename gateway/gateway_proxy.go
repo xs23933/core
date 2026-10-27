@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jhump/protoreflect/grpcreflect"
@@ -40,6 +41,10 @@ type ReflectionProxy struct {
 	closeFn    func() error
 	closeOnce  sync.Once
 	closeErr   error
+	drainMu    sync.Mutex
+	draining   atomic.Bool
+	inFlight   uint64
+	drainDone  chan struct{}
 }
 
 // ReflectionSchema is an immutable reflected method set shared by connections
@@ -231,8 +236,7 @@ func (p *ReflectionProxy) Invoke(ctx context.Context, fullMethod string, jsonReq
 	return body, err
 }
 
-// InvokeWithHeaders returns initial response metadata even when the RPC fails.
-// Trailers are intentionally not bridged to HTTP response headers.
+// InvokeWithHeaders 即使 RPC 失败也返回初始响应 metadata；trailer 不桥接到 HTTP 响应头。
 func (p *ReflectionProxy) InvokeWithHeaders(ctx context.Context, fullMethod string, jsonReq []byte) ([]byte, metadata.MD, error) {
 	return p.invokeWithHeaders(ctx, fullMethod, jsonReq, nil)
 }
@@ -249,6 +253,10 @@ func (p *ReflectionProxy) invokeWithHeaders(ctx context.Context, fullMethod stri
 		}
 		return nil, nil, core.ErrNotFound
 	}
+	if !p.beginInvocation() {
+		return nil, nil, status.Error(codes.Unavailable, "gateway: service instance is draining")
+	}
+	defer p.endInvocation()
 
 	desc := cached
 
@@ -491,7 +499,9 @@ func (p *ReflectionProxy) Close() error {
 	if p == nil {
 		return nil
 	}
+	p.startDrain()
 	p.closeOnce.Do(func() {
+		defer close(p.drainDone)
 		if p.closeFn != nil {
 			p.closeErr = p.closeFn()
 			return
@@ -501,6 +511,46 @@ func (p *ReflectionProxy) Close() error {
 		}
 	})
 	return p.closeErr
+}
+
+// Drain 停止接收新调用；全部在途调用返回后关闭连接，返回的通道在关闭完成时通知。
+// 排空不设置强制终止期限；显式 Close 仍可用于 Gateway 最终退出时的强制清理。
+func (p *ReflectionProxy) Drain() <-chan struct{} {
+	done, idle := p.startDrain()
+	if idle {
+		_ = p.Close()
+	}
+	return done
+}
+
+func (p *ReflectionProxy) startDrain() (<-chan struct{}, bool) {
+	p.drainMu.Lock()
+	defer p.drainMu.Unlock()
+	p.draining.Store(true)
+	if p.drainDone == nil {
+		p.drainDone = make(chan struct{})
+	}
+	return p.drainDone, p.inFlight == 0
+}
+
+func (p *ReflectionProxy) beginInvocation() bool {
+	p.drainMu.Lock()
+	defer p.drainMu.Unlock()
+	if p.draining.Load() {
+		return false
+	}
+	p.inFlight++
+	return true
+}
+
+func (p *ReflectionProxy) endInvocation() {
+	p.drainMu.Lock()
+	p.inFlight--
+	closeNow := p.draining.Load() && p.inFlight == 0
+	p.drainMu.Unlock()
+	if closeNow {
+		_ = p.Close()
+	}
 }
 
 // Fingerprint codecs by reachable types rather than the entire proto file, so
