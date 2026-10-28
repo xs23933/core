@@ -1278,3 +1278,5 @@ HTTP-only 应用可启用工作负载身份进行出站 mTLS，`EnableEtcdRegist
 租户域名使用独立 `certificate.New(certificate.Config{StorageDir, Email, CA, Authorize})`；必须显式授权，调用 `Ensure(ctx, hostname)` 后台申请，`Remove` 拒绝新握手和续期，`Status` 只返回非敏感状态。管理器使用专用 CertMagic HTTP-01 与持久 Storage，拒绝未知 SNI、泛域名和任意按需签发；授权检查覆盖申请、续期、TLS 和挑战。应用启动前 `app.UseCertificateManager(manager, ":80")` 接入原 HTTPS listener，listen 配置设为 :443；与旧 acme/certmagic 互斥，Core 关闭时释放资源。业务负责绑定 generation、所有权验证、域名清单同步和当前授权事实。完整合同见 [skills/core-certificates.md](skills/core-certificates.md)。
 
 静态 CertMagic 与旧版 on-demand 的维护缓存必须返回实例自身的 Config，不能用 `NewDefault()` 后局部覆盖 Storage/Issuers；其共享缓存的维护回调会重建默认配置、丢失这些覆盖。缓存应在启动失败及 Core 关闭时停止。外部反代手动加载 PEM 时需另行重载。
+
+通用 `grpc.max_recv_message_bytes` 支持1～64MiB，默认或无效值回落4MiB；server固定入站上限，Gateway普通反射调用控制响应接收，ExactJSON逐方法限制优先。详见 `skills/core-grpc.md` 与 `skills/core-gateway.md`。

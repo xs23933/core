@@ -305,3 +305,15 @@ if err := core.GrpcRemoveCookie(ctx, "session", "/"); err != nil {
 Gateway 可使用 Go 标准库首次自动创建私有 CA，后端自动申请、本地保存和续期，服务端、服务间客户端和 Gateway reflection 复用本进程身份。使用前必须在首次创建 gRPC server/client 前调用 `app.EnableWorkloadIdentity()`；启用后禁止明文回退或逐目标显式 transport 冲突配置。完整配置、引导认证、独立端口、根信任更新和验收边界见 [工作负载身份说明](../workload/README.md)。
 
 后端跨服务器可预置 `workload.root_sha256`（根证书 DER SHA-256），Core 从内部签发入口 `GET /root.pem` 无凭据下载，校验指纹及本次 HTTPS 链/主机名后原子缓存，再申请身份。每次启动校验缓存，拒绝不匹配/损坏缓存的静默覆盖；默认缓存位于本进程 state_dir，不依赖 Gateway 共享文件。指纹必须由可信部署渠道预置，详见工作负载说明。
+
+
+## 通用 gRPC 接收大小
+
+`grpc.max_recv_message_bytes` 在 Core 首次创建 gRPC server 时固定入站 protobuf 消息接收上限，默认 `4194304`（4MiB）。合法范围为 `1`～`67108864`（64MiB）；未设置、非正值、不可解析或超过64MiB安全回落4MiB，显式 `0` 不表示无限制。`app.GRPCMaxRecvMessageBytes()` 返回相同规范化值。
+
+Gateway 的普通 ReflectionProxy 调用使用 Gateway 本进程同一配置作为 RPC 响应接收上限；已注册 ExactJSONBinding 的 `MaxRecvBytes` 优先，不被通用值覆盖。普通 Core gRPC 客户端仍遵循其调用选项；此配置不自动扩大其它服务的客户端限制，也不改变 HTTP 正文上限或业务附件校验。上下游应分别选择所需限额，protobuf 封装也占用消息额度。配置改变需要重建 server／重启进程。
+
+```yaml
+grpc:
+  max_recv_message_bytes: 8388608
+```

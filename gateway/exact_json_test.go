@@ -188,7 +188,7 @@ func TestExactJSONRealReflectionHTTP(t *testing.T) {
 	t.Cleanup(func() { _ = conn.Close() })
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	proxy, err := newReflectionProxyFromConnContext(ctx, core.New(), "exact", conn, nil)
+	proxy, err := newReflectionProxyFromConnContext(ctx, core.New(core.Options{"grpc": core.Options{"max_recv_message_bytes": 8 << 20}}), "exact", conn, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

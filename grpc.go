@@ -110,7 +110,7 @@ func (app *Core) getOrCreateGRPCServer() *grpc.Server {
 func (app *Core) newGRPCServer() *grpc.Server {
 	unaryInterceptors := []grpc.UnaryServerInterceptor{app.grpcResponseContext, errorWrapInterceptor}
 	streamInterceptors := []grpc.StreamServerInterceptor{app.grpcStreamResponseContext}
-	serverOptions := make([]grpc.ServerOption, 0, 3)
+	serverOptions := []grpc.ServerOption{grpc.MaxRecvMsgSize(app.GRPCMaxRecvMessageBytes())}
 	if app.Conf.GetBool("workload.enabled", false) {
 		transport := credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS13, GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
 			return nil, errors.New("core: workload identity not initialized")

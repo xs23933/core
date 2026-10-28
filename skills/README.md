@@ -38,3 +38,5 @@ Gateway 可使用 Go 标准库首次自动创建私有 CA，后端自动申请�
 - [core-certificates.md](core-certificates.md)：动态精确域名 ACME、业务授权、HTTP-01、TLS 生命周期、持久存储与续期。
 
 - 原子加密配置文件与 CurrentConfigFile、密文 CAS、跨进程锁及持久预备文件恢复：见 [core-utils.md](core-utils.md#原子加密配置文件)。
+
+通用 `grpc.max_recv_message_bytes` 配置、默认4MiB、无效值安全回落及Gateway响应接收与ExactJSON优先级，见 [core-grpc.md](core-grpc.md#通用-grpc-接收大小) 与 [core-gateway.md](core-gateway.md#通用-grpc-接收大小)。

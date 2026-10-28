@@ -274,7 +274,7 @@ func (p *ReflectionProxy) invokeWithHeaders(ctx context.Context, fullMethod stri
 
 	resp := desc.NewResponse()
 	var headers metadata.MD
-	opts := []grpc.CallOption{grpc.Header(&headers)}
+	opts := []grpc.CallOption{grpc.Header(&headers), grpc.MaxCallRecvMsgSize(p.app.GRPCMaxRecvMessageBytes())}
 	if binding != nil {
 		opts = append(opts, grpc.MaxCallRecvMsgSize(binding.MaxRecvBytes))
 	}

@@ -3107,3 +3107,15 @@ if err != nil {
 ### 静态 CertMagic 证书维护
 
 `certmagic`（Cloudflare DNS-01）与旧版 on-demand 模式为每个 Core 实例创建独立缓存，后台维护复用该实例的存储和签发配置；`certmagic.cache` 默认 `./certs`，服务用户必须可写。启动失败和 Core 关闭时停止维护缓存。外部 Caddy/Nginx 若手动加载这些 PEM 文件，必须在续期后重新加载；Core 更新文件不会刷新其它进程的证书缓存。
+
+
+## 通用 gRPC 接收大小
+
+`grpc.max_recv_message_bytes` 在 Core 首次创建 gRPC server 时固定入站 protobuf 消息接收上限，默认 `4194304`（4MiB）。合法范围为 `1`～`67108864`（64MiB）；未设置、非正值、不可解析或超过64MiB安全回落4MiB，显式 `0` 不表示无限制。`app.GRPCMaxRecvMessageBytes()` 返回相同规范化值。
+
+Gateway 的普通 ReflectionProxy 调用使用 Gateway 本进程同一配置作为 RPC 响应接收上限；已注册 ExactJSONBinding 的 `MaxRecvBytes` 优先，不被通用值覆盖。普通 Core gRPC 客户端仍遵循其调用选项；此配置不自动扩大其它服务的客户端限制，也不改变 HTTP 正文上限或业务附件校验。上下游应分别选择所需限额，protobuf 封装也占用消息额度。配置改变需要重建 server／重启进程。
+
+```yaml
+grpc:
+  max_recv_message_bytes: 8388608
+```
