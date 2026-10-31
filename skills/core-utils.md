@@ -1,4 +1,6 @@
 ---
+
+`NewUUID()` 可并发调用，使用默认随机源生成 UUID；调用时不会修改 google/uuid 的进程级随机池开关。调用方不得在并发生成期间切换该依赖的随机池配置。
 name: core-utils
 description: 使用 Core Framework 内置工具函数、Map/Array、加密、密码哈希和客户端信息解析
 tags: [go, core-framework, utils, crypto, map, array]

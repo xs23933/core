@@ -217,8 +217,8 @@ func (u *UUID) UnmarshalBinary(data []byte) error {
 
 var UuidNil = UUID{uuid.Nil}
 
+// NewUUID 使用默认随机源生成 UUID，不修改进程级随机池开关。
 func NewUUID() UUID {
-	uuid.EnableRandPool()
 	return UUID{uuid.New()}
 }
 

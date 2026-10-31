@@ -1,5 +1,7 @@
 # [AI Context] Core Framework v3
 
+`NewUUID()` 可并发调用，使用默认随机源生成 UUID；调用时不会修改 google/uuid 的进程级随机池开关。调用方不得在并发生成期间切换该依赖的随机池配置。
+
 
 加密配置原子编辑提供 `CurrentConfigFile`、`NewEncryptedConfigFile` 及 Snapshot / Prepare / Commit / Discard，支持密文版本 CAS、跨进程锁和重启恢复；拒绝模板、链接与损坏配置，部署目录必须可写。文件提交不代表运行时已应用，完整合同见 [原子配置文件](skills/core-utils.md#原子加密配置文件)。
 v3.1.62 修复四种 Static API 的默认无正文状态提交，不依赖 StaticConfig 或 gzip；目录跳转保持 301、条件请求保持 304、HEAD 不发送正文。不传 StaticConfig 时仍不添加 Cache-Control。回归见 static_status_test.go。

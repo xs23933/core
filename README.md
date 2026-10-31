@@ -1,5 +1,7 @@
 # Core Web Framework v3 - 完整帮助文档
 
+`NewUUID()` 可并发调用，使用默认随机源生成 UUID；调用时不会修改 google/uuid 的进程级随机池开关。调用方不得在并发生成期间切换该依赖的随机池配置。
+
 
 加密配置原子编辑提供 `CurrentConfigFile`、`NewEncryptedConfigFile` 及 Snapshot / Prepare / Commit / Discard，支持密文版本 CAS、跨进程锁和重启恢复；拒绝模板、链接与损坏配置，部署目录必须可写。文件提交不代表运行时已应用，完整合同见 [原子配置文件](skills/core-utils.md#原子加密配置文件)。
 v3.1.64 修正 Linux monitor 的真实 CPU、FD 软硬限制与未知值语义，增加主机／进程／文件系统／cgroup 资源指标以及只读缓存 Snapshot；默认基础采样 5 秒、慢采样 30 秒。
