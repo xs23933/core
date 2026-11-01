@@ -323,3 +323,12 @@ defer pool.Put(buf)
 - 不要在生产环境使用默认 AES 密钥。
 - 不要用 SHA-256 替代 bcrypt。
 - 不要把纯工具函数放到 model.go，应迁移到 utils.go。
+
+
+## 金额与环形缓冲区合同
+
+`coins.Money.MulRatio/MulRate` 用 big.Int 中间值避免 int64 乘积溢出，结果按最小单位向零截断（负数也向零），分母 0 保持返回零。最终结果越出 int64 时不再静默回绕，而是 panic；需要可恢复错误的调用方使用新增 `SafeMulRatio(numerator, denominator) (Money, error)`，费率对应 `SafeMulRatio(rate, coins.MoneyBase)`。原签名不变，调用方应检查金额上界或使用安全接口。完整 int64 范围（含 MinInt64）可格式化、字符串解析和按 8 位精度 JSON 往返；SQL 仍按原合同保存缩放后的 int64。
+
+`coin.Money.Mul/Div` 恢复 1e8 固定缩放，向零截断到 8 位，输入不变；除零（包括零值 Money）保持 panic。零值可作为加减乘运算数和除法被除数。`Value()` 始终输出完整存储精度，独立于 `SetDefaultOutputDecimals`；显示/JSON 的精度设置继续生效。曾依赖错误缩放的下游需调整，不得再手动补偿 1e8。
+
+`utils.CircularMapBuffer.Values()` 从最旧项按插入顺序返回，已有键更新不改变顺序；`CircularBuffer.Delete()` 压紧逻辑顺序并更新索引，删除后追加和淘汰继续保持顺序。容量需为正整数。

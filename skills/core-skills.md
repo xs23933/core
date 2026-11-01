@@ -60,7 +60,7 @@ skills/
 ├── core-websocket.md        # WebSocket Options/累计读限/超时/可靠入队/连接清理/按用户推送
 ├── core-sse.md              # SSE 服务端推送（SSEWrite/SSESend/EventHub）
 ├── core-page.md             # 分页查询（经典分页/滚动分页/条件构建）
-├── core-utils.md            # 工具函数（Map/Array/加密/密码/切片）
+├── core-utils.md            # 工具函数（Map/Array/金额安全比例运算/环形缓冲区/加密/密码/切片）
 ├── core-redis.md            # Redis 封装（String/JSON/Hash/Set/ZSet/Pipeline/Lua）
 ├── core-cache.md            # Redis Cache 包装器（DB fallback/singleflight/空值缓存）
 ├── core-nsq.md              # NSQ 消息队列（Producer/Consumer/JSON/超时）

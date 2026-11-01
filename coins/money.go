@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 	"reflect"
 	"strconv"
 	"strings"
@@ -124,14 +125,13 @@ func Parse[T moneyInput](v T) (Money, error) {
 	fracPart += strings.Repeat("0", MoneyScale-len(fracPart))
 
 	raw := intPart + fracPart
+	if neg {
+		raw = "-" + raw
+	}
 
 	n, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil {
 		return Zero(), err
-	}
-
-	if neg {
-		n = -n
 	}
 
 	return Money{n}, nil
@@ -180,16 +180,17 @@ func (m Money) StringFixed(decimals int) string {
 // FormatDecimals 按指定小数位格式化
 // decimals: 0 表示输出所有非零小数位，1-8 表示保留指定位数
 func (m Money) FormatDecimals(decimals int) string {
-	val := m.v
+	// Unsigned magnitude also represents abs(MinInt64), which cannot fit int64.
+	val := uint64(m.v)
 
 	sign := ""
-	if val < 0 {
+	if m.v < 0 {
 		sign = "-"
 		val = -val
 	}
 
-	intPart := val / MoneyBase
-	fracPart := val % MoneyBase
+	intPart := val / uint64(MoneyBase)
+	fracPart := val % uint64(MoneyBase)
 
 	if decimals == 0 {
 		// 输出所有非零小数位
@@ -204,7 +205,7 @@ func (m Money) FormatDecimals(decimals int) string {
 	// 保留指定位数
 	if decimals <= 8 {
 		// 截取指定位数的小数
-		div := int64(1)
+		div := uint64(1)
 		for i := 0; i < 8-decimals; i++ {
 			div *= 10
 		}
@@ -382,23 +383,33 @@ func (m Money) DivInt(n int64) Money {
 // 高精度比例计算
 // ==============================
 
-// floor(m * numerator / denominator)
-func (m Money) MulRatio(numerator, denominator int64) Money {
-
+// SafeMulRatio computes m * numerator / denominator, truncating toward zero.
+// A zero denominator retains the historical zero result; final overflow is an error.
+func (m Money) SafeMulRatio(numerator, denominator int64) (Money, error) {
 	if denominator == 0 {
-		return Zero()
+		return Zero(), nil
 	}
-
-	return Money{(m.v * numerator) / denominator}
+	n := new(big.Int).Mul(big.NewInt(m.v), big.NewInt(numerator))
+	n.Quo(n, big.NewInt(denominator))
+	if !n.IsInt64() {
+		return Zero(), errors.New("money overflow")
+	}
+	return Money{n.Int64()}, nil
 }
 
-// rate = 1e8 表示小数
-// 例如 0.002 -> 200000
-func (m Money) MulRate(rate int64) Money {
-
-	return Money{
-		(m.v * rate) / MoneyBase,
+// MulRatio truncates toward zero and panics on final overflow.
+// Use SafeMulRatio to handle overflow without a panic.
+func (m Money) MulRatio(numerator, denominator int64) Money {
+	result, err := m.SafeMulRatio(numerator, denominator)
+	if err != nil {
+		panic(err)
 	}
+	return result
+}
+
+// MulRate uses a rate scaled by MoneyBase and the MulRatio error contract.
+func (m Money) MulRate(rate int64) Money {
+	return m.MulRatio(rate, MoneyBase)
 }
 
 // ==============================

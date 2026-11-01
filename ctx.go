@@ -153,7 +153,6 @@ type BaseCtx struct {
 	theme        string
 	W            ResponseWriter
 	R            *http.Request
-	ctx          context.Context
 	vars         Map
 	querys       url.Values
 	startAt      time.Time
@@ -295,7 +294,7 @@ func (c *BaseCtx) TextBytes(out io.Writer, f string, bind ...any) error {
 // indicates "Is client disconnected in middle of stream"
 func (c *BaseCtx) Stream(step func(w io.Writer) bool) bool {
 	w := c.W
-	ctx := c.ctx
+	ctx := c.Context()
 	for {
 		select {
 		case <-ctx.Done():
@@ -1436,7 +1435,6 @@ func (c *BaseCtx) init(app *Core, w http.ResponseWriter, r *http.Request) {
 	c.wm.init(w)
 	c.W = &c.wm
 	c.path = r.URL.Path
-	c.ctx = r.Context()
 	c.app = app
 	c.indexRoute = -1
 	c.indexHandler = 0
@@ -1461,7 +1459,6 @@ func (c *BaseCtx) release() {
 	c.W = nil
 	c.wm.ResponseWriter = nil
 	c.app = nil
-	c.ctx = nil
 	c.querys = nil
 	c.vars = nil
 	c.path = ""

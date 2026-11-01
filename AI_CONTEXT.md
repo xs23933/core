@@ -1282,3 +1282,16 @@ HTTP-only 应用可启用工作负载身份进行出站 mTLS，`EnableEtcdRegist
 静态 CertMagic 与旧版 on-demand 的维护缓存必须返回实例自身的 Config，不能用 `NewDefault()` 后局部覆盖 Storage/Issuers；其共享缓存的维护回调会重建默认配置、丢失这些覆盖。缓存应在启动失败及 Core 关闭时停止。外部反代手动加载 PEM 时需另行重载。
 
 通用 `grpc.max_recv_message_bytes` 支持1～64MiB，默认或无效值回落4MiB；server固定入站上限，Gateway普通反射调用控制响应接收，ExactJSON逐方法限制优先。详见 `skills/core-grpc.md` 与 `skills/core-gateway.md`。
+
+
+## 超时、ETag 与金额运算修复合同
+
+`middleware/timeout` 采用协作式取消：默认 30 秒（Timeout 非正值仍用默认），deadline 同时作用于 `c.Context()`、`c.Ctx()`、`c.Request().Context()` 和 `c.Stream()`。保留 JSON/XML/multipart 正文。取消后的 writer 写入返回 `http.ErrHandlerTimeout`；中间件等待 handler 返回后才恢复 request/writer、回收 Ctx。未提交响应时清除旧 Content-Length、Content-Encoding、validator 等正文相关头，返回配置的超时状态（默认 503），使用 text/plain 和 no-store；已提交响应保留原状态与正文，不追加超时消息。handler 必须把 context 传给下游并主动退出；不响应取消的 handler 会继续占用请求，**不保证立即返回 503**。这是对原先不安全的 goroutine 抢先返回行为的兼容调整；流式连接建议用 Skip 排除。
+
+`middleware/etag` 对 GET 的普通 200 响应正文计算 SHA-256 ETag（默认弱 tag），每次仍执行 handler，内容改变会改变 tag；优先保留 handler 的显式 validator。GET/HEAD 按弱比较支持 `If-None-Match` 列表和 `*`，命中提交无正文 304。HEAD 不用空正文生成 tag，只使用显式 validator。最多缓冲 1 MiB；超出、SSE、Flush/DoWriteHeader/Hijack 转为直通，不自动计算 tag；Range、Upgrade、非 GET/HEAD 跳过，no-store 和非 200 不生成或比较 tag。静态文件继续复用标准库 Last-Modified/If-Modified-Since 等处理。不要用于需要流式传输或敏感动态 API；用 Skip 排除，etag 不提供 public 缓存或授权策略。普通正文写出不提前强制提交底层 writer，gzip 在 etag 前后均可压缩；Hijack 前已接受的缓冲正文先发送，未写正文的协议升级不预发状态。原 URL hash tag 已废弃，旧 tag 首次请求会重新获取内容。
+
+`coins.Money.MulRatio/MulRate` 用 big.Int 中间值避免 int64 乘积溢出，结果按最小单位向零截断（负数也向零），分母 0 保持返回零。最终结果越出 int64 时不再静默回绕，而是 panic；需要可恢复错误的调用方使用新增 `SafeMulRatio(numerator, denominator) (Money, error)`，费率对应 `SafeMulRatio(rate, coins.MoneyBase)`。原签名不变，调用方应检查金额上界或使用安全接口。完整 int64 范围（含 MinInt64）可格式化、字符串解析和按 8 位精度 JSON 往返；SQL 仍按原合同保存缩放后的 int64。
+
+`coin.Money.Mul/Div` 恢复 1e8 固定缩放，向零截断到 8 位，输入不变；除零（包括零值 Money）保持 panic。零值可作为加减乘运算数和除法被除数。`Value()` 始终输出完整存储精度，独立于 `SetDefaultOutputDecimals`；显示/JSON 的精度设置继续生效。曾依赖错误缩放的下游需调整，不得再手动补偿 1e8。
+
+`utils.CircularMapBuffer.Values()` 从最旧项按插入顺序返回，已有键更新不改变顺序；`CircularBuffer.Delete()` 压紧逻辑顺序并更新索引，删除后追加和淘汰继续保持顺序。容量需为正整数。

@@ -90,9 +90,8 @@ func (cb *CircularMapBuffer[K, T]) Values() []T {
 	cb.mu.RLock()
 	defer cb.mu.RUnlock()
 	res := make([]T, 0, cb.size)
-	start := (cb.start - cb.size + cb.capacity) % cb.capacity
 	for i := 0; i < cb.size; i++ {
-		idx := (start + i) % cb.capacity
+		idx := (cb.start + i) % cb.capacity
 		res = append(res, cb.data[cb.order[idx]])
 	}
 	return res

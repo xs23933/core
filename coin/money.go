@@ -145,7 +145,7 @@ func ParseMoney(s string) (Money, error) {
 // decimals: 0 表示输出所有小数位，1-8 表示保留指定位数
 func (m Money) FormatDecimals(decimals int) string {
 	if m.v == nil {
-		return "0." + strings.Repeat("0", decimals)
+		return "0"
 	}
 
 	sign := ""
@@ -288,7 +288,7 @@ func (m Money) GormDBDataType(db *gorm.DB, field *schema.Field) string {
 }
 
 func (m Money) Value() (driver.Value, error) {
-	return m.String(), nil
+	return m.StringFull(), nil
 }
 
 func (m *Money) Scan(value any) error {
@@ -331,15 +331,20 @@ func (m Money) Add(x Money) Money {
 }
 
 func (m Money) Sub(x Money) Money {
-	return Money{v: new(big.Int).Sub(m.norm(), x.v)}
+	return Money{v: new(big.Int).Sub(m.norm(), x.norm())}
 }
 
-// Mul 乘法
+// Mul multiplies fixed-point values, truncating toward zero.
 func (m Money) Mul(x Money) Money {
-	return Money{v: new(big.Int).Mul(m.norm(), x.norm())}
+	n := new(big.Int).Mul(m.norm(), x.norm())
+	return Money{v: n.Quo(n, MoneyBase)}
 }
+
+// Div divides fixed-point values, truncating toward zero.
+// Division by zero retains big.Int's panic contract, including a zero-value divisor.
 func (m Money) Div(x Money) Money {
-	return Money{v: new(big.Int).Div(m.norm(), x.norm())}
+	n := new(big.Int).Mul(m.norm(), MoneyBase)
+	return Money{v: n.Quo(n, x.norm())}
 }
 
 // MulInt 整数乘法

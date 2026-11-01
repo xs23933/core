@@ -57,8 +57,16 @@ func (cb *CircularBuffer[T]) Delete(value T) {
 
 	if idx, ok := cb.indexMap[value]; ok {
 		delete(cb.indexMap, value)
+		last := (cb.head - 1 + cb.capacity) % cb.capacity
+		for idx != last {
+			next := (idx + 1) % cb.capacity
+			cb.data[idx] = cb.data[next]
+			cb.indexMap[cb.data[idx]] = idx
+			idx = next
+		}
 		var zero T
-		cb.data[idx] = zero // 清理内容，避免内存泄漏
+		cb.data[last] = zero
+		cb.head = last
 		cb.size--
 	}
 }

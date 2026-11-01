@@ -64,3 +64,8 @@ app.StaticFile("/", "./dist/index.html", core.StaticConfig{})
 GOCACHE=/private/tmp/core-gocache go test . -run TestStaticCache -count=1
 GOCACHE=/private/tmp/core-gocache go test ./middleware/gzip -count=1
 ```
+
+
+### ETag 中间件组合
+
+`middleware/etag` 对 GET 的普通 200 响应正文计算 SHA-256 ETag（默认弱 tag），每次仍执行 handler，内容改变会改变 tag；优先保留 handler 的显式 validator。GET/HEAD 按弱比较支持 `If-None-Match` 列表和 `*`，命中提交无正文 304。HEAD 不用空正文生成 tag，只使用显式 validator。最多缓冲 1 MiB；超出、SSE、Flush/DoWriteHeader/Hijack 转为直通，不自动计算 tag；Range、Upgrade、非 GET/HEAD 跳过，no-store 和非 200 不生成或比较 tag。静态文件继续复用标准库 Last-Modified/If-Modified-Since 等处理。不要用于需要流式传输或敏感动态 API；用 Skip 排除，etag 不提供 public 缓存或授权策略。原 URL hash tag 已废弃，旧 tag 首次请求会重新获取内容。

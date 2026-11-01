@@ -145,7 +145,7 @@ app.Use(timeout.New(timeout.Config{
 }))
 ```
 
-- 超时后返回 HTTP 503，handler 通过 `c.Context().Done()` 感知取消。
+`middleware/timeout` 采用协作式取消：默认 30 秒（Timeout 非正值仍用默认），deadline 同时作用于 `c.Context()`、`c.Ctx()`、`c.Request().Context()` 和 `c.Stream()`。保留 JSON/XML/multipart 正文。取消后的 writer 写入返回 `http.ErrHandlerTimeout`；中间件等待 handler 返回后才恢复 request/writer、回收 Ctx。未提交响应时清除旧 Content-Length、Content-Encoding、validator 等正文相关头，返回配置的超时状态（默认 503），使用 text/plain 和 no-store；已提交响应保留原状态与正文，不追加超时消息。handler 必须把 context 传给下游并主动退出；不响应取消的 handler 会继续占用请求，**不保证立即返回 503**。这是对原先不安全的 goroutine 抢先返回行为的兼容调整；流式连接建议用 Skip 排除。
 - 对健康检查等路径建议用 `Skip` 排除。
 
 ## 8. 安全响应头 (security)
@@ -173,9 +173,7 @@ app.Use(otel.New())
 app.Use(etag.New())
 ```
 
-- 基于请求 URL 生成 SHA-256 ETag。
-- 自动处理 `If-None-Match` → `304 Not Modified`。
-- 仅对 GET/HEAD 生效。
+`middleware/etag` 对 GET 的普通 200 响应正文计算 SHA-256 ETag（默认弱 tag），每次仍执行 handler，内容改变会改变 tag；优先保留 handler 的显式 validator。GET/HEAD 按弱比较支持 `If-None-Match` 列表和 `*`，命中提交无正文 304。HEAD 不用空正文生成 tag，只使用显式 validator。最多缓冲 1 MiB；超出、SSE、Flush/DoWriteHeader/Hijack 转为直通，不自动计算 tag；Range、Upgrade、非 GET/HEAD 跳过，no-store 和非 200 不生成或比较 tag。静态文件继续复用标准库 Last-Modified/If-Modified-Since 等处理。不要用于需要流式传输或敏感动态 API；用 Skip 排除，etag 不提供 public 缓存或授权策略。普通正文写出不提前强制提交底层 writer，gzip 在 etag 前后均可压缩；Hijack 前已接受的缓冲正文先发送，未写正文的协议升级不预发状态。原 URL hash tag 已废弃，旧 tag 首次请求会重新获取内容。
 
 ## 11. 服务器监控 (monitor)
 
@@ -291,5 +289,5 @@ app.Use(gzip.New(gzip.Config{
 - `bodylimit` 和 `timeout` 建议放在中间件链首位。
 - `security` 和 `requestid` 紧跟其后。
 - `metrics` 和 `ratelimit` 在鉴权中间件之后。
-- `etag` 对动态 API 禁止使用（使用 `Skip` 排除 `POST`/`PUT`/`DELETE` 路由）。
+- `etag` 对敏感动态 API 和流式接口使用 `Skip` 排除；非 GET/HEAD 本身已跳过。
 - 限流中间件已采用 16 分片锁优化，多核场景下线性扩展。

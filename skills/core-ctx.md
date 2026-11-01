@@ -314,3 +314,8 @@ func (h *OrderHandler) Post(c core.Ctx) {
 ## gRPC 场景的 Cookie 对应接口
 
 HTTP Handler 使用 `c.SetCookie`/`c.RemoveCookie`/`c.Cookie`；gRPC Handler 使用 `core.GrpcSetCookie(ctx, name, value, exp, path, args...)`/`core.GrpcRemoveCookie(ctx, name, path, dom...)`/`core.GrpcCookie(ctx, *http.Cookie)` 并处理 error。设置/删除共享 BaseCtx 默认值、value 编码与可变参数；完整 cookie 入口不补默认值、不编码 value。Core 托管 RPC 的默认 Domain 取当前应用配置，不能依赖全局 Conf。详见 [core-grpc.md](core-grpc.md)。
+
+
+### 超时上下文与生命周期
+
+`middleware/timeout` 采用协作式取消：默认 30 秒（Timeout 非正值仍用默认），deadline 同时作用于 `c.Context()`、`c.Ctx()`、`c.Request().Context()` 和 `c.Stream()`。保留 JSON/XML/multipart 正文。取消后的 writer 写入返回 `http.ErrHandlerTimeout`；中间件等待 handler 返回后才恢复 request/writer、回收 Ctx。未提交响应时返回配置的超时状态（默认 503）；已提交响应保留原状态与正文，不追加超时消息。handler 必须把 context 传给下游并主动退出；不响应取消的 handler 会继续占用请求，**不保证立即返回 503**。这是对原先不安全的 goroutine 抢先返回行为的兼容调整；流式连接建议用 Skip 排除。
