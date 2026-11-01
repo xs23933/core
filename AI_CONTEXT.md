@@ -1391,3 +1391,5 @@ Gateway 初始化只执行一次；Close 与任务接纳、请求回退注册共
 静态传输优化：基础响应 writer 和静态缓存 writer 保留可选 `io.ReaderFrom` 文件复制接口；gzip 协商禁用压缩时也保留该路径。仍逐层经过当前 writer，不绕过 gzip、ETag 或其它中间件；不支持该接口时回退普通流式复制。公开 `ResponseWriter` 接口不增加方法，现有自定义 writer 无需修改。是否实际使用 sendfile 取决于协议、连接和文件系统，不能保证 TLS、HTTP/2 或封装文件系统采用零拷贝。默认缓存策略及按请求 gzip 压缩保持不变。
 
 `middleware/zstd` 提供与 gzip 同形的 New/Config（ContentTypes、Level、MinLength、Skip），默认 1024 字节阈值与文本 MIME 列表。Level 为 klauspost/compress/zstd.EncoderLevel，0 使用 SpeedDefault；协商 zstd/q 值，保留流式 Flush、跳过规则、Vary 与静态 ReaderFrom。gzip/zstd 叠加不做跨算法 q 值排序。完整用法见 README“zstd 响应压缩”和 skills/core-middleware.md。
+
+`middleware/compress.New(Config{ContentTypes, MinLength, GzipLevel, ZstdLevel, Skip})` 是统一响应压缩入口：按 q 权重选择 zstd/gzip，平局 zstd；显式编码覆盖 *、重复声明取最低权重，非法 q 禁用该编码。显式 identity 可优先，默认 identity 兜底，缺失/空头保留原文。禁止 identity 且无可用编码或响应不适合压缩时返回 no-store 406（后者不回滚 handler），无正文响应保留；入口已有编码透传；无共同编码时提前406无法预知下游预编码，预编码路径需Skip或提前协商设置响应头。Skip 完全绕过。复用独立 writer/池，不改旧 gzip/zstd API，不应叠加安装。详情见 README“统一响应压缩”和 skills/core-middleware.md。
