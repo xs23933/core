@@ -1393,3 +1393,10 @@ Gateway 初始化只执行一次；Close 与任务接纳、请求回退注册共
 `middleware/zstd` 提供与 gzip 同形的 New/Config（ContentTypes、Level、MinLength、Skip），默认 1024 字节阈值与文本 MIME 列表。Level 为 klauspost/compress/zstd.EncoderLevel，0 使用 SpeedDefault；协商 zstd/q 值，保留流式 Flush、跳过规则、Vary 与静态 ReaderFrom。gzip/zstd 叠加不做跨算法 q 值排序。完整用法见 README“zstd 响应压缩”和 skills/core-middleware.md。
 
 `middleware/compress.New(Config{ContentTypes, MinLength, GzipLevel, ZstdLevel, Skip})` 是统一响应压缩入口：按 q 权重选择 zstd/gzip，平局 zstd；显式编码覆盖 *、重复声明取最低权重，非法 q 禁用该编码。显式 identity 可优先，默认 identity 兜底，缺失/空头保留原文。禁止 identity 且无可用编码或响应不适合压缩时返回 no-store 406（后者不回滚 handler），无正文响应保留；入口已有编码透传；无共同编码时提前406无法预知下游预编码，预编码路径需Skip或提前协商设置响应头。Skip 完全绕过。复用独立 writer/池，不改旧 gzip/zstd API，不应叠加安装。详情见 README“统一响应压缩”和 skills/core-middleware.md。
+
+
+### 有限 ErrGroup 与 HTTP/3 关闭边界
+
+框架后台任务仍加入原 ErrGroup，保留 `ErrGroup().SetLimit(n)` 的有限并发语义：容量满时等待已有任务释放位置，等待不持应用锁，并可被 app.Ctx 或关闭标志打断。模块 Start、停机观察协程、gRPC Serve 和 HTTP/3 回调均使用这一可取消接纳边界，避免“启动等入组、停机等启动、Start 等 Stop”的循环。gRPC 已打开但未获接纳的 listener 会立即关闭。
+
+HTTP/3 回调以同一应用锁检查关闭状态并发布 server 所有权；Shutdown/强制关闭读取受锁保护的快照。迟到回调不发布新 server，并关闭传入的 UDP listener；已经发布的 server 会被正常排空或强制关闭。该规则不增加公开 API 或改变默认无限并发配置。

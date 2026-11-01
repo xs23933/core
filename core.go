@@ -386,26 +386,19 @@ func (app *Core) Serve(ln net.Listener) error {
 
 	// 优先使用 certMagic
 	if app.certMagicEnabled || app.certMagicConfig.Email != "" {
-		app.eg.Go(func() error {
+		if err := app.goBackground(func() error {
+			if app.startupContextErr() != nil {
+				return nil
+			}
 			ln, err := reuseport.ListenUDPWithReusePort("udp", ":https")
 			if err != nil {
-				Erro("UDP listener(%s) error: %v", app.addr, err)
 				return err
 			}
-			defer ln.Close()
-			tls3 := &tls.Config{
-				MinVersion:     app.TLSConfig.MinVersion,
-				GetCertificate: app.TLSConfig.GetCertificate,
-				NextProtos:     append([]string{"h3"}, app.TLSConfig.NextProtos...),
-			}
-			app.h3 = &http3.Server{
-				Addr:      app.addr,
-				Handler:   app,
-				TLSConfig: tls3,
-			}
-			Info("Starting HTTP/3 (%s) server", ":https")
-			return app.h3.Serve(ln)
-		})
+			tls3 := &tls.Config{MinVersion: app.TLSConfig.MinVersion, GetCertificate: app.TLSConfig.GetCertificate, NextProtos: append([]string{"h3"}, app.TLSConfig.NextProtos...)}
+			return app.serveHTTP3(ln, tls3)
+		}); err != nil {
+			return err
+		}
 		// CertMagic 的 TLS 配置已经设置好了
 		if err := app.Server.ServeTLS(ln, "", ""); err != nil {
 			return err
@@ -441,6 +434,25 @@ func (app *Core) Serve(ln net.Listener) error {
 	}
 
 	return nil
+}
+
+// The callback owns conn even when Shutdown wins before server publication.
+func (app *Core) serveHTTP3(conn net.PacketConn, config *tls.Config) error {
+	defer conn.Close()
+	app.mutex.Lock()
+	if app.shutdownStarted || app.Ctx.Err() != nil {
+		app.mutex.Unlock()
+		return nil
+	}
+	server := &http3.Server{Addr: app.addr, Handler: app, TLSConfig: config}
+	app.h3 = server
+	app.mutex.Unlock()
+	Info("Starting HTTP/3 (%s) server", app.addr)
+	err := server.Serve(conn)
+	if errors.Is(err, http.ErrServerClosed) {
+		return nil
+	}
+	return err
 }
 
 func (app *Core) prefork() error {

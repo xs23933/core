@@ -3269,3 +3269,10 @@ gateway:
 Gateway 初始化只执行一次；Close 与任务接纳、请求回退注册共享关闭边界，Close 返回后不允许回退路径重新填入期望实例或连接池。Close 仍清理已拥有的 watcher、连接及客户端，API 签名不变。gRPC 在 server 尚未创建时触发的强制停止不会耗尽未来 server 的一次性停止标记，关闭路径以受锁保护的 server 快照执行停止。
 
 静态传输优化：基础响应 writer 和静态缓存 writer 保留可选 `io.ReaderFrom` 文件复制接口；gzip 协商禁用压缩时也保留该路径。仍逐层经过当前 writer，不绕过 gzip、ETag 或其它中间件；不支持该接口时回退普通流式复制。公开 `ResponseWriter` 接口不增加方法，现有自定义 writer 无需修改。是否实际使用 sendfile 取决于协议、连接和文件系统，不能保证 TLS、HTTP/2 或封装文件系统采用零拷贝。默认缓存策略及按请求 gzip 压缩保持不变。
+
+
+### 有限 ErrGroup 与 HTTP/3 关闭边界
+
+框架后台任务仍加入原 ErrGroup，保留 `ErrGroup().SetLimit(n)` 的有限并发语义：容量满时等待已有任务释放位置，等待不持应用锁，并可被 app.Ctx 或关闭标志打断。模块 Start、停机观察协程、gRPC Serve 和 HTTP/3 回调均使用这一可取消接纳边界，避免“启动等入组、停机等启动、Start 等 Stop”的循环。gRPC 已打开但未获接纳的 listener 会立即关闭。
+
+HTTP/3 回调以同一应用锁检查关闭状态并发布 server 所有权；Shutdown/强制关闭读取受锁保护的快照。迟到回调不发布新 server，并关闭传入的 UDP listener；已经发布的 server 会被正常排空或强制关闭。该规则不增加公开 API 或改变默认无限并发配置。

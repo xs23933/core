@@ -126,17 +126,48 @@ type canPrepare interface{ Prepare(*Core) error }
 
 var handlerOwnershipMu sync.Mutex
 
-func (app *Core) startModule(mo Module) {
+// Preserve finite ErrGroup limits without trapping startup behind a resident
+// task which needs Stop to exit. No application lock is held while waiting.
+func (app *Core) goBackground(fn func() error) error {
+	if err := app.startupContextErr(); err != nil {
+		return err
+	}
+	if app.eg.TryGo(fn) {
+		return nil
+	}
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-app.Ctx.Done():
+			return app.Ctx.Err()
+		case <-ticker.C:
+		}
+		if err := app.startupContextErr(); err != nil {
+			return err
+		}
+		if app.eg.TryGo(fn) {
+			return nil
+		}
+	}
+}
+
+func (app *Core) startModule(mo Module) error {
 	if mod, ok := mo.(canStart); ok {
 		app.moduleWG.Add(1)
-		app.eg.Go(func() error {
+		err := app.goBackground(func() error {
 			defer app.moduleWG.Done()
 			if app.startupContextErr() != nil {
 				return nil
 			}
 			return mod.Start(app)
 		})
+		if err != nil {
+			app.moduleWG.Done()
+			return err
+		}
 	}
+	return nil
 }
 
 func (app *Core) loadMods() error {
@@ -168,7 +199,9 @@ func (app *Core) loadMods() error {
 		// Legacy Init may wait for Start. Preserve that ordering for modules which
 		// have not opted into the new synchronous preparation contract.
 		if !hasPrepare {
-			app.startModule(mo)
+			if err := app.startModule(mo); err != nil {
+				return err
+			}
 		}
 		if isHandler {
 			app.addBoundHandler(mod)
@@ -191,10 +224,11 @@ func (app *Core) loadMods() error {
 		}
 	}
 	for _, mo := range prepared {
-		app.startModule(mo)
+		if err := app.startModule(mo); err != nil {
+			return err
+		}
 	}
-	app.eg.Go(func() error { <-app.Ctx.Done(); app.shutdown(); return nil })
-	return nil
+	return app.goBackground(func() error { <-app.Ctx.Done(); app.shutdown(); return nil })
 }
 
 func (app *Core) ErrGroup() *errgroup.Group {
@@ -254,8 +288,11 @@ func (app *Core) forceCloseTransports() {
 		_ = app.Server.Close()
 	}
 	app.forceStopGRPC()
-	if app.h3 != nil {
-		go func() { _ = app.h3.Close() }()
+	app.mutex.Lock()
+	h3 := app.h3
+	app.mutex.Unlock()
+	if h3 != nil {
+		go func() { _ = h3.Close() }()
 	}
 }
 
@@ -285,6 +322,7 @@ func (app *Core) performShutdown(ctx context.Context) {
 	app.mutex.Lock()
 	hooks := append([]func(){}, app.shutdownHooks...)
 	loadedModules := append([]Module(nil), app.loadedModules...)
+	h3 := app.h3
 	app.mutex.Unlock()
 
 	var drainErr error
@@ -307,8 +345,8 @@ func (app *Core) performShutdown(ctx context.Context) {
 	}()
 	go func() {
 		defer drains.Done()
-		if app.h3 != nil {
-			if err := app.h3.Shutdown(ctx); err != nil {
+		if h3 != nil {
+			if err := h3.Shutdown(ctx); err != nil {
 				drainMu.Lock()
 				drainErr = errors.Join(drainErr, err)
 				drainMu.Unlock()

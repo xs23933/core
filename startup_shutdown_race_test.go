@@ -3,7 +3,10 @@ package core
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -202,5 +205,174 @@ func TestShutdownKeepsDependenciesUntilModuleStartExits(t *testing.T) {
 	<-app.shutdownDone
 	if err := db.Ping(); err == nil {
 		t.Fatal("database remained open after module exit")
+	}
+}
+
+type limitedStopHandler struct {
+	Handler
+	entered, exit, initialized chan struct{}
+	stopOnce                   sync.Once
+}
+
+func (h *limitedStopHandler) Init()             { h.Prefix("/limited-stop"); close(h.initialized) }
+func (h *limitedStopHandler) Start(*Core) error { close(h.entered); <-h.exit; return nil }
+func (h *limitedStopHandler) Stop(*Core) error  { h.stopOnce.Do(func() { close(h.exit) }); return nil }
+
+func TestLimitedErrGroupShutdownReleasesStopOnlyModules(t *testing.T) {
+	for _, count := range []int{1, 2} {
+		t.Run(fmt.Sprint(count), func(t *testing.T) {
+			app := New(Options{"debug": false})
+			app.ErrGroup().SetLimit(1)
+			instances := make([]Module, 0, count)
+			handlers := make([]*limitedStopHandler, 0, count)
+			for i := 0; i < count; i++ {
+				h := &limitedStopHandler{entered: make(chan struct{}), exit: make(chan struct{}), initialized: make(chan struct{})}
+				handlers = append(handlers, h)
+				instances = append(instances, h)
+				defer h.Stop(app)
+			}
+			registerStartupCompatibilityModules(t, app, instances...)
+			result := make(chan error, 1)
+			go func() { result <- app.prepareServe(nil) }()
+			<-handlers[0].entered
+			<-handlers[0].initialized
+			// One module fills the group before its shutdown observer; two modules also
+			// exercise a queued module Start. Stop is the sole exit signal here.
+			if err := app.ShutdownWithTimeout(time.Second); err != nil {
+				t.Errorf("shutdown with limited ErrGroup=%v", err)
+			}
+			select {
+			case err := <-result:
+				if !errors.Is(err, context.Canceled) {
+					t.Errorf("startup=%v", err)
+				}
+			case <-time.After(time.Second):
+				t.Error("startup admission did not observe shutdown")
+			}
+		})
+	}
+}
+
+func TestLimitedErrGroupStillWaitsForFiniteStart(t *testing.T) {
+	app := New(Options{"debug": false})
+	app.ErrGroup().SetLimit(1)
+	first := &limitedStopHandler{entered: make(chan struct{}), exit: make(chan struct{}), initialized: make(chan struct{})}
+	second := &limitedStopHandler{entered: make(chan struct{}), exit: make(chan struct{}), initialized: make(chan struct{})}
+	defer first.Stop(app)
+	defer second.Stop(app)
+	registerStartupCompatibilityModules(t, app, first, second)
+	result := make(chan error, 1)
+	go func() { result <- app.prepareServe(nil) }()
+	<-first.entered
+	first.Stop(app)
+	select {
+	case <-second.entered:
+	case <-time.After(time.Second):
+		t.Fatal("second Start did not acquire freed capacity")
+	}
+	second.Stop(app)
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("finite Starts did not permit readiness")
+	}
+	if !app.ServingReady() {
+		t.Fatal("finite Start configuration failed")
+	}
+}
+
+func TestCanceledGRPCAdmissionClosesListener(t *testing.T) {
+	app := New(Options{"debug": false})
+	defer app.ShutdownWithTimeout(time.Second)
+	app.ErrGroup().SetLimit(0)
+	reservation, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := reservation.Addr().String()
+	if err := reservation.Close(); err != nil {
+		t.Fatal(err)
+	}
+	app.EnableGRPC(addr)
+	app.GetGRPCServer()
+	app.stop()
+	if err := app.startGRPCServer(); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled admission=%v", err)
+	}
+	probe, err := net.Listen("tcp", addr)
+	if err != nil {
+		t.Fatalf("unadmitted server retained TCP listener: %v", err)
+	}
+	probe.Close()
+}
+
+func TestLateHTTP3PublicationClosesPacketConn(t *testing.T) {
+	app := New(Options{"debug": false})
+	if err := app.ShutdownWithTimeout(time.Second); err != nil {
+		t.Fatal(err)
+	}
+	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := app.serveHTTP3(conn, nil); err != nil {
+		t.Fatal(err)
+	}
+	if app.h3 != nil {
+		t.Fatal("late callback published HTTP3 after shutdown")
+	}
+	if _, err := conn.WriteTo([]byte("test"), conn.LocalAddr()); !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("late packet conn not closed: %v", err)
+	}
+}
+
+func TestHTTP3PublicationAndShutdownShareOwnership(t *testing.T) {
+	tlsServer := httptest.NewTLSServer(http.NotFoundHandler())
+	defer tlsServer.Close()
+	app := New(Options{"debug": false})
+	defer app.ShutdownWithTimeout(time.Second)
+	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	done := make(chan error, 1)
+	go func() { done <- app.serveHTTP3(conn, tlsServer.TLS) }()
+	deadline := time.NewTimer(time.Second)
+	defer deadline.Stop()
+	poll := time.NewTicker(time.Millisecond)
+	defer poll.Stop()
+	for {
+		app.mutex.Lock()
+		published := app.h3 != nil
+		app.mutex.Unlock()
+		if published {
+			break
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("HTTP3 exited before publication: %v", err)
+		case <-deadline.C:
+			t.Fatal("HTTP3 not published")
+		case <-poll.C:
+		}
+	}
+	if err := app.ShutdownWithTimeout(time.Second); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("HTTP3 remained serving after shutdown")
+	}
+	if _, err := conn.WriteTo([]byte("test"), conn.LocalAddr()); !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("HTTP3 packet conn retained: %v", err)
 	}
 }

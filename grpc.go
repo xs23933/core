@@ -168,13 +168,15 @@ func (app *Core) startGRPCServer() error {
 
 	Info("gRPC server listening on %s (protocol: HTTP/2 over TCP)", app.grpcAddr)
 
-	app.eg.Go(func() error {
+	if err := app.goBackground(func() error {
 		if err := app.grpcServer.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			Erro("gRPC server error: %v", err)
 			return err
 		}
 		return nil
-	})
+	}); err != nil {
+		return errors.Join(err, ln.Close())
+	}
 
 	return nil
 }
