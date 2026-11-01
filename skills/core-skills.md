@@ -33,7 +33,7 @@ Core Framework v3 是一个轻量级企业级 Go Web 框架，模块路径为 `g
 - **双协议兼容**：Service 层同时支持 HTTP 和 gRPC 调用
 - **多数据库支持**：MySQL、PostgreSQL、SQLite、ClickHouse 统一 GORM 接口
 - **服务治理**：内建 etcd 注册发现、gRPC 网关自动路由映射
-- **中间件生态**：CORS、限流、Metrics、RequestID、可配置 MIME 的 gzip 响应压缩
+- **中间件生态**：CORS、限流、Metrics、RequestID、可配置 MIME 的 gzip/zstd 响应压缩
 - **静态文件缓存**：Static 系列 API 可选 StaticConfig，默认 7 天、HTML no-cache、显式 immutable
 - **缓存体系**：Redis 封装 + Cache 包装器（singleflight 防击穿、空值缓存）
 - **消息队列**：NSQ Producer/Consumer 完整封装
@@ -52,11 +52,11 @@ skills/
 ├── core-handler.md          # RESTful Handler 创建与自动路由注册
 ├── core-model.md            # 数据模型定义、GORM 类型、分页查询、事务
 ├── core-service.md          # 业务逻辑层编写（兼容 HTTP/gRPC）
-├── core-middleware.md       # 中间件开发（CORS/限流/Metrics/RequestID/gzip）
+├── core-middleware.md       # 中间件开发（CORS/限流/Metrics/RequestID/gzip/zstd）
 ├── core-static.md           # 静态文件、可选长缓存、HTML 重新验证
 ├── core-grpc.md             # gRPC 服务端（轻量 GRPCCtx / 可信 Gateway 客户端 IP / TLS/interceptor/注册/启动/etcd 注册/共用端口约束/响应 Header/Cookie）
 ├── core-grpc-client.md      # gRPC 客户端（服务发现/明确 target/每服务 TLS/MustGrpcClient）
-├── core-gateway.md          # etcd HTTP/gRPC 网关（实例撤换连接排空 / ExactJSONBinding / core-client-ip / 自动/手动路由、负载均衡、请求 metadata/响应 Header/Cookie）
+├── core-gateway.md          # etcd HTTP/gRPC 网关（实例撤换连接排空 / ExactJSONBinding / core-client-ip / 自动/手动路由、原子替换与快照复用、负载均衡、请求 metadata/响应 Header/Cookie）
 ├── core-websocket.md        # WebSocket Options/累计读限/超时/可靠入队/连接清理/按用户推送
 ├── core-sse.md              # SSE 服务端推送（SSEWrite/SSESend/EventHub）
 ├── core-page.md             # 分页查询（经典分页/滚动分页/条件构建）
@@ -1079,3 +1079,7 @@ Gateway 可使用 Go 标准库首次自动创建私有 CA，后端自动申请�
 - 原子加密配置文件与 CurrentConfigFile、密文 CAS、跨进程锁及持久预备文件恢复：见 [core-utils.md](core-utils.md#原子加密配置文件)。
 
 通用 `grpc.max_recv_message_bytes` 配置、默认4MiB、无效值安全回落及Gateway响应接收与ExactJSON优先级，见 [core-grpc.md](core-grpc.md#通用-grpc-接收大小) 与 [core-gateway.md](core-gateway.md#通用-grpc-接收大小)。
+
+
+- 应用隔离与启动准备：`app.Conn/RConn/NProducer/NewNSQConsumer`、`Prepare` 和 `RegHandleFactory` 见 [core-handler.md](core-handler.md)、[core-model.md](core-model.md)、[core-nsq.md](core-nsq.md)。
+- Gateway 可信身份 metadata：`core-identity-*` 和 `protected_metadata_keys` 见 [core-gateway.md](core-gateway.md)；独立 fetch/cache 装配见对应 Skill。

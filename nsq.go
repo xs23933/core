@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -58,6 +59,7 @@ var (
 	nsqConsumers    []*NSQConsumer
 	nsqMu           sync.Mutex
 	nsqAuthSecret   string
+	nsqOwner        *applicationResources
 )
 
 // NSQProducer 封装 nsq.Producer
@@ -76,6 +78,7 @@ func NewNSQProducer(addr string, cfg *nsq.Config) (*NSQProducer, error) {
 		return nil, fmt.Errorf("nsq producer create failed: %w", err)
 	}
 	if err := p.Ping(); err != nil {
+		p.Stop()
 		return nil, fmt.Errorf("nsq producer ping %s failed: %w", addr, err)
 	}
 	D("NSQ producer connected %s", addr)
@@ -84,11 +87,24 @@ func NewNSQProducer(addr string, cfg *nsq.Config) (*NSQProducer, error) {
 
 // NProducer 获取全局 NSQ Producer
 func NProducer() *NSQProducer {
+	nsqMu.Lock()
+	defer nsqMu.Unlock()
 	return nsqProducer
 }
 
 // InitNSQ 初始化 NSQ（从配置自动创建 Producer）
 func InitNSQ(conf Options, debug bool) error {
+	p, secret, err := openNSQ(conf, debug)
+	if err != nil {
+		return err
+	}
+	nsqMu.Lock()
+	nsqProducer, nsqAuthSecret, nsqOwner = p, secret, nil
+	nsqMu.Unlock()
+	return nil
+}
+
+func openNSQ(conf Options, debug bool) (*NSQProducer, string, error) {
 	addr := conf.GetString("nsqd", "127.0.0.1:4150")
 
 	cfg := nsq.NewConfig()
@@ -115,14 +131,9 @@ func InitNSQ(conf Options, debug bool) error {
 
 	p, err := NewNSQProducer(addr, cfg)
 	if err != nil {
-		return err
+		return nil, "", err
 	}
-	nsqMu.Lock()
-	nsqProducer = p
-	nsqAuthSecret = cfg.AuthSecret
-	nsqMu.Unlock()
-	D("NSQ initialized, nsqd=%s", addr)
-	return nil
+	return p, cfg.AuthSecret, nil
 }
 
 // =========================
@@ -200,14 +211,26 @@ type NSQConsumerConfig struct {
 
 // NSQConsumer 封装 nsq.Consumer
 type NSQConsumer struct {
-	consumer *nsq.Consumer
-	config   NSQConsumerConfig
-	handler  nsq.HandlerFunc
-	stopOnce sync.Once
+	consumer    *nsq.Consumer
+	config      NSQConsumerConfig
+	handler     nsq.HandlerFunc
+	stopOnce    sync.Once
+	lifecycleMu sync.Mutex
+	started     bool
+	stopped     bool
+	active      sync.WaitGroup
+	owner       *applicationResources
 }
 
 // NewNSQConsumer 创建 NSQ Consumer
 func NewNSQConsumer(conf NSQConsumerConfig) (*NSQConsumer, error) {
+	nsqMu.Lock()
+	secret, owner := nsqAuthSecret, nsqOwner
+	nsqMu.Unlock()
+	return newNSQConsumer(conf, secret, owner)
+}
+
+func newNSQConsumer(conf NSQConsumerConfig, secret string, owner *applicationResources) (*NSQConsumer, error) {
 	if conf.Topic == "" || conf.Channel == "" {
 		return nil, fmt.Errorf("nsq consumer: topic(%s) and channel(%s) are required", conf.Topic, conf.Channel)
 	}
@@ -229,9 +252,7 @@ func NewNSQConsumer(conf NSQConsumerConfig) (*NSQConsumer, error) {
 	cfg := nsq.NewConfig()
 	cfg.AuthSecret = conf.AuthSecret
 	if cfg.AuthSecret == "" {
-		nsqMu.Lock()
-		cfg.AuthSecret = nsqAuthSecret
-		nsqMu.Unlock()
+		cfg.AuthSecret = secret
 	}
 	cfg.MaxInFlight = conf.MaxInFlight
 	cfg.MaxAttempts = conf.MaxAttempts
@@ -245,10 +266,18 @@ func NewNSQConsumer(conf NSQConsumerConfig) (*NSQConsumer, error) {
 		return nil, fmt.Errorf("nsq consumer create failed: %w", err)
 	}
 
-	return &NSQConsumer{
-		consumer: c,
-		config:   conf,
-	}, nil
+	consumer := &NSQConsumer{consumer: c, config: conf, owner: owner}
+	if owner != nil {
+		owner.mu.Lock()
+		if owner.closed {
+			owner.mu.Unlock()
+			consumer.Stop()
+			return nil, errors.New("nsq: application is shutting down")
+		}
+		owner.consumers = append(owner.consumers, consumer)
+		owner.mu.Unlock()
+	}
+	return consumer, nil
 }
 
 // NSQHandlerFunc 消息处理函数
@@ -259,8 +288,9 @@ type NSQHandlerFunc func(msg *nsq.Message) error
 // Start 启动消费者（阻塞直到 Stop 或连接断开）
 // handler 返回 nil 确认消息，返回 error 重新入队
 func (nc *NSQConsumer) Start(handler NSQHandlerFunc) error {
-	nc.handler = nsq.HandlerFunc(handler)
-	nc.consumer.AddConcurrentHandlers(nc.handler, nc.config.Concurrency)
+	if err := nc.beginStart(handler); err != nil {
+		return err
+	}
 
 	lookupds, nsqds, err := nsqConsumerConnectionTargets(nc.config)
 	if err != nil {
@@ -286,9 +316,11 @@ func (nc *NSQConsumer) Start(handler NSQHandlerFunc) error {
 	}
 
 	// 注册全局 consumer，方便关闭时统一清理
-	nsqMu.Lock()
-	nsqConsumers = append(nsqConsumers, nc)
-	nsqMu.Unlock()
+	if nc.owner == nil {
+		nsqMu.Lock()
+		nsqConsumers = append(nsqConsumers, nc)
+		nsqMu.Unlock()
+	}
 
 	Info("NSQ consumer started: topic=%s channel=%s concurrency=%d",
 		nc.config.Topic, nc.config.Channel, nc.config.Concurrency)
@@ -302,8 +334,9 @@ func (nc *NSQConsumer) Start(handler NSQHandlerFunc) error {
 
 // StartAsync 异步启动消费者
 func (nc *NSQConsumer) StartAsync(handler NSQHandlerFunc) error {
-	nc.handler = nsq.HandlerFunc(handler)
-	nc.consumer.AddConcurrentHandlers(nc.handler, nc.config.Concurrency)
+	if err := nc.beginStart(handler); err != nil {
+		return err
+	}
 
 	lookupds, nsqds, err := nsqConsumerConnectionTargets(nc.config)
 	if err != nil {
@@ -324,9 +357,11 @@ func (nc *NSQConsumer) StartAsync(handler NSQHandlerFunc) error {
 		}
 	}
 
-	nsqMu.Lock()
-	nsqConsumers = append(nsqConsumers, nc)
-	nsqMu.Unlock()
+	if nc.owner == nil {
+		nsqMu.Lock()
+		nsqConsumers = append(nsqConsumers, nc)
+		nsqMu.Unlock()
+	}
 
 	Info("NSQ consumer started (async): topic=%s channel=%s concurrency=%d",
 		nc.config.Topic, nc.config.Channel, nc.config.Concurrency)
@@ -346,12 +381,56 @@ func nsqConsumerConnectionTargets(conf NSQConsumerConfig) (lookupds []string, ns
 	return nil, nil, fmt.Errorf("nsq consumer: at least one lookupd(%v) or nsqd address(%v) required", conf.Lookupds, conf.NSQDs)
 }
 
-// Stop 优雅停止消费者
+// beginStart serializes handler installation with Stop. The business wrapper
+// rejects new work after withdrawal and tracks actual handlers, independently of
+// go-nsq's StopChan (which may close on its 30-second transport fallback).
+func (nc *NSQConsumer) beginStart(handler NSQHandlerFunc) error {
+	nc.lifecycleMu.Lock()
+	defer nc.lifecycleMu.Unlock()
+	if nc.stopped {
+		return errors.New("nsq consumer is stopped")
+	}
+	if nc.started {
+		return errors.New("nsq consumer already started")
+	}
+	if handler == nil {
+		return errors.New("nsq consumer handler is required")
+	}
+	nc.started = true
+	nc.handler = func(msg *nsq.Message) error {
+		nc.lifecycleMu.Lock()
+		if nc.stopped {
+			nc.lifecycleMu.Unlock()
+			return errors.New("nsq consumer is stopping")
+		}
+		nc.active.Add(1)
+		nc.lifecycleMu.Unlock()
+		defer nc.active.Done()
+		return handler(msg)
+	}
+	nc.consumer.AddConcurrentHandlers(nc.handler, nc.config.Concurrency)
+	return nil
+}
+
+// Stop requests asynchronous withdrawal; application cleanup separately waits
+// for both the transport and the real business handlers to finish.
 func (nc *NSQConsumer) Stop() {
 	nc.stopOnce.Do(func() {
+		nc.lifecycleMu.Lock()
+		nc.stopped = true
+		if !nc.started {
+			// go-nsq only closes StopChan when at least one handler loop exits.
+			nc.consumer.AddHandler(nsq.HandlerFunc(func(*nsq.Message) error { return errors.New("nsq consumer is stopped") }))
+		}
+		nc.lifecycleMu.Unlock()
 		nc.consumer.Stop()
 		D("NSQ consumer stopping: topic=%s channel=%s", nc.config.Topic, nc.config.Channel)
 	})
+}
+
+func (nc *NSQConsumer) waitStopped() {
+	<-nc.consumer.StopChan
+	nc.active.Wait()
 }
 
 // Stats 获取消费者统计
@@ -400,9 +479,14 @@ func NSQParse[T any](msg *nsq.Message) (*T, error) {
 // CloseNSQ 关闭所有 NSQ 连接
 func CloseNSQ() {
 	nsqMu.Lock()
-	producer, consumers := nsqProducer, nsqConsumers
-	nsqProducer, nsqConsumers, nsqAuthSecret = nil, nil, ""
+	producer, consumers, owner := nsqProducer, nsqConsumers, nsqOwner
+	nsqProducer, nsqConsumers, nsqAuthSecret, nsqOwner = nil, nil, "", nil
 	nsqMu.Unlock()
+	if owner != nil {
+		owner.mu.Lock()
+		consumers = append(consumers, owner.consumers...)
+		owner.mu.Unlock()
+	}
 	if producer != nil {
 		producer.Stop()
 	}
@@ -418,42 +502,47 @@ func CloseNSQ() {
 
 // NSQPublish 快速发布消息到指定 topic
 func NSQPublish(topic string, body []byte) error {
-	if nsqProducer == nil {
+	producer := NProducer()
+	if producer == nil {
 		return fmt.Errorf("nsq producer not initialized")
 	}
-	return nsqProducer.Publish(topic, body)
+	return producer.Publish(topic, body)
 }
 
 // NSQPublishJSON 快速发布 JSON 消息
 func NSQPublishJSON(topic string, v any) error {
-	if nsqProducer == nil {
+	producer := NProducer()
+	if producer == nil {
 		return fmt.Errorf("nsq producer not initialized")
 	}
-	return nsqProducer.PublishJSON(topic, v)
+	return producer.PublishJSON(topic, v)
 }
 
 // NSQPublishString 快速发布字符串消息
 func NSQPublishString(topic, message string) error {
-	if nsqProducer == nil {
+	producer := NProducer()
+	if producer == nil {
 		return fmt.Errorf("nsq producer not initialized")
 	}
-	return nsqProducer.PublishString(topic, message)
+	return producer.PublishString(topic, message)
 }
 
 // NSQDeferredPublish 快速延迟发布
 func NSQDeferredPublish(topic string, delay time.Duration, body []byte) error {
-	if nsqProducer == nil {
+	producer := NProducer()
+	if producer == nil {
 		return fmt.Errorf("nsq producer not initialized")
 	}
-	return nsqProducer.DeferredPublish(topic, delay, body)
+	return producer.DeferredPublish(topic, delay, body)
 }
 
 // NSQDeferredPublishJSON 快速延迟发布 JSON
 func NSQDeferredPublishJSON(topic string, delay time.Duration, v any) error {
-	if nsqProducer == nil {
+	producer := NProducer()
+	if producer == nil {
 		return fmt.Errorf("nsq producer not initialized")
 	}
-	return nsqProducer.DeferredPublishJSON(topic, delay, v)
+	return producer.DeferredPublishJSON(topic, delay, v)
 }
 
 // =========================

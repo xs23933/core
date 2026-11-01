@@ -33,52 +33,123 @@ import (
 
 func NewModel(conf Options, debug, colorful bool) (map[string]*DB, error) {
 
-	nodeID := Conf.GetInt64("node_id", 1)
-	var err error
-	SnID, err = sid.New(nodeID)
+	generator, xidGenerator, err := newModelGenerators(globalNodeID())
 	if err != nil {
-		return nil, fmt.Errorf("SnID init failed: %w", err)
+		return nil, err
 	}
-	XID = xid.New(&xid.Config{
-		NodeID:      nodeID,
-		CounterBits: 16,
-		Salt:        0xe5b08fe69dbe,
-	})
-
-	if conf.GetString("type") != "" && databaseDSN(conf) != "" {
-		db, err := openDB(conf, debug, colorful)
-		if err != nil {
-			return nil, err
-		}
-		dbMu.Lock()
-		conns["default"] = db
-		dbsType["default"] = conf.GetString("type")
-		dbMu.Unlock()
-		return conns, nil
+	dbs, types, err := openModels(conf, debug, colorful, generator)
+	if err != nil {
+		return nil, err
 	}
-
-	confs := Conf.GetMap("database")
 	dbMu.Lock()
 	defer dbMu.Unlock()
-	for name, cfg := range confs {
-		c := cfg.(Options)
-		db, err := openDB(c, debug, colorful, name)
-		if err != nil {
-			return nil, fmt.Errorf("db %s init failed: %w", name, err)
-		}
-		dbsType[name] = c.GetString("type")
-		conns[name] = db
-		D("Opened database connection %s conn:[%s]", dbsType[name], name)
+	SnID, XID = generator, xidGenerator
+	for name, db := range dbs {
+		conns[name], dbsType[name] = db, types[name]
 	}
-	return conns, nil
+	return copyDBs(conns), nil
+}
+
+// A node ID identifies one process sequence, not one Core instance. Reusing
+// the sequence also avoids collisions when multiple applications share a DB.
+var modelGeneratorsMu sync.Mutex
+var modelGeneratorsByNode = make(map[int64]struct {
+	snid *sid.SnowflakeID
+	xid  *xid.Generator
+})
+
+func newModelGenerators(nodeID int64) (*sid.SnowflakeID, *xid.Generator, error) {
+	modelGeneratorsMu.Lock()
+	defer modelGeneratorsMu.Unlock()
+	if pair, ok := modelGeneratorsByNode[nodeID]; ok {
+		return pair.snid, pair.xid, nil
+	}
+	generator, err := sid.New(nodeID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("SnID init failed: %w", err)
+	}
+	xidGenerator := xid.New(&xid.Config{NodeID: nodeID, CounterBits: 16, Salt: 0xe5b08fe69dbe})
+	modelGeneratorsByNode[nodeID] = struct {
+		snid *sid.SnowflakeID
+		xid  *xid.Generator
+	}{generator, xidGenerator}
+	return generator, xidGenerator, nil
+}
+
+// openModels builds a complete set before publishing any global defaults.
+func openModels(conf Options, debug, colorful bool, generator *sid.SnowflakeID) (dbs map[string]*DB, types map[string]string, err error) {
+	dbs, types = make(map[string]*DB), make(map[string]string)
+	defer func() {
+		if err != nil {
+			for _, db := range dbs {
+				if sqlDB, e := db.DB(); e == nil {
+					_ = sqlDB.Close()
+				}
+			}
+			dbs, types = nil, nil
+		}
+	}()
+	open := func(name string, cfg Options, named bool) error {
+		var db *DB
+		var e error
+		if named {
+			db, e = openDB(cfg, debug, colorful, name)
+		} else {
+			db, e = openDB(cfg, debug, colorful)
+		}
+		if e != nil {
+			return fmt.Errorf("database %s initialization failed: %w", name, e)
+		}
+		// Callbacks belong to this database configuration and survive NewDB
+		// sessions, transactions and association saves, unlike Statement settings.
+		if e := db.Callback().Create().Before("gorm:before_create").Register(modelSnowflakeKey, func(tx *DB) {
+			tx.Statement.Settings.Store(modelSnowflakeKey, generator)
+		}); e != nil {
+			if sqlDB, err := db.DB(); err == nil {
+				_ = sqlDB.Close()
+			}
+			return e
+		}
+		dbs[name], types[name] = db, cfg.GetString("type")
+		return nil
+	}
+	if conf.GetString("type") != "" {
+		err = open("default", conf, false)
+		return
+	}
+	for name, raw := range conf {
+		cfg, ok := raw.(Options)
+		if !ok {
+			err = fmt.Errorf("database %s: invalid configuration", name)
+			return
+		}
+		if err = open(name, cfg, true); err != nil {
+			return
+		}
+	}
+	return
+}
+
+func copyDBs(source map[string]*DB) map[string]*DB {
+	result := make(map[string]*DB, len(source))
+	for name, db := range source {
+		result[name] = db
+	}
+	return result
 }
 
 func NewSnID() sid.ID {
-	return SnID.MustGenerate()
+	dbMu.RLock()
+	generator := SnID
+	dbMu.RUnlock()
+	return generator.MustGenerate()
 }
 
 func NewXID() xid.ID {
-	return XID.MustGenerate()
+	dbMu.RLock()
+	generator := XID
+	dbMu.RUnlock()
+	return generator.MustGenerate()
 }
 
 func NewNID() nid.ID {
@@ -1077,9 +1148,16 @@ type SModels struct {
 	DeletedAt *gorm.DeletedAt `json:"deleted_at,omitempty" gorm:"index;comment:删除时间"`
 }
 
+const modelSnowflakeKey = "core:snowflake-generator"
+
 func (m *SModels) BeforeCreate(tx *DB) error {
 	if m.ID == 0 {
-		m.ID = SnID.MustGenerate()
+		generator, _ := tx.Get(modelSnowflakeKey)
+		if owned, ok := generator.(*sid.SnowflakeID); ok && owned != nil {
+			m.ID = owned.MustGenerate()
+		} else {
+			m.ID = NewSnID()
+		}
 	}
 	return nil
 }

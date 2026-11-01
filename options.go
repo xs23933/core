@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -611,4 +612,18 @@ func resolveWorkloadConfigPaths(conf Options, file string) {
 			values[name] = filepath.Join(directory, value)
 		}
 	}
+}
+
+// Compatibility defaults are process-wide. Framework instances use app.Conf.
+var confMu sync.RWMutex
+
+func globalDebugEnabled() bool {
+	confMu.RLock()
+	defer confMu.RUnlock()
+	return Conf.GetBool("debug")
+}
+func globalNodeID() int64 {
+	confMu.RLock()
+	defer confMu.RUnlock()
+	return Conf.GetInt64("node_id", 1)
 }

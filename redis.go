@@ -5,6 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
+
+	"github.com/xs23933/core/v3/cache"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -72,37 +75,75 @@ type RedisClient struct {
 // =========================
 
 var (
+	redisMu    sync.RWMutex
 	redisConns = make(map[string]*RedisClient)
 )
 
 // NewRedis 根据配置初始化 Redis 连接
 // 支持单实例和多实例两种配置格式
 func NewRedis(conf Options, debug bool) (map[string]*RedisClient, error) {
-	// 单实例配置：conf 中直接包含 addr
-	if conf.GetString("addr") != "" {
-		rdb, err := openRedis(conf, debug)
-		if err != nil {
-			return nil, err
-		}
-		redisConns["default"] = rdb
-		return redisConns, nil
+	connections, err := openRedisConnections(conf, debug)
+	if err != nil {
+		return nil, err
 	}
+	redisMu.Lock()
+	defer redisMu.Unlock()
+	for name, client := range connections {
+		redisConns[name] = client
+	}
+	return copyRedisConnections(redisConns), nil
+}
 
-	// 多实例配置：conf 中每个 key 是实例名
-	for name, cfg := range conf {
-		c, ok := cfg.(Options)
+func openRedisConnections(conf Options, debug bool) (connections map[string]*RedisClient, err error) {
+	connections = make(map[string]*RedisClient)
+	defer func() {
+		if err != nil {
+			for _, client := range connections {
+				_ = client.Close()
+			}
+			connections = nil
+		}
+	}()
+	if conf.GetString("addr") != "" {
+		var client *RedisClient
+		client, err = openRedis(conf, debug)
+		if err == nil {
+			connections["default"] = client
+		}
+		return
+	}
+	for name, raw := range conf {
+		cfg, ok := raw.(Options)
 		if !ok {
 			continue
 		}
-		rdb, err := openRedis(c, debug)
+		var client *RedisClient
+		client, err = openRedis(cfg, debug)
 		if err != nil {
-			return nil, fmt.Errorf("redis %s init failed: %w", name, err)
+			return
 		}
-		redisConns[name] = rdb
-		D("Opened redis connection %s", name)
+		connections[name] = client
 	}
+	return
+}
 
-	return redisConns, nil
+func copyRedisConnections(source map[string]*RedisClient) map[string]*RedisClient {
+	result := make(map[string]*RedisClient, len(source))
+	for name, client := range source {
+		result[name] = client
+	}
+	return result
+}
+
+func init() {
+	cache.SetDefaultStoreProvider(func() cache.Store {
+		redisMu.RLock()
+		defer redisMu.RUnlock()
+		if client := redisConns["default"]; client != nil {
+			return client
+		}
+		return nil
+	})
 }
 
 func openRedis(conf Options, debug bool) (*RedisClient, error) {
@@ -120,6 +161,7 @@ func openRedis(conf Options, debug bool) (*RedisClient, error) {
 	defer cancel()
 
 	if err := client.Ping(ctx).Err(); err != nil {
+		_ = client.Close()
 		return nil, err
 	}
 
@@ -136,7 +178,10 @@ func RConn(name ...string) *RedisClient {
 	if len(name) > 0 {
 		key = name[0]
 	}
-	if rdb, ok := redisConns[key]; ok {
+	redisMu.RLock()
+	rdb, ok := redisConns[key]
+	redisMu.RUnlock()
+	if ok {
 		return rdb
 	}
 	Erro("Redis connect failed: %s", key)
@@ -145,11 +190,14 @@ func RConn(name ...string) *RedisClient {
 
 // CloseRedis 关闭所有 Redis 连接
 func CloseRedis() {
-	for name, rdb := range redisConns {
+	redisMu.Lock()
+	connections := redisConns
+	redisConns = make(map[string]*RedisClient)
+	redisMu.Unlock()
+	for name, rdb := range connections {
 		if err := rdb.Close(); err != nil {
 			Erro("Redis %s close error: %v", name, err)
 		}
-		delete(redisConns, name)
 	}
 }
 
@@ -537,7 +585,7 @@ func (r *RedisClient) Subscribe(ctx context.Context, channel string, handler fun
 //	})
 
 // StreamMessage 表示一条 Stream 消息
- type StreamMessage struct {
+type StreamMessage struct {
 	ID     string         // 消息 ID (如 "1672531200000-0")
 	Fields map[string]any // 消息字段
 }
@@ -839,12 +887,12 @@ func (c *StreamConsumer) claimPending(ctx context.Context, handler func(ctx cont
 	// 获取 pending 消息 ID 范围
 	// 从 pending 列表获取具体的待处理条目
 	pendingExt, err := c.rdb.Client.XPendingExt(ctx, &redis.XPendingExtArgs{
-		Stream:   c.conf.Stream,
-		Group:    c.conf.Group,
-		Start:    "-",
-		End:      "+",
-		Count:    c.conf.ClaimCount,
-		Idle:     c.conf.ClaimIdle,
+		Stream: c.conf.Stream,
+		Group:  c.conf.Group,
+		Start:  "-",
+		End:    "+",
+		Count:  c.conf.ClaimCount,
+		Idle:   c.conf.ClaimIdle,
 	}).Result()
 	if err != nil || len(pendingExt) == 0 {
 		return

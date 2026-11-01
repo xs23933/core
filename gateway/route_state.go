@@ -1,7 +1,7 @@
 package gateway
 
 import (
-	"encoding/json"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -70,20 +70,21 @@ func emptyRouteSnapshot() routeSnapshot {
 }
 
 func newRouteSnapshot(values map[string]*routeSourceValue) routeSnapshot {
-	snapshot := routeSnapshot{
-		sources:          make(map[string]*routeSourceValue, len(values)),
-		activeSlots:      make(map[string]*route.Definition),
-		activeRecordKeys: make(map[string]bool),
-		conflicts:        make(map[string]routeConflict),
-		recordsByID:      make(map[string][]routeRecord),
-	}
+	snapshot := routeSnapshot{sources: make(map[string]*routeSourceValue, len(values))}
 	for storageKey, value := range values {
 		if value == nil || (value.Definition == nil) == (value.Catalog == nil) {
 			continue
 		}
 		snapshot.sources[storageKey] = cloneRouteSourceValue(value)
 	}
-	for _, record := range snapshot.allRecords() {
+	return resolveRouteSnapshot(snapshot.sources)
+}
+
+// Sources are owned and frozen before publishing a snapshot.
+func resolveRouteSnapshot(sources map[string]*routeSourceValue) routeSnapshot {
+	snapshot := routeSnapshot{sources: sources, activeSlots: make(map[string]*route.Definition), activeRecordKeys: make(map[string]bool), conflicts: make(map[string]routeConflict), recordsByID: make(map[string][]routeRecord)}
+	records := snapshot.allRecords()
+	for _, record := range records {
 		if record.Definition.ID == "" {
 			continue
 		}
@@ -92,26 +93,43 @@ func newRouteSnapshot(values map[string]*routeSourceValue) routeSnapshot {
 	for id := range snapshot.recordsByID {
 		sortRouteRecords(snapshot.recordsByID[id])
 	}
-	snapshot.resolveActiveRoutes()
+	snapshot.resolveActiveRoutes(records)
 	return snapshot
 }
 
 func (snapshot routeSnapshot) withRouteBatch(events []routeEvent) routeSnapshot {
-	values := make(map[string]*routeSourceValue, len(snapshot.sources)+len(events))
-	for storageKey, value := range snapshot.sources {
-		values[storageKey] = value
-	}
+	var values map[string]*routeSourceValue
 	for _, event := range events {
 		if event.StorageKey == "" {
 			continue
 		}
-		if event.Deleted || event.Value == nil {
-			delete(values, event.StorageKey)
+		current := snapshot.sources
+		if values != nil {
+			current = values
+		}
+		value := event.Value
+		if event.Deleted || value == nil || (value.Definition == nil) == (value.Catalog == nil) {
+			value = nil
+		}
+		if reflect.DeepEqual(current[event.StorageKey], value) {
 			continue
 		}
-		values[event.StorageKey] = event.Value
+		if values == nil {
+			values = make(map[string]*routeSourceValue, len(snapshot.sources)+len(events))
+			for k, v := range snapshot.sources {
+				values[k] = v
+			}
+		}
+		if value == nil {
+			delete(values, event.StorageKey)
+		} else {
+			values[event.StorageKey] = cloneRouteSourceValue(value)
+		}
 	}
-	return newRouteSnapshot(values)
+	if values == nil {
+		return snapshot
+	}
+	return resolveRouteSnapshot(values)
 }
 
 func (snapshot routeSnapshot) withRuntimeAutoGRPCSources(current routeSnapshot) routeSnapshot {
@@ -133,16 +151,13 @@ func isRuntimeAutoGRPCSource(storageKey string, value *routeSourceValue) bool {
 		value.Definition.Source == route.SourceAutoGRPC
 }
 
-func (snapshot *routeSnapshot) resolveActiveRoutes() {
+func (snapshot *routeSnapshot) resolveActiveRoutes(records []routeRecord) {
 	manualBySlot := make(map[string][]routeCandidate)
 	automaticBySlot := make(map[string][]routeCandidate)
-	for _, record := range snapshot.allRecords() {
+	for _, record := range records {
 		definition := record.Definition
 		if definition == nil || !definition.Enabled {
 			continue
-		}
-		if definition.Slot == "" {
-			definition.Slot, _ = route.SlotID(definition.Method, definition.Path)
 		}
 		if definition.Slot == "" {
 			continue
@@ -201,8 +216,8 @@ func (snapshot *routeSnapshot) activateIdenticalCandidates(slot string, candidat
 	}
 }
 
-func groupRouteCandidates(candidates []routeCandidate) map[string][]routeCandidate {
-	groups := make(map[string][]routeCandidate)
+func groupRouteCandidates(candidates []routeCandidate) map[routeDispatchKey][]routeCandidate {
+	groups := make(map[routeDispatchKey][]routeCandidate)
 	for _, candidate := range candidates {
 		identity := routeDispatchIdentity(candidate.record.Definition)
 		groups[identity] = append(groups[identity], candidate)
@@ -210,31 +225,21 @@ func groupRouteCandidates(candidates []routeCandidate) map[string][]routeCandida
 	return groups
 }
 
-// routeDispatchIdentity contains only dispatch behavior. Publication metadata
-// such as ID, source, owner, description, timestamps, and slot is excluded.
-func routeDispatchIdentity(definition *route.Definition) string {
+// routeDispatchKey excludes publication metadata and is directly comparable.
+type routeDispatchKey struct {
+	Protocol                              route.Protocol
+	Method, Path, ServiceName, GRPCMethod string
+}
+
+func routeDispatchIdentity(definition *route.Definition) routeDispatchKey {
 	if definition == nil {
-		return ""
+		return routeDispatchKey{}
 	}
 	protocol := definition.Protocol
 	if protocol == "" {
 		protocol = route.ProtocolGRPC
 	}
-	type dispatchDefinition struct {
-		Protocol    route.Protocol
-		Method      string
-		Path        string
-		ServiceName string
-		GRPCMethod  string
-	}
-	value, _ := json.Marshal(dispatchDefinition{
-		Protocol:    protocol,
-		Method:      strings.ToUpper(strings.TrimSpace(definition.Method)),
-		Path:        normalizeRoutePath(definition.Path),
-		ServiceName: strings.TrimSpace(definition.ServiceName),
-		GRPCMethod:  strings.TrimSpace(definition.GRPCMethod),
-	})
-	return string(value)
+	return routeDispatchKey{Protocol: protocol, Method: strings.ToUpper(strings.TrimSpace(definition.Method)), Path: normalizeRoutePath(definition.Path), ServiceName: strings.TrimSpace(definition.ServiceName), GRPCMethod: strings.TrimSpace(definition.GRPCMethod)}
 }
 
 func newRouteConflict(slot string, candidates []routeCandidate) routeConflict {
@@ -318,8 +323,15 @@ func cloneRouteSourceValue(value *routeSourceValue) *routeSourceValue {
 		return nil
 	}
 	copy := &routeSourceValue{}
+	cloneFrozenDefinition := func(definition *route.Definition) *route.Definition {
+		copy := cloneRouteDefinition(definition)
+		if copy != nil && copy.Enabled && copy.Slot == "" {
+			copy.Slot, _ = route.SlotID(copy.Method, copy.Path)
+		}
+		return copy
+	}
 	if value.Definition != nil {
-		copy.Definition = cloneRouteDefinition(value.Definition)
+		copy.Definition = cloneFrozenDefinition(value.Definition)
 	}
 	if value.Catalog != nil {
 		copy.Catalog = &route.Catalog{
@@ -327,7 +339,7 @@ func cloneRouteSourceValue(value *routeSourceValue) *routeSourceValue {
 			Routes:      make([]*route.Definition, len(value.Catalog.Routes)),
 		}
 		for index, definition := range value.Catalog.Routes {
-			copy.Catalog.Routes[index] = cloneRouteDefinition(definition)
+			copy.Catalog.Routes[index] = cloneFrozenDefinition(definition)
 		}
 	}
 	return copy
@@ -416,6 +428,11 @@ func (gw *EtcdGateway) replaceEtcdRouteSnapshot(snapshot routeSnapshot) []active
 
 func (gw *EtcdGateway) applyActiveRouteChanges(changes []activeRouteChange) {
 	for _, change := range changes {
+		if change.Old != nil && change.New != nil {
+			next := cloneRouteDefinition(change.New)
+			gw.app.ReplaceHandle([]string{next.Method}, change.Old.Path, next.Path, gw.routeHandler(next))
+			continue
+		}
 		if change.Old != nil {
 			gw.unregisterRoute(change.Old)
 		}

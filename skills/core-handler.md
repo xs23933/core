@@ -75,7 +75,8 @@ Handler 可以按需实现以下生命周期方法：
 | ---- | -------- | ---- |
 | `Init()` | Handler 注册/应用初始化阶段 | 设置 `Prefix`、初始化轻量配置 |
 | `Preload(c core.Ctx) error` | 每个请求进入业务方法前 | Handler 级鉴权、上下文注入、审计 |
-| `Start(app *core.Core) error` | 应用启动阶段 | 启动后台任务、预热缓存、连接外部依赖 |
+| `Prepare(app *core.Core) error` | Init/路由建立后同步执行，完成前不发布 ready | 注入实例依赖、连接检查、必需预热 |
+| `Start(app *core.Core) error` | 有 Prepare 的模块在全部 Prepare 成功后异步执行；旧模块保留 Start 先启动、Init 随后执行 | 后台任务，不作为就绪屏障 |
 | `Stop(app *core.Core) error` | 应用关闭阶段 | 释放资源、停止后台任务 |
 
 ```go
@@ -105,7 +106,8 @@ func (h *UserHandler) Stop(app *core.Core) error {
 
 - `Init()` 不能读取请求数据，只做注册期配置。
 - `Preload()` 不放行时直接返回错误或响应；放行必须 `return c.Next()`。
-- `Start()` 不能长期阻塞；后台任务要可停止。
+- 必需依赖和预热放在 `Prepare()`，失败返回 error；使用 `app.Ctx` 传播取消并为外部调用设置超时。
+- `Start()` 保留旧的异步行为；常驻任务必须响应 `app.Ctx`，不阻塞就绪但也不保证已初始化。
 - `Stop()` 用于清理资源，不要 panic。
 
 ### 5. 标准模板
@@ -251,3 +253,31 @@ c.SendStatus(404, "Not Found")
 4. ✅ 使用 `c.ToJSON()` 返回响应
 5. ✅ 错误处理完整
 ```
+
+
+## 动态路由原子替换（框架内部）
+
+`(*Core).ReplaceHandle(methods []string, oldURI, uri string, handler any, middleware ...HandlerFunc) Router` 是框架内部、动态路由管理使用的增量 API，现有 AddHandle/RemoveHandle 和 Router 接口不变。旧路径不存在时仍注册新路径；支持 ALL、现有大小写配置、handler 适配和声明的 route middleware，不用于替换 USE 中间件。不复制旧 route middleware，新 handler 与 middleware 组成新的链；路径级和全局 middleware 继续由树匹配。每个 method 独立原子替换，不承诺多个 method 或多个 slot 同时切换。参数名可在无共享参数歧义时改变，原有路由格式/参数歧义校验继续生效；非法注册沿用现有程序错误 panic 合同。业务示例仍优先使用自动 Handler 路由。
+
+
+## 多 Core 实例
+
+旧 `RegHandle(pointer)` 保持单应用兼容，同一对象绑定另一 app 会返回启动错误。
+使用 `RegHandleFactory(func() core.Module { return &UserHandler{} })` 为每个 app 构造独立同类型对象。
+工厂登记时调用一次、首个对象用于首个 app；后续 app 再调用。不要在工厂连接外部资源。
+在 Prepare 中通过 `app.Conn()/app.RConn()` 装配 DAO/Service，实现 Prepare 的模块在全部 Prepare 成功后才异步启动 Start；未实现 Prepare 的旧模块保留 Start 在 Init 前异步启动的顺序。
+Prepare 失败时 Stop 仍可能被调用，必须允许依赖尚未初始化。
+
+
+### 旧 Handler 启动顺序兼容回归
+
+启动顺序兼容边界：未实现 `Prepare` 的旧 Handler 在绑定当前 Core 后，先调度异步 `Start`，再执行 `Init` 并建立路由，因此 `Init` 可以等待自身 `Start` 发出的信号。`Start` 可以一直运行到 `app.Ctx` 取消，框架不会等待它返回才发布自动 HTTP 目录或 ready。实现 `Prepare` 的 Handler 先执行 `Init`/路由建立，全部 Prepare 成功后才调度 Start；给旧 Handler 新增 Prepare 时，应把必需准备逻辑放入 Prepare，并移除 Init 对 Start 的等待。每个模块的异步调度顺序不代表全部 Start 已执行或业务后台任务已准备完成。
+
+回归覆盖见 `module_startup_compat_test.go`：旧 Handler 与 Prepare Handler 的两种装载顺序、准备失败时取消已启动旧模块、启动/停止只执行一次；Init 等待有时间上界，使顺序回归直接失败而不拖住全仓测试。自动目录发布边界继续由 `TestAutomaticHTTPRouteStartupSyncRunsAfterModuleLoading` 验证。
+
+
+### 启动与关闭并发的资源边界
+
+并发启动/关闭合同：Shutdown 开始后不再接纳新模块启动或发布 ready。框架先取消 app.Ctx，等待正在执行的 Init、Prepare 和启动发布步骤退出，再调用已加载模块的 Stop；Stop 可发出常驻 Start 的退出信号，框架等待这些 Start 返回后才最终关闭自己拥有的数据库、Redis 等依赖。不会把整个 ErrGroup（含停机观察协程）作为等待对象，避免自等待。ShutdownWithTimeout 的调用方期限仍独立生效；忽略取消或不退出的用户钩子/Start 会推迟后台清理，不能强制释放它们仍可能使用的资源。启动钩子应通过返回错误触发退出，不应同步等待自身的 Shutdown 完成。
+
+Gateway 初始化只执行一次；Close 与任务接纳、请求回退注册共享关闭边界，Close 返回后不允许回退路径重新填入期望实例或连接池。Close 仍清理已拥有的 watcher、连接及客户端，API 签名不变。gRPC 在 server 尚未创建时触发的强制停止不会耗尽未来 server 的一次性停止标记，关闭路径以受锁保护的 server 快照执行停止。

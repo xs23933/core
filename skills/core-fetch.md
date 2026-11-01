@@ -269,3 +269,9 @@ api.UseCookie(false)
 - 每个 API 方法重复复制签名逻辑。
 - 混用公共 Header 和单次 Header，导致 token/trace 泄漏到后续请求。
 - 忽略 `FetchError` 中的 Header/Body。
+
+
+## 依赖边界
+
+fetch 不再导入 core 根包，单独使用不引入数据库、etcd 或 Gateway。独立运行时错误/显式 Debug 使用标准日志，
+普通调试日志默认关闭；同时导入 core 时通过内部日志桥接复用原日志输出。现有 Fetch API、Debug 行为与自定义日志保持兼容。

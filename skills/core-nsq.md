@@ -287,3 +287,15 @@ func main() {
 `NSQConsumerConfig.DisableMaxAttempts=true` 显式关闭 go-nsq 的次数耗尽自动 FIN，将其 `MaxAttempts` 设为 0。默认 false 保持旧行为：未指定或 0 的 `MaxAttempts` 使用 5；正值为有限次数。金融 Outbox/Inbox 等要求故障恢复的消费者应显式启用此项，避免在调用业务 Handler 之前因次数耗尽丢失重试。
 
 该选项不改变 Handler 语义：nil 仍 FIN，error 仍 REQ。只有业务已持久化完成或持久化隔离处理后才能返回 nil；仍在处理的 Inbox 锁、取消、超时和暂态故障须返回 error。格式错误的 poison 消息也不能只靠次数耗尽丢弃，调用方须选择持久隔离及诊断或继续有界退避重试。此项不提供 DLQ、持久化 Inbox 或业务幂等；父 context 和原命令键恢复仍由调用方负责。
+
+
+## 实例归属
+
+多应用使用 `app.NProducer()` 和 `app.NewNSQConsumer(conf)`；consumer 继承该 app 的认证，
+不受其他应用后续初始化影响。包级 NewNSQConsumer/Builder 在创建时捕获当时默认 producer 的 app 归属，
+显式 AuthSecret 继续优先；独立 InitNSQ 创建的消费者仍由全局 CloseNSQ 管理。
+Core 退出只停止其绑定的消费者和 producer；在用户 hook/模块 Stop 前发出消费者停止信号，
+再等待 transport 及框架跟踪的在途业务 handler 完成，最后释放业务依赖。未启动的 consumer 也可安全关闭；
+不能只把 go-nsq 的 StopChan（可能由30秒兜底关闭）当成业务完成。Stop 后或重复启动 consumer 返回 error。
+ShutdownWithTimeout 只限制调用等待，不强杀 handler；不响应取消的 handler 会推迟依赖释放。
+不要在实例 OnShutdown 中调用全局 CloseNSQ。配置了 NSQ 却初始化失败会阻止 ready，New 签名不变。

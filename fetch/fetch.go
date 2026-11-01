@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
-	"github.com/xs23933/core/v3"
+	"github.com/xs23933/core/v3/internal/logbridge"
 	xproxy "golang.org/x/net/proxy"
 )
 
@@ -170,7 +170,7 @@ func (f *Fetch) Client(client *http.Client) *Fetch {
 // proxy by replacing the transport with a direct default transport.
 func (f *Fetch) SetProxy(proxyURL string) *Fetch {
 	if err := f.setProxy(proxyURL); err != nil {
-		core.Erro("fetch: set proxy %q failed: %v", proxyURL, err)
+		logbridge.Error("fetch: set proxy %q failed: %v", proxyURL, err)
 	}
 	return f
 }
@@ -526,14 +526,14 @@ func (r *FetchRequest) Result(ctx context.Context, out ...any) (*FetchResult, er
 			return nil, err
 		}
 	}
-	core.D("%s %s", r.method, reqURL)
+	logbridge.Debug("%s %s", r.method, reqURL)
 	resp, err := r.fetch.httpClient().Do(req)
 	if err != nil {
 		if resp != nil {
-			core.D("%s %s(%d): %v", r.method, reqURL, resp.StatusCode, err)
+			logbridge.Debug("%s %s(%d): %v", r.method, reqURL, resp.StatusCode, err)
 			resp.Body.Close()
 		} else {
-			core.D("%s %s: %v", r.method, reqURL, err)
+			logbridge.Debug("%s %s: %v", r.method, reqURL, err)
 		}
 		r.fetch.logDebug(req, body, resp, nil, err)
 		return nil, err
@@ -542,14 +542,14 @@ func (r *FetchRequest) Result(ctx context.Context, out ...any) (*FetchResult, er
 
 	respBody, err := readResponseBody(resp)
 	if err != nil {
-		core.D("failed to read response body: %v", err)
+		logbridge.Debug("failed to read response body: %v", err)
 		r.fetch.logDebug(req, body, resp, nil, err)
 		return nil, err
 	}
 	for _, hook := range r.fetch.loadAfter() {
 		respBody, err = hook(ctx, resp, respBody)
 		if err != nil {
-			core.D("err to hook response: %v", err)
+			logbridge.Debug("err to hook response: %v", err)
 			r.fetch.logDebug(req, body, resp, respBody, err)
 			return nil, err
 		}
@@ -572,7 +572,7 @@ func (r *FetchRequest) Result(ctx context.Context, out ...any) (*FetchResult, er
 	}
 	if len(out) == 1 {
 		if err := decodeFetchBody(respBody, out[0]); err != nil {
-			core.D("decode Fetch Body err: %v", err)
+			logbridge.Debug("decode Fetch Body err: %v", err)
 			r.fetch.logDebug(req, body, resp, respBody, err)
 			return result, err
 		}
@@ -693,7 +693,7 @@ func (f *Fetch) logDebug(req *http.Request, reqBody []byte, resp *http.Response,
 }
 
 func defaultFetchDebugLog(msg string) {
-	core.Log("%s", msg)
+	logbridge.Print("%s", msg)
 }
 
 func formatFetchDebug(req *http.Request, reqBody []byte, resp *http.Response, respBody []byte, err error) string {

@@ -11,6 +11,7 @@ require (
 	github.com/gorilla/schema v1.4.1
 	github.com/gorilla/websocket v1.5.3
 	github.com/jhump/protoreflect v1.18.0
+	github.com/klauspost/compress v1.18.6
 	github.com/libdns/cloudflare v0.2.2
 	github.com/mattn/go-isatty v0.0.22
 	github.com/mholt/acmez/v3 v3.1.6
@@ -95,7 +96,6 @@ require (
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect
 	github.com/jonboulle/clockwork v0.5.0 // indirect
-	github.com/klauspost/compress v1.18.6 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/leodido/go-urn v1.4.0 // indirect
 	github.com/libdns/libdns v1.1.1 // indirect

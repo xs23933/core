@@ -121,3 +121,11 @@ if err := userCache.Delete(ctx, id); err != nil {
 - 不要把 `core.RConn()`、TTL、前缀散落到每个 DAO 方法里。
 - 不要更新 DB 后忘记 `Delete`。
 - 不要用业务零值代表不存在；用 not found error 配合 `CacheNil`。
+
+
+## 独立包与默认装配
+
+cache 不导入 core 根包，`New(store)` 可独立使用。core 注册线程安全的默认 Redis provider；
+Default/Get 无显式 Store 时使用它，单应用行为保持兼容。SetDefaultStore 优先于 provider；
+SetDefaultStore(nil) 恢复 fallback，DefaultStore() 仍只读取显式 Store。
+多应用应使用 `cache.New(app.RConn(), ...)`，不要依赖进程级 Default。Cache 必须在应用初始化后构造，不能在 init 中捕获尚未建立的连接。

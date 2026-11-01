@@ -15,6 +15,10 @@ import (
 
 func (app *Core) addHandler(h handler) {
 	h.Core(app)
+	app.addBoundHandler(h)
+}
+
+func (app *Core) addBoundHandler(h handler) {
 	h.Init()
 	refCtl := reflect.TypeOf(h)
 	h.HandName(refCtl.Elem().String())
@@ -90,32 +94,107 @@ func RegisterModule(inst module) {
 	modules[mod.ID] = mod
 }
 
-func (app *Core) loadMods() {
-	modPrefix := app.modName
-	for _, m := range app.getModules(modPrefix) {
+// RegHandleFactory registers a per-application Handler factory. It must return
+// a fresh pointer each time; use this API when multiple Core instances coexist.
+// Registration evaluates the factory once to determine its stable module ID.
+func RegHandleFactory(factory func() Module) {
+	prototype := factory()
+	typ := reflect.TypeOf(prototype)
+	id := "mod." + typ.Elem().String()
+	modulesMu.Lock()
+	defer modulesMu.Unlock()
+	if _, exists := modules[id]; exists {
+		return
+	}
+	// Reuse the first newly constructed object for the first application.
+	first := true
+	var factoryMu sync.Mutex
+	modules[id] = ModuleInfo{ID: id, Instance: func() Module {
+		factoryMu.Lock()
+		defer factoryMu.Unlock()
+		if first {
+			first = false
+			return prototype
+		}
+		return factory()
+	}}
+}
+
+// Prepare is an opt-in synchronous readiness boundary. Modules without it retain
+// Start-before-Init ordering, including Start loops that await app.Ctx cancellation.
+type canPrepare interface{ Prepare(*Core) error }
+
+var handlerOwnershipMu sync.Mutex
+
+func (app *Core) startModule(mo Module) {
+	if mod, ok := mo.(canStart); ok {
+		app.moduleWG.Add(1)
+		app.eg.Go(func() error {
+			defer app.moduleWG.Done()
+			if app.startupContextErr() != nil {
+				return nil
+			}
+			return mod.Start(app)
+		})
+	}
+}
+
+func (app *Core) loadMods() error {
+	var prepared []Module
+	for _, m := range app.getModules(app.modName) {
+		if err := app.startupContextErr(); err != nil {
+			return err
+		}
 		mo := m.Instance()
+		mod, isHandler := mo.(handler)
+		if isHandler {
+			handlerOwnershipMu.Lock()
+			owner := mod.Core()
+			if owner != nil && owner != app {
+				handlerOwnershipMu.Unlock()
+				return fmt.Errorf("module %s: Handler already belongs to another Core; use RegHandleFactory", m.ID)
+			}
+			mod.Core(app)
+			handlerOwnershipMu.Unlock()
+		}
 		app.mutex.Lock()
+		if app.shutdownStarted || app.Ctx.Err() != nil {
+			app.mutex.Unlock()
+			return context.Canceled
+		}
 		app.loadedModules = append(app.loadedModules, mo)
 		app.mutex.Unlock()
-		if mod, ok := mo.(canStart); ok {
-			app.eg.Go(func() error {
-				select {
-				case <-app.Ctx.Done():
-					return nil
-				default:
-				}
-				return mod.Start(app)
-			})
+		_, hasPrepare := mo.(canPrepare)
+		// Legacy Init may wait for Start. Preserve that ordering for modules which
+		// have not opted into the new synchronous preparation contract.
+		if !hasPrepare {
+			app.startModule(mo)
 		}
-		if mod, ok := mo.(handler); ok {
-			app.addHandler(mod)
+		if isHandler {
+			app.addBoundHandler(mod)
+		} else if hasPrepare {
+			mo.Init()
+		}
+		if hasPrepare {
+			prepared = append(prepared, mo)
 		}
 	}
-	app.eg.Go(func() error {
-		<-app.Ctx.Done()
-		app.shutdown()
-		return nil
-	})
+	for _, mo := range prepared {
+		if err := app.startupContextErr(); err != nil {
+			return err
+		}
+		if err := mo.(canPrepare).Prepare(app); err != nil {
+			return fmt.Errorf("module prepare: %w", err)
+		}
+		if err := app.Ctx.Err(); err != nil {
+			return err
+		}
+	}
+	for _, mo := range prepared {
+		app.startModule(mo)
+	}
+	app.eg.Go(func() error { <-app.Ctx.Done(); app.shutdown(); return nil })
+	return nil
 }
 
 func (app *Core) ErrGroup() *errgroup.Group {
@@ -190,8 +269,6 @@ func (app *Core) performShutdown(ctx context.Context) {
 	app.etcdRegistry = nil
 	app.etcdRegistryServiceName = ""
 	app.etcdRegistryNamespace = ""
-	hooks := append([]func(){}, app.shutdownHooks...)
-	loadedModules := append([]Module(nil), app.loadedModules...)
 	app.mutex.Unlock()
 
 	// Withdraw before closing business dependencies. The caller deadline closes
@@ -202,6 +279,13 @@ func (app *Core) performShutdown(ctx context.Context) {
 	if app.stop != nil {
 		app.stop()
 	}
+	// Cancel first, then let active Init/Prepare/publication finish before Stop
+	// and dependency teardown. The caller's shutdown deadline remains independent.
+	app.startupWG.Wait()
+	app.mutex.Lock()
+	hooks := append([]func(){}, app.shutdownHooks...)
+	loadedModules := append([]Module(nil), app.loadedModules...)
+	app.mutex.Unlock()
 
 	var drainErr error
 	var drainMu sync.Mutex
@@ -236,6 +320,9 @@ func (app *Core) performShutdown(ctx context.Context) {
 		app.forceCloseTransports()
 		drainErr = errors.Join(drainErr, ctx.Err())
 	}
+	if app.resources != nil {
+		app.resources.stopConsumers()
+	}
 	for _, hook := range hooks {
 		hook()
 	}
@@ -245,6 +332,12 @@ func (app *Core) performShutdown(ctx context.Context) {
 				drainErr = errors.Join(drainErr, err)
 			}
 		}
+	}
+	// Stop may signal a resident Start loop to finish. Keep dependencies alive
+	// until all those loops have returned; do not wait for the shutdown observer.
+	app.moduleWG.Wait()
+	if app.resources != nil {
+		drainErr = errors.Join(drainErr, app.resources.close())
 	}
 	if discoveryCleanup != nil {
 		discoveryCleanup()

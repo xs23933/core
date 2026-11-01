@@ -10,15 +10,15 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
-	"github.com/xs23933/core/v3"
 	"golang.org/x/sync/singleflight"
 )
 
 var ErrNotFound = errors.New("cache: not found")
 
 var (
-	defaultMu    sync.RWMutex
-	defaultStore Store
+	defaultMu            sync.RWMutex
+	defaultStore         Store
+	defaultStoreProvider func() Store
 )
 
 type Store interface {
@@ -56,13 +56,21 @@ func New(store Store, opts ...Option) *Cache {
 }
 
 func Default(opts ...Option) *Cache {
-	store := DefaultStore()
-	if store == nil {
-		if rdb := core.RConn(); rdb != nil {
-			store = rdb
-		}
+	defaultMu.RLock()
+	store, provider := defaultStore, defaultStoreProvider
+	defaultMu.RUnlock()
+	if store == nil && provider != nil {
+		store = provider()
 	}
 	return New(store, opts...)
+}
+
+// SetDefaultStoreProvider supplies a fallback only when no explicit default is set.
+// Integration code installs this during initialization; the provider must be safe for concurrent calls.
+func SetDefaultStoreProvider(provider func() Store) {
+	defaultMu.Lock()
+	defer defaultMu.Unlock()
+	defaultStoreProvider = provider
 }
 
 func SetDefaultStore(store Store) {

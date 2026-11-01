@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -171,13 +172,20 @@ func (gw *EtcdGateway) createHTTPProxyHandler(route *Route) core.HandlerFunc {
 		Director: func(*http.Request) {},
 		ErrorHandler: func(w http.ResponseWriter, req *http.Request, proxyErr error) {
 			state, _ := req.Context().Value(httpProxyRetryContextKey{}).(httpProxyRetryState)
-			if gatewayRequestCanRetry(req.Method) && !state.retried && req.Context().Err() == nil {
+			if gatewayRequestCanRetry(req.Method) && !state.retried && req.Context().Err() == nil && (req.Body == nil || req.Body == http.NoBody || req.GetBody != nil) {
 				if alternate := gw.getHTTPInstanceExcept(route.ServiceName, state.instanceID); alternate != nil {
 					retryState := httpProxyRetryState{instanceID: alternate.ID, retried: true}
 					retryReq := req.Clone(context.WithValue(req.Context(), httpProxyRetryContextKey{}, retryState))
-					setHTTPProxyTarget(retryReq, alternate.Target)
-					proxy.ServeHTTP(w, retryReq)
-					return
+					var replayErr error
+					if req.Body != nil && req.Body != http.NoBody {
+						retryReq.Body, replayErr = req.GetBody()
+					}
+					if replayErr == nil {
+						setHTTPProxyTarget(retryReq, alternate.Target)
+						proxy.ServeHTTP(w, retryReq)
+						return
+					}
+					proxyErr = replayErr
 				}
 			}
 			core.Erro("[Gateway] HTTP proxy %s failed: %v", route.ServiceName, proxyErr)
@@ -365,6 +373,11 @@ func (gw *EtcdGateway) addHTTPInstance(serviceName, instanceID, addr string) err
 		gw.removeHTTPInstance(serviceName, instanceID)
 		return nil
 	}
+	if instances := gw.loadHTTPInstances()[serviceName]; instances != nil {
+		if old := instances.byID[instanceID]; old != nil && old.Addr == addr {
+			return nil
+		}
+	}
 	target, err := parseHTTPServiceURL(addr)
 	if err != nil {
 		gw.removeHTTPInstance(serviceName, instanceID)
@@ -435,4 +448,64 @@ func (gw *EtcdGateway) selectHTTPInstance(serviceName, excludedID string) *HTTPI
 		}
 	}
 	return nil
+}
+
+// Build at most one snapshot per changed service, preserving unchanged targets.
+func (gw *EtcdGateway) reconcileHTTPInstances(desired serviceSnapshot) {
+	gw.httpMu.Lock()
+	defer gw.httpMu.Unlock()
+	current := gw.loadHTTPInstances()
+	grouped := make(map[string]map[string]*HTTPInstance)
+	for _, entry := range desired {
+		name, id, addr := strings.TrimSpace(entry.ServiceName), strings.TrimSpace(entry.InstanceID), strings.TrimSpace(entry.HTTPAddr)
+		if entry.NotReady || name == "" || id == "" || addr == "" {
+			continue
+		}
+		var instance *HTTPInstance
+		if old := current[name]; old != nil {
+			instance = old.byID[id]
+		}
+		if instance == nil || instance.Addr != addr {
+			target, err := parseHTTPServiceURL(addr)
+			if err != nil {
+				core.Warn("[Gateway] invalid HTTP instance: %v", err)
+				continue
+			}
+			instance = &HTTPInstance{ID: id, Addr: addr, Target: target}
+		}
+		if grouped[name] == nil {
+			grouped[name] = make(map[string]*HTTPInstance)
+		}
+		grouped[name][id] = instance
+	}
+	next := make(map[string]*httpServiceInstances, len(grouped))
+	for name, byID := range grouped {
+		if old := current[name]; old != nil && maps.Equal(old.byID, byID) {
+			next[name] = old
+		} else {
+			next[name] = newHTTPServiceInstances(byID)
+			gw.ensureHTTPIndex(name)
+		}
+	}
+	for name, old := range current {
+		retained := false
+		if replacement := next[name]; replacement != nil {
+			for id := range old.byID {
+				if replacement.byID[id] != nil {
+					retained = true
+					break
+				}
+			}
+		}
+		if !retained {
+			gw.removeHTTPIndex(name)
+			gw.circuitStates.Delete(name)
+			if next[name] != nil {
+				gw.ensureHTTPIndex(name)
+			}
+		}
+	}
+	if !maps.Equal(current, next) {
+		gw.storeHTTPInstances(next)
+	}
 }

@@ -131,6 +131,7 @@ type EtcdGateway struct {
 	// grpcServiceRoutes tracks the union of installed process method sets.
 	grpcServiceRoutes map[string]map[string]bool
 
+	initializeOnce sync.Once
 	watchCtx       context.Context
 	watchCancel    context.CancelFunc
 	lifecycleMu    sync.Mutex
@@ -159,6 +160,8 @@ type EtcdGateway struct {
 }
 
 type Config struct {
+	// ProtectedMetadataKeys may only be supplied by authenticated middleware Vars, never HTTP headers.
+	ProtectedMetadataKeys []string `yaml:"protected_metadata_keys"`
 	// GRPCRequestTimeout bounds the entire proxied RPC, including any safe read retry.
 	// It does not override a shorter incoming deadline. Zero/negative uses 10s.
 	GRPCRequestTimeout  time.Duration `yaml:"grpc_request_timeout"`
@@ -389,20 +392,22 @@ func (gw *EtcdGateway) initializeLifecycle() {
 	if gw == nil {
 		return
 	}
-	gw.lifecycleMu.Lock()
-	if gw.watchCtx == nil {
-		gw.watchCtx, gw.watchCancel = context.WithCancel(context.Background())
-	}
-	gw.lifecycleMu.Unlock()
-	if gw.connPool == nil {
-		gw.connPool = NewConnectionPool()
-	}
-	if gw.grpcServiceRoutes == nil {
-		gw.grpcServiceRoutes = make(map[string]map[string]bool)
-	}
-	if gw.loadDesiredServiceSnapshot() == nil {
-		gw.setDesiredServiceSnapshot(make(serviceSnapshot))
-	}
+	gw.initializeOnce.Do(func() {
+		gw.lifecycleMu.Lock()
+		if gw.watchCtx == nil {
+			gw.watchCtx, gw.watchCancel = context.WithCancel(context.Background())
+		}
+		defer gw.lifecycleMu.Unlock()
+		if gw.connPool == nil {
+			gw.connPool = NewConnectionPool()
+		}
+		if gw.grpcServiceRoutes == nil {
+			gw.grpcServiceRoutes = make(map[string]map[string]bool)
+		}
+		if gw.loadDesiredServiceSnapshot() == nil {
+			gw.setDesiredServiceSnapshot(make(serviceSnapshot))
+		}
+	})
 }
 
 func (gw *EtcdGateway) launchTask(task func()) bool {
@@ -600,6 +605,7 @@ func NewEtcdGateway(app *core.Core, conf ...*Config) (*EtcdGateway, error) {
 		config.EtcdDialTimeout = time.Duration(app.Conf.GetInt64("etcd.dial_timeout", 5)) * time.Second
 		config.Namespace = app.Conf.GetString("etcd.namespace", "")
 		config.GRPCServiceExcludes = app.Conf.GetStrings("gateway.grpc_service_excludes")
+		config.ProtectedMetadataKeys = app.Conf.GetStrings("gateway.protected_metadata_keys")
 		config.GRPCRequestTimeout = app.Conf.GetDuration("gateway.grpc_request_timeout", defaultGRPCRequestTimeout)
 		config.MaxRequestBodyBytes = app.Conf.GetInt64("gateway.max_request_body_bytes", defaultMaxRequestBodyBytes)
 	}
@@ -901,22 +907,7 @@ func (gw *EtcdGateway) reconcileServiceSnapshot(snapshot serviceSnapshot) {
 			pool.SetDesiredGeneration(instance.InstanceID, instance.GRPCAddr, instanceGenerationToken(instance))
 		}
 	}
-	for serviceName, instances := range gw.loadHTTPInstances() {
-		for instanceID := range instances.byID {
-			desired, exists := next[connectInstanceKey(serviceName, instanceID)]
-			if !exists || desired.NotReady {
-				gw.removeHTTPInstance(serviceName, instanceID)
-			}
-		}
-	}
-	for _, instance := range next {
-		if instance.NotReady {
-			continue
-		}
-		if err := gw.addHTTPInstance(instance.ServiceName, instance.InstanceID, instance.HTTPAddr); err != nil {
-			core.Warn("[Gateway] invalid HTTP instance: %v", err)
-		}
-	}
+	gw.reconcileHTTPInstances(next)
 	for key, old := range previous {
 		if old.GRPCAddr == "" {
 			continue
@@ -964,6 +955,12 @@ func (gw *EtcdGateway) reconcileServiceSnapshot(snapshot serviceSnapshot) {
 }
 
 func (gw *EtcdGateway) addDesiredServiceInstance(instance registeredServiceInstance) {
+	gw.initializeLifecycle()
+	gw.lifecycleMu.Lock()
+	defer gw.lifecycleMu.Unlock()
+	if gw.closed {
+		return
+	}
 	if instance.GRPCAddr == "" || instance.NotReady {
 		return
 	}
@@ -1134,12 +1131,7 @@ func nextRouteWatchRevision(loadedRevision int64) int64 {
 }
 
 func (gw *EtcdGateway) registerRoute(route *Route) {
-	var handler core.HandlerFunc
-	if route.Protocol == RouteProtocolHTTP {
-		handler = gw.createHTTPProxyHandler(route)
-	} else {
-		handler = gw.createProxyHandler(route)
-	}
+	handler := gw.routeHandler(route)
 
 	route.Path = strings.TrimSuffix(route.Path, "/")
 	target := route.GRPCMethod
@@ -1148,6 +1140,13 @@ func (gw *EtcdGateway) registerRoute(route *Route) {
 	}
 	core.D("Add Route ✅: %s %s -> %s:%s", route.Method, route.Path, route.Protocol, target)
 	gw.app.AddHandle([]string{route.Method}, route.Path, nil, handler)
+}
+
+func (gw *EtcdGateway) routeHandler(route *Route) core.HandlerFunc {
+	if route.Protocol == RouteProtocolHTTP {
+		return gw.createHTTPProxyHandler(route)
+	}
+	return gw.createProxyHandler(route)
 }
 
 func (gw *EtcdGateway) unregisterRoute(route *Route) {
@@ -1197,7 +1196,8 @@ func (gw *EtcdGateway) createProxyHandler(route *Route) core.HandlerFunc {
 			var bodyMap core.Map
 			if ctx.Method() != "GET" && len(rawBody) > 0 {
 				if err := sonic.Unmarshal(rawBody, &bodyMap); err != nil {
-					core.Erro("[Gateway] gRPC proxy bind body failed: method=%s path=%s grpc=%s err=%v", ctx.Method(), ctx.Path(), route.GRPCMethod, err)
+					core.Erro("[Gateway] gRPC proxy bind body failed: method=%s path=%s grpc=%s json_bytes=%d", ctx.Method(), ctx.Path(), route.GRPCMethod, len(rawBody))
+					return ctx.Status(http.StatusBadRequest).JSON(core.Map{"code": 400, "msg": "invalid request body"})
 				}
 			}
 			reqBody := mergeGRPCRequestBody(ctx.ParamsMaps(), ctx.Request().URL.Query(), bodyMap)
@@ -1208,19 +1208,8 @@ func (gw *EtcdGateway) createProxyHandler(route *Route) core.HandlerFunc {
 				return ctx.Status(http.StatusBadRequest).JSON(core.Map{"code": 400, "msg": "invalid request body"})
 			}
 		}
-		md := metadata.New(nil)
-		appendHTTPHeadersToMetadata(md, ctx.Request().Header)
+		md := gw.requestMetadata(ctx)
 
-		for k, v := range ctx.Vars() {
-			md.Set(k, fmt.Sprintf("%v", v))
-		}
-
-		// This reserved field is derived from the validated HTTP connection,
-		// after headers and middleware vars, so neither can override it.
-		md.Delete(core.GatewayClientIPMetadata)
-		if ip := ctx.RemoteIP(); ip != nil {
-			md.Set(core.GatewayClientIPMetadata, ip.String())
-		}
 		grpcCtx := gatewayOutgoingContext(ctx.Context(), md)
 
 		// This is the upstream RPC total budget, not a Provider HTTP timeout.
@@ -1628,6 +1617,7 @@ func (gw *EtcdGateway) Close() error {
 	if gw == nil {
 		return nil
 	}
+	gw.initializeLifecycle()
 	gw.closeOnce.Do(func() {
 		gw.lifecycleMu.Lock()
 		gw.closed = true

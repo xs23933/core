@@ -5,11 +5,11 @@ skills/
 ├── core-handler.md          # 创建 RESTful Handler
 ├── core-model.md            # 定义数据模型
 ├── core-service.md          # 编写业务逻辑层
-├── core-middleware.md       # 开发中间件、gzip 响应压缩、monitor 进程/主机资源快照
+├── core-middleware.md       # 开发中间件、gzip/zstd 响应压缩、monitor 进程/主机资源快照
 ├── core-static.md           # 静态文件与可选浏览器/CDN 长缓存
 ├── core-grpc.md             # gRPC 服务端（轻量 GRPCCtx / 可信 Gateway 客户端 IP / TLS/interceptor / RegisterGRPCService / EnableGRPC / EnableEtcdRegistry / 响应 Header/Cookie）
 ├── core-grpc-client.md      # gRPC 客户端（GrpcClient / GrpcClientAt / 每服务 TLS / etcd discovery）
-├── core-gateway.md          # etcd HTTP/gRPC 网关（实例撤换连接排空 / ExactJSONBinding / core-client-ip / 自动/手动路由、负载均衡、请求 metadata / 响应 Header/Cookie）
+├── core-gateway.md          # etcd HTTP/gRPC 网关（实例撤换连接排空 / ExactJSONBinding / core-client-ip / 自动/手动路由、原子替换与快照复用、负载均衡、请求 metadata / 响应 Header/Cookie）
 ├── core-websocket.md        # WebSocket 处理（Options/累计读限/超时/可靠入队/连接清理/按用户推送）
 ├── core-sse.md              # SSE 服务端推送（SSEWrite/SSESend/EventHub）
 ├── core-page.md             # 分页查询实现、共享 Where 字段/排序校验与 ErrInvalidQuery
@@ -40,3 +40,7 @@ Gateway 可使用 Go 标准库首次自动创建私有 CA，后端自动申请�
 - 原子加密配置文件与 CurrentConfigFile、密文 CAS、跨进程锁及持久预备文件恢复：见 [core-utils.md](core-utils.md#原子加密配置文件)。
 
 通用 `grpc.max_recv_message_bytes` 配置、默认4MiB、无效值安全回落及Gateway响应接收与ExactJSON优先级，见 [core-grpc.md](core-grpc.md#通用-grpc-接收大小) 与 [core-gateway.md](core-gateway.md#通用-grpc-接收大小)。
+
+
+- 应用隔离与启动准备：`app.Conn/RConn/NProducer/NewNSQConsumer`、`Prepare` 和 `RegHandleFactory` 见 [core-handler.md](core-handler.md)、[core-model.md](core-model.md)、[core-nsq.md](core-nsq.md)。
+- Gateway 可信身份 metadata：`core-identity-*` 和 `protected_metadata_keys` 见 [core-gateway.md](core-gateway.md)；独立 fetch/cache 装配见对应 Skill。

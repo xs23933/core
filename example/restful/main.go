@@ -72,7 +72,13 @@ func (h *handler) Init() {
 	core.Info("init")
 }
 
-// app 启动次执行
+// 同步完成依赖准备后才允许发布 ready；使用 eng.Ctx 传递取消。
+func (h *handler) Prepare(eng *core.Core) error {
+	core.Info("prepare")
+	return nil
+}
+
+// Prepare 完成后异步执行；长期任务必须响应 eng.Ctx。
 func (h *handler) Start(eng *core.Core) error {
 	core.Info("start")
 	return nil

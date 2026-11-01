@@ -1825,6 +1825,49 @@ func (w *resp) Write(data []byte) (n int, err error) {
 	return
 }
 
+// ReadFrom preserves net/http's optional file-copy fast path without bypassing
+// response wrappers installed by middleware.
+func (w *resp) ReadFrom(r io.Reader) (int64, error) {
+	// Match Write's lazy commit: an empty or failed source must leave the
+	// response available for the handler's error status. net/http sniffs 512 bytes.
+	var prefix int64
+	if !w.Written() {
+		var buf [512]byte
+		for {
+			nr, readErr := r.Read(buf[:])
+			if nr > 0 {
+				nw, writeErr := w.Write(buf[:nr])
+				prefix = int64(nw)
+				if writeErr != nil {
+					return prefix, writeErr
+				}
+				if nw != nr {
+					return prefix, io.ErrShortWrite
+				}
+			}
+			if readErr != nil {
+				if readErr == io.EOF {
+					readErr = nil
+				}
+				return prefix, readErr
+			}
+			if nr > 0 {
+				break
+			}
+		}
+	}
+	var n int64
+	var err error
+	if readerFrom, ok := w.ResponseWriter.(io.ReaderFrom); ok {
+		n, err = readerFrom.ReadFrom(r)
+	} else {
+		// Hide ReadFrom to avoid recursive io.Copy fallback.
+		n, err = io.Copy(struct{ io.Writer }{w.ResponseWriter}, r)
+	}
+	w.size += int(n)
+	return prefix + n, err
+}
+
 func (w *resp) WriteString(s string) (n int, err error) {
 	w.DoWriteHeader()
 	n, err = io.WriteString(w.ResponseWriter, s)

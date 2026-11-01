@@ -22,6 +22,7 @@ import (
 
 	"github.com/davecgh/go-spew/spew"
 	"github.com/mattn/go-isatty"
+	"github.com/xs23933/core/v3/internal/logbridge"
 )
 
 type LoggerConfig struct {
@@ -50,6 +51,8 @@ func Logger(conf ...LoggerConfig) HandlerFunc {
 }
 
 func configureLogger(conf LoggerConfig) {
+	loggerMu.Lock()
+	defer loggerMu.Unlock()
 	forceColor = conf.ForceColor
 	if conf.Output != nil {
 		logout = &HookWriter{
@@ -74,6 +77,7 @@ func configureLogger(conf LoggerConfig) {
 }
 
 func requestLog(debug bool, code int, method, path, ts string) {
+	golog, colored := loggerSnapshot()
 	var color, mcolor, tcolor, rst string
 	tp := info
 	if !debug {
@@ -85,7 +89,7 @@ func requestLog(debug bool, code int, method, path, ts string) {
 	case code >= http.StatusBadRequest:
 		tp = erro
 	}
-	if isTerm || forceColor {
+	if colored {
 		rst = reset
 		mcolor = gray
 		tcolor = magenta
@@ -108,12 +112,13 @@ func (Writers) Printf(f string, args ...any) {
 }
 
 func D(f string, args ...any) {
+	golog, colored := loggerSnapshot()
 	var color, rst string
-	if isTerm || forceColor {
+	if colored {
 		color = gray
 		rst = reset
 	}
-	if Conf.GetBool("debug") {
+	if globalDebugEnabled() {
 		if !strings.HasSuffix(f, "\n") {
 			f += "\n"
 		}
@@ -127,13 +132,15 @@ func Dump(v ...any) {
 }
 
 func Log(f string, args ...any) {
+	golog, _ := loggerSnapshot()
 	golog.Printf(f, args...)
 }
 
 // info logger
 func Info(f string, args ...any) {
+	golog, colored := loggerSnapshot()
 	var color, rst string
-	if isTerm || forceColor {
+	if colored {
 		color = green
 		rst = reset
 	}
@@ -145,8 +152,9 @@ func Info(f string, args ...any) {
 
 // warning logger
 func Warn(f string, args ...any) {
+	golog, colored := loggerSnapshot()
 	var color, rst string
-	if isTerm || forceColor {
+	if colored {
 		color = yellow
 		rst = reset
 	}
@@ -158,8 +166,9 @@ func Warn(f string, args ...any) {
 
 // error logger
 func Erro(f string, args ...any) {
+	golog, colored := loggerSnapshot()
 	var color, rst string
-	if isTerm || forceColor {
+	if colored {
 		color = red
 		rst = reset
 	}
@@ -169,7 +178,14 @@ func Erro(f string, args ...any) {
 	golog.Printf("%s%s%s %s", color, erro, rst, fmt.Sprintf(f, args...))
 }
 
+func loggerSnapshot() (*log.Logger, bool) {
+	loggerMu.RLock()
+	defer loggerMu.RUnlock()
+	return golog, isTerm || forceColor
+}
+
 var (
+	loggerMu      sync.RWMutex
 	DefaultOutput           = io.Discard
 	logout        io.Writer = DefaultOutput
 	golog                   = log.New(logout, "", log.Ltime)
@@ -1036,3 +1052,5 @@ func (m *LogMonitor) Broadcast(msg string) {
 		}
 	}
 }
+
+func init() { logbridge.Set(logbridge.Sink{Debug: D, Error: Erro, Print: Log}) }

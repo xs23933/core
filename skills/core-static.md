@@ -69,3 +69,5 @@ GOCACHE=/private/tmp/core-gocache go test ./middleware/gzip -count=1
 ### ETag 中间件组合
 
 `middleware/etag` 对 GET 的普通 200 响应正文计算 SHA-256 ETag（默认弱 tag），每次仍执行 handler，内容改变会改变 tag；优先保留 handler 的显式 validator。GET/HEAD 按弱比较支持 `If-None-Match` 列表和 `*`，命中提交无正文 304。HEAD 不用空正文生成 tag，只使用显式 validator。最多缓冲 1 MiB；超出、SSE、Flush/DoWriteHeader/Hijack 转为直通，不自动计算 tag；Range、Upgrade、非 GET/HEAD 跳过，no-store 和非 200 不生成或比较 tag。静态文件继续复用标准库 Last-Modified/If-Modified-Since 等处理。不要用于需要流式传输或敏感动态 API；用 Skip 排除，etag 不提供 public 缓存或授权策略。原 URL hash tag 已废弃，旧 tag 首次请求会重新获取内容。
+
+静态传输优化：基础响应 writer 和静态缓存 writer 保留可选 `io.ReaderFrom` 文件复制接口；gzip 协商禁用压缩时也保留该路径。仍逐层经过当前 writer，不绕过 gzip、ETag 或其它中间件；不支持该接口时回退普通流式复制。公开 `ResponseWriter` 接口不增加方法，现有自定义 writer 无需修改。是否实际使用 sendfile 取决于协议、连接和文件系统，不能保证 TLS、HTTP/2 或封装文件系统采用零拷贝。默认缓存策略及按请求 gzip 压缩保持不变。

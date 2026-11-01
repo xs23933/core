@@ -94,21 +94,37 @@ func workloadTestServe(t *testing.T, app *core.Core, listeners ...net.Listener) 
 		}
 	}
 	app.Server.Handler = app
-	done := make(chan error, 1)
-	go func() { done <- app.Serve(ln) }()
+	done := make(chan struct{})
+	var serveErr error
+	go func() { serveErr = app.Serve(ln); close(done) }()
 	t.Cleanup(func() {
 		if e := app.ShutdownWithTimeout(3 * time.Second); e != nil {
 			t.Error(e)
 		}
 		select {
-		case e := <-done:
-			if e != nil {
-				t.Error(e)
+		case <-done:
+			if serveErr != nil {
+				t.Error(serveErr)
 			}
 		case <-time.After(4 * time.Second):
 			t.Error("应用退出超时")
 		}
 	})
+	// The test may shut a replica down immediately after this helper returns.
+	// Wait for startup instead of racing Shutdown against the Serve goroutine.
+	deadline := time.NewTimer(10 * time.Second)
+	defer deadline.Stop()
+	poll := time.NewTicker(5 * time.Millisecond)
+	defer poll.Stop()
+	for !app.ServingReady() {
+		select {
+		case <-done:
+			t.Fatalf("应用启动时退出: %v", serveErr)
+		case <-deadline.C:
+			t.Fatal("应用启动超时")
+		case <-poll.C:
+		}
+	}
 }
 
 // TestWorkloadGatewayRealEtcd 验证真实发现、HTTPS 申请、reflection 和后端直连共用身份。

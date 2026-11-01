@@ -1,6 +1,7 @@
 package core
 
 import (
+	"io"
 	"net/http"
 	"path"
 	"strconv"
@@ -97,4 +98,13 @@ func (w *staticCacheWriter) WriteString(s string) (int, error) {
 func (w *staticCacheWriter) Flush() {
 	w.DoWriteHeader()
 	w.ResponseWriter.Flush()
+}
+
+// ReadFrom applies cache headers before delegating through the current wrapper.
+func (w *staticCacheWriter) ReadFrom(r io.Reader) (int64, error) {
+	w.applyPolicy(w.Status())
+	if readerFrom, ok := w.ResponseWriter.(io.ReaderFrom); ok {
+		return readerFrom.ReadFrom(r)
+	}
+	return io.Copy(struct{ io.Writer }{w}, r)
 }

@@ -421,3 +421,11 @@ for _, p := range pendingExt {
 // 删除已处理完成的消息（释放内存）
 _ = rdb.XDel(ctx, "orders", "1672531200000-0", "1672531200001-0")
 ```
+
+
+## 多应用与关闭
+
+`app.RConn(name...)` 返回该 app 创建的客户端；应用退出只关闭自己的连接。
+全局 RConn/NewRedis/CloseRedis 保持兼容，内部连接表受锁保护，NewRedis 返回 map 快照。
+CloseRedis 是关闭全局默认连接的显式管理入口，不要再放到每个实例的 OnShutdown 中。
+多连接初始化中途失败会回收本次已创建的客户端；配置了 Redis 但连接失败会阻止应用发布 ready。

@@ -30,7 +30,7 @@ func main() {
 	app.Use(requestid.New())
 	app.Use(cors.New())
 
-	userDAO := dao.NewUserDAO(core.Conn())
+	userDAO := dao.NewUserDAO(app.Conn())
 	handler.NewHandler(userDAO)
 
 	if err := app.Run(); err != nil {
@@ -307,7 +307,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	userDAO := dao.NewUserDAO(core.Conn())
+	userDAO := dao.NewUserDAO(app.Conn())
 
 	svc := service.NewUserService(userDAO)
 	_ = grpc.NewUserService(app, svc)

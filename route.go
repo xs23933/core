@@ -208,6 +208,24 @@ func (app *Core) mutateRoute(methodIndex int, mutate func(*RouteNode)) {
 
 // core.go - AddHandle 方法
 func (app *Core) AddHandle(methods []string, uri string, group *Group, handler any, middleware ...HandlerFunc) Router {
+	return app.addHandle(methods, "", uri, group, handler, middleware...)
+}
+
+// ReplaceHandle replaces a route under one routing lock per HTTP method.
+// Existing in-flight requests keep their handler chain. Parameter names may
+// change provided no other route shares an incompatible parameter position.
+func (app *Core) ReplaceHandle(methods []string, oldURI, uri string, handler any, middleware ...HandlerFunc) Router {
+	for _, method := range methods {
+		if strings.EqualFold(method, MethodUse) {
+			panic("ReplaceHandle does not replace middleware")
+		}
+	}
+	oldURI = app.preparePath(oldURI)
+	_ = splitPath(oldURI)
+	return app.addHandle(methods, oldURI, uri, nil, handler, middleware...)
+}
+
+func (app *Core) addHandle(methods []string, oldURI, uri string, group *Group, handler any, middleware ...HandlerFunc) Router {
 	// 构建处理器链
 	var handlers HandlerFuncs
 
@@ -257,6 +275,9 @@ func (app *Core) AddHandle(methods []string, uri string, group *Group, handler a
 		if method == MethodAll {
 			for i := range app.trees {
 				app.mutateRoute(i, func(root *RouteNode) {
+					if oldURI != "" && oldURI != uri {
+						root.removeRoute(oldURI)
+					}
 					root.addRoute(uri, handlers)
 				})
 			}
@@ -265,6 +286,9 @@ func (app *Core) AddHandle(methods []string, uri string, group *Group, handler a
 
 		methodIdx := methodPos(method)
 		app.mutateRoute(methodIdx, func(root *RouteNode) {
+			if oldURI != "" && oldURI != uri {
+				root.removeRoute(oldURI)
+			}
 			root.addRoute(uri, handlers)
 		})
 	}

@@ -1,7 +1,7 @@
 ---
 name: core-middleware
-description: Core Framework 中间件开发与组合，包含 gzip、requestid、cors、metrics、ratelimit、bodylimit、timeout、security、otel、etag、monitor 以及自定义中间件规范
-tags: [go, core-framework, middleware, gzip, cors, metrics, ratelimit, requestid, bodylimit, timeout, security, otel, etag, monitor]
+description: Core Framework 中间件开发与组合，包含 gzip、zstd、requestid、cors、metrics、ratelimit、bodylimit、timeout、security、otel、etag、monitor 以及自定义中间件规范
+tags: [go, core-framework, middleware, gzip, zstd, cors, metrics, ratelimit, requestid, bodylimit, timeout, security, otel, etag, monitor]
 ---
 
 # Core Middleware 技能
@@ -17,7 +17,7 @@ tags: [go, core-framework, middleware, gzip, cors, metrics, ratelimit, requestid
 - "限流"
 - "统一日志/耗时"
 - "请求体大小限制" / "安全头" / "超时" / "ETag" / "健康检查" / "OpenTelemetry" / "监控"
-- "gzip" / "响应压缩" / "压缩内容类型"
+- "gzip" / "zstd" / "响应压缩" / "压缩内容类型"
 
 ## 1. 中间件签名
 
@@ -278,6 +278,21 @@ app.Use(gzip.New(gzip.Config{
 - 当前响应已提交后返回错误，Core 只记录错误，不追加明文或重写状态，避免损坏压缩流。未提交前保持原有错误处理。
 - 响应包装使用 `c.SetResponseWriter(wrapped)`，中间件退出时必须恢复原 writer。压缩池在请求结束时清除对请求 writer 的引用。
 - 静态资源的浏览器/CDN 长缓存独立由 [core-static.md](core-static.md) 的 `StaticConfig` 控制。
+
+
+## 17. zstd 响应压缩
+
+```go
+import "github.com/xs23933/core/v3/middleware/zstd"
+
+app.Use(zstd.New())
+// 或自定义配置：
+// app.Use(zstd.New(zstd.Config{MinLength: 2048}))
+```
+
+`middleware/zstd` 与 gzip 使用相同的 `New(config ...Config)` 形式，支持 `ContentTypes`、`Level`、`MinLength`、`Skip`；默认 MIME 列表、1024 字节阈值和跳过规则同 gzip。`Level` 使用 `github.com/klauspost/compress/zstd.EncoderLevel`，0 使用 `SpeedDefault`，可选 `SpeedFastest`、`SpeedDefault`、`SpeedBetterCompression`、`SpeedBestCompression`；非法级别或 MIME 返回配置错误。复用已有 klauspost/compress 依赖，单个 encoder 使用并发度 1，请求间池化复用并清除请求 writer 引用。
+
+客户端通过 `Accept-Encoding: zstd`（支持 q 值、通配符和显式 `zstd;q=0` 拒绝）协商，响应设置 `Content-Encoding: zstd` 和 `Vary: Accept-Encoding`。不足阈值时保留原文，达到后流式压缩；Flush 刷新压缩流，压缩前提前 Flush/DoWriteHeader 则保持原文。HEAD/CONNECT/Upgrade/Range、204/304、SSE、已有编码和 no-transform 跳过；长度、摘要、ETag 的处理同 gzip，未协商压缩时保留静态 ReaderFrom 传输路径。默认选择 gzip 或 zstd 之一安装；叠加不提供跨算法 q 值优先选择，只由先处理正文的中间件决定编码，已有编码阻止重复压缩。
 
 ## 生成代码时避免
 

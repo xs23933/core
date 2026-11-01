@@ -389,3 +389,11 @@ id := core.NewUUID()
 3. ✅ 金额使用 `core.Money` 或 `core.IntMoney`
 4. ✅ JSON 字段使用 `core.JSON`
 5. ✅ ClickHouse 表写手动 DDL
+
+
+## 数据库资源归属
+
+多应用使用 `app.Conn(name...)` 注入 DAO，DAO 每次操作使用 `db.WithContext(ctx)`；不要在请求中重新查找全局默认连接。
+Core 关闭自己创建的数据库池；关闭旧应用不会删除后来应用的同名全局默认。SModels 通过创建回调使用该数据库创建时的雪花生成器，NewDB Session/关联保存也保留归属；相同 node_id 的应用共享序列，避免重复ID。
+`core.Conn/DBType/NewModel` 保持进程级兼容，NewModel 的配置以传入 conf 为准，返回 map 为快照。
+配置了数据库但初始化失败时，New 保持原签名，Serve/Run 返回脱敏错误且不发布 ready；部分成功的连接会被回收。

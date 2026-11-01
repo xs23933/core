@@ -304,9 +304,6 @@ func protoJSONUnmarshal(data []byte, msg proto.Message, resolver interface {
 
 func normalizeJSONBytesFields(data []byte, desc protoreflect.MessageDescriptor) []byte {
 	var values map[string]json.RawMessage
-	if err := json.Unmarshal(data, &values); err != nil {
-		return data
-	}
 
 	changed := false
 	fields := desc.Fields()
@@ -314,6 +311,12 @@ func normalizeJSONBytesFields(data []byte, desc protoreflect.MessageDescriptor) 
 		field := fields.Get(i)
 		if field.Kind() != protoreflect.BytesKind || field.IsList() || field.IsMap() {
 			continue
+		}
+
+		if values == nil {
+			if err := json.Unmarshal(data, &values); err != nil {
+				return data
+			}
 		}
 
 		if key, raw, ok := rawFieldValue(values, field); ok && !rawJSONIsString(raw) {
@@ -370,9 +373,6 @@ func rawJSONBytesValue(raw json.RawMessage) json.RawMessage {
 
 func promoteFlatMessageFields(data []byte, desc protoreflect.MessageDescriptor) []byte {
 	var values map[string]any
-	if err := json.Unmarshal(data, &values); err != nil {
-		return data
-	}
 
 	changed := false
 	fields := desc.Fields()
@@ -380,6 +380,12 @@ func promoteFlatMessageFields(data []byte, desc protoreflect.MessageDescriptor) 
 		field := fields.Get(i)
 		if field.Kind() != protoreflect.MessageKind || field.IsList() || field.IsMap() {
 			continue
+		}
+
+		if values == nil {
+			if err := json.Unmarshal(data, &values); err != nil {
+				return data
+			}
 		}
 
 		key, raw, ok := fieldValue(values, field)

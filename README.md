@@ -568,6 +568,21 @@ Linux 新指标使用可空数值，缺失、权限不足或不支持返回 JSON
 
 `sampled_at` 为常规采集时间；`resource_sampled_at` 为 FD、磁盘、cgroup 与主机标识的慢采集时间，`disk_sampled_at` 仅在磁盘读取成功时返回。监控消费方应检查快照新鲜度与可用性。`host_id` 是 Linux `boot_id` 的 SHA-256，可聚合同一内核启动下的服务，重启后变化；获取失败时为空，不包含原始主机名、IP 或 boot_id。Prometheus 对未知的 CPU、FD 与新增资源指标省略对应序列，并额外提供 `core_cpu_available`、`core_fd_available`。 `disk_id` 是同一主机启动身份与文件系统设备号的 SHA-256；不同磁盘分别聚合，未取得主机身份时为空，不包含监控路径。
 
+
+#### zstd 响应压缩
+
+```go
+import "github.com/xs23933/core/v3/middleware/zstd"
+
+app.Use(zstd.New())
+// 或自定义配置：
+// app.Use(zstd.New(zstd.Config{MinLength: 2048}))
+```
+
+`middleware/zstd` 与 gzip 使用相同的 `New(config ...Config)` 形式，支持 `ContentTypes`、`Level`、`MinLength`、`Skip`；默认 MIME 列表、1024 字节阈值和跳过规则同 gzip。`Level` 使用 `github.com/klauspost/compress/zstd.EncoderLevel`，0 使用 `SpeedDefault`，可选 `SpeedFastest`、`SpeedDefault`、`SpeedBetterCompression`、`SpeedBestCompression`；非法级别或 MIME 返回配置错误。复用已有 klauspost/compress 依赖，单个 encoder 使用并发度 1，请求间池化复用并清除请求 writer 引用。
+
+客户端通过 `Accept-Encoding: zstd`（支持 q 值、通配符和显式 `zstd;q=0` 拒绝）协商，响应设置 `Content-Encoding: zstd` 和 `Vary: Accept-Encoding`。不足阈值时保留原文，达到后流式压缩；Flush 刷新压缩流，压缩前提前 Flush/DoWriteHeader 则保持原文。HEAD/CONNECT/Upgrade/Range、204/304、SSE、已有编码和 no-transform 跳过；长度、摘要、ETag 的处理同 gzip，未协商压缩时保留静态 ReaderFrom 传输路径。默认选择 gzip 或 zstd 之一安装；叠加不提供跨算法 q 值优先选择，只由先处理正文的中间件决定编码，已有编码阻止重复压缩。
+
 #### gzip 压缩与静态文件缓存
 
 ```go
@@ -3134,3 +3149,96 @@ grpc:
 `coin.Money.Mul/Div` 恢复 1e8 固定缩放，向零截断到 8 位，输入不变；除零（包括零值 Money）保持 panic。零值可作为加减乘运算数和除法被除数。`Value()` 始终输出完整存储精度，独立于 `SetDefaultOutputDecimals`；显示/JSON 的精度设置继续生效。曾依赖错误缩放的下游需调整，不得再手动补偿 1e8。
 
 `utils.CircularMapBuffer.Values()` 从最旧项按插入顺序返回，已有键更新不改变顺序；`CircularBuffer.Delete()` 压紧逻辑顺序并更新索引，删除后追加和淘汰继续保持顺序。容量需为正整数。
+
+
+## Gateway 请求与快照更新合同
+
+Gateway 的普通 HTTP→gRPC JSON 请求解析失败时立即返回 400，不执行 RPC；空正文、JSON null 和合法对象保持原有语义，ExactJSONBinding 的原始 bytes 透传不受影响。非法 JSON 日志仅包含路由及正文长度，不输出正文片段。
+
+HTTP 反代仍仅对 GET/HEAD 连接失败换一个实例重试一次；有正文时必须能通过 Request.GetBody 重建独立正文，重建失败或正文不可重建时返回 502，不向备用实例发送已消费/已关闭的 Body。普通服务端入站请求通常没有 GetBody；如需带正文重试，调用方中间件须在首次代理前提供一致、可重复读取的正文工厂。无正文重试和写请求不重放的规则不变，gRPC 只读重试规则不变。
+
+Gateway 活跃路由切换通过 `Core.ReplaceHandle` 在每个 HTTP method 的路由写锁内完成，不再先删除再注册造成瞬时 404；已经匹配的在途请求继续使用旧 handler。manual 优先于 automatic、自动来源冲突停用、全部 gRPC 实例离线保留 503 路由的规则不变。HTTP 实例 reconcile 按服务批量构建，只解析变化的 origin，并复用未变目标、服务快照与轮询计数；未就绪、删除和无效 origin 仍撤销目标。最后一个旧 HTTP 实例退出时清理该服务的轮询及熔断状态，同名服务重新注册不继承已退役服务的熔断；仍有旧实例保留时不重置。
+
+路由事件忽略完全相同的值和无效删除，未变 source 共享不可变对象；变化 source 在接收时复制，旧快照不被修改。路由变化仍重新计算冲突与索引，但仅排序一份记录，并以可比较的派发键代替 JSON 编码比较。JSON bytes 别名和扁平分页兼容预处理仅在 schema 存在对应字段时解析 JSON；简单 schema 直接进入 ProtoJSON，Any、bytes、嵌套 message 及 ExactJSON 语义不变。
+
+`(*Core).ReplaceHandle(methods []string, oldURI, uri string, handler any, middleware ...HandlerFunc) Router` 是框架内部、动态路由管理使用的增量 API，现有 AddHandle/RemoveHandle 和 Router 接口不变。旧路径不存在时仍注册新路径；支持 ALL、现有大小写配置、handler 适配和声明的 route middleware，不用于替换 USE 中间件。不复制旧 route middleware，新 handler 与 middleware 组成新的链；路径级和全局 middleware 继续由树匹配。每个 method 独立原子替换，不承诺多个 method 或多个 slot 同时切换。参数名可在无共享参数歧义时改变，原有路由格式/参数歧义校验继续生效；非法注册沿用现有程序错误 panic 合同。业务示例仍优先使用自动 Handler 路由。
+
+
+## 应用实例、依赖归属与启动准备
+
+`core.New(options...) *Core` 和现有包级 API 保持签名兼容。配置了 database、redis 或 nsq 时，
+初始化失败会保存为启动错误，`Listen/Run/Serve` 返回脱敏错误并拒绝发布 ready；New 本身不新增 panic。
+部分初始化成功后再失败，会关闭本次已创建的资源，且不替换原有全局连接默认值。
+
+每个 Core 只拥有自己创建的数据库、Redis、NSQ producer 和绑定的 consumers。
+通过 `app.Conn(name...)`、`app.RConn(name...)`、`app.NProducer()`、
+`app.NewNSQConsumer(config)` 获取实例资源；关闭 A 不关闭或移除 B 的资源。
+数据库连接通过创建回调保留其创建时的 SModels 雪花生成器，覆盖 NewDB Session、事务和关联保存，
+不随后续 app 的 node_id 改变。同进程相同 node_id 复用同一序列，避免多个 app 产生重复主键。
+NSQ consumer 创建时确定归属和认证，显式 AuthSecret 优先；应用退出在用户 hook/模块 Stop 前发出 consumer 停止信号，
+随后等待 transport 和框架计数的真实业务 handler 完成（不把 go-nsq 的 StopChan 兜底当成业务完成），
+再关闭 producer/Redis/数据库。超时仍限制 ShutdownWithTimeout 的调用等待，但不会强杀业务 goroutine，
+不响应取消的消费者会延迟依赖释放。
+
+`core.Conf` 和全局日志仍使用最近构造应用的进程配置；`Conn/RConn/NProducer`、ID helper
+仍是进程级兼容入口，连接和 ID 代表最近成功发布的默认值，
+不能自动按请求识别所属 app。全局 `CloseRedis/CloseNSQ` 仍是显式关闭默认资源的管理操作；
+不要在实例 OnShutdown 中再调用它们。多应用代码须显式注入实例连接；配置和全局默认应在启动阶段设置，
+不支持调用方无锁并发重写公开变量。`NewModel/NewRedis` 返回连接映射快照，修改返回的 map 不再修改全局表。
+
+实现 Prepare 的 Handler 顺序为：实例绑定、Init 和路由建立 → 全部 `Prepare(app *core.Core) error` 同步完成
+→ 旧 Start 异步运行 → TLS/路由发布/Registry ready。Prepare 失败返回原始错误链并阻止实现 Prepare 的模块执行 Start，
+其网络/数据库操作必须传递 app.Ctx、设置合理超时。未实现 Prepare 的旧模块保留 Start 先异步启动、Init 随后执行的顺序，
+兼容 Init 等待 Start 的历史写法；这些 Start 可能早于其他模块的 Prepare。旧 `Start` 保留异步/常驻任务行为，**不充当准备完成信号**；
+已有代码在 Start 中连接必需依赖或预热时，须将准备部分移入 Prepare。ServingReady 不代表业务异步任务完成。
+
+`RegHandle(&Handler{})` 保留单应用写法；同一 Handler 对象不能再次绑定另一 Core，启动会返回错误。
+多实例使用工厂，并在 Prepare 中注入当前 app 的依赖，不能浅拷贝包含锁、连接或指针的旧对象：
+
+```go
+core.RegHandleFactory(func() core.Module { return &UserHandler{} })
+
+func (h *UserHandler) Prepare(app *core.Core) error {
+    db := app.Conn()
+    if db == nil { return core.ErrNoConfig }
+    h.svc = service.NewUserService(dao.NewUserDAO(db))
+    return nil
+}
+```
+
+工厂在登记时调用一次确定模块 ID，首个对象用于首个应用；之后每个应用调用一次，必须返回独立同类型 Handler。
+工厂只构造对象，不连接外部系统；依赖准备放在 Prepare。停止钩子仍须支持部分初始化后的清理。
+
+`fetch` 和 `cache` 不再依赖 core 根包。fetch 单独使用时采用标准日志；同时导入 core 时复用框架日志。
+cache 保留 Store 注入以及 Default/Get 签名，core 通过回调装配默认 Redis；显式 SetDefaultStore 优先，
+SetDefaultStore(nil) 恢复 fallback，DefaultStore() 仍只返回显式默认值。
+
+Gateway 的 `core-identity-*` metadata 前缀只允许来自认证中间件的 Ctx.Vars，客户端同名 Header 被过滤。
+现有自定义 Header 默认继续透传；旧的用户/租户字段须在 `gateway.protected_metadata_keys`（或
+`gateway.Config.ProtectedMetadataKeys`）列出，才能禁止其来自客户端。未设置认证变量时这些字段保持缺失，
+不会回退客户端值。原始 Header/raw_body 不被改写，仍是不可信验签输入。下游必须验证调用方身份并执行授权。
+本项不改变 reflection 自动暴露、public_routes 免登录语义、manual 优先或既有 adapter 的鉴权职责。
+
+```yaml
+gateway:
+  protected_metadata_keys:
+    - user_id
+    - x-user-id
+    - tenant_id
+```
+
+
+### 旧 Handler 启动顺序兼容回归
+
+启动顺序兼容边界：未实现 `Prepare` 的旧 Handler 在绑定当前 Core 后，先调度异步 `Start`，再执行 `Init` 并建立路由，因此 `Init` 可以等待自身 `Start` 发出的信号。`Start` 可以一直运行到 `app.Ctx` 取消，框架不会等待它返回才发布自动 HTTP 目录或 ready。实现 `Prepare` 的 Handler 先执行 `Init`/路由建立，全部 Prepare 成功后才调度 Start；给旧 Handler 新增 Prepare 时，应把必需准备逻辑放入 Prepare，并移除 Init 对 Start 的等待。每个模块的异步调度顺序不代表全部 Start 已执行或业务后台任务已准备完成。
+
+回归覆盖见 `module_startup_compat_test.go`：旧 Handler 与 Prepare Handler 的两种装载顺序、准备失败时取消已启动旧模块、启动/停止只执行一次；Init 等待有时间上界，使顺序回归直接失败而不拖住全仓测试。自动目录发布边界继续由 `TestAutomaticHTTPRouteStartupSyncRunsAfterModuleLoading` 验证。
+
+
+### 启动与关闭并发的资源边界
+
+并发启动/关闭合同：Shutdown 开始后不再接纳新模块启动或发布 ready。框架先取消 app.Ctx，等待正在执行的 Init、Prepare 和启动发布步骤退出，再调用已加载模块的 Stop；Stop 可发出常驻 Start 的退出信号，框架等待这些 Start 返回后才最终关闭自己拥有的数据库、Redis 等依赖。不会把整个 ErrGroup（含停机观察协程）作为等待对象，避免自等待。ShutdownWithTimeout 的调用方期限仍独立生效；忽略取消或不退出的用户钩子/Start 会推迟后台清理，不能强制释放它们仍可能使用的资源。启动钩子应通过返回错误触发退出，不应同步等待自身的 Shutdown 完成。
+
+Gateway 初始化只执行一次；Close 与任务接纳、请求回退注册共享关闭边界，Close 返回后不允许回退路径重新填入期望实例或连接池。Close 仍清理已拥有的 watcher、连接及客户端，API 签名不变。gRPC 在 server 尚未创建时触发的强制停止不会耗尽未来 server 的一次性停止标记，关闭路径以受锁保护的 server 快照执行停止。
+
+静态传输优化：基础响应 writer 和静态缓存 writer 保留可选 `io.ReaderFrom` 文件复制接口；gzip 协商禁用压缩时也保留该路径。仍逐层经过当前 writer，不绕过 gzip、ETag 或其它中间件；不支持该接口时回退普通流式复制。公开 `ResponseWriter` 接口不增加方法，现有自定义 writer 无需修改。是否实际使用 sendfile 取决于协议、连接和文件系统，不能保证 TLS、HTTP/2 或封装文件系统采用零拷贝。默认缓存策略及按请求 gzip 压缩保持不变。

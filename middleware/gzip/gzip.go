@@ -288,6 +288,29 @@ func (w *responseWriter) Write(p []byte) (int, error) {
 	return w.write(p)
 }
 
+// ReadFrom preserves transport optimizations when negotiation disables gzip.
+// Otherwise all bytes still pass through Write and compression decisions.
+func (w *responseWriter) ReadFrom(r io.Reader) (int64, error) {
+	if w.err != nil {
+		return 0, w.err
+	}
+	if !w.enabled && !w.decided {
+		if err := w.start(false); err != nil {
+			return 0, err
+		}
+	}
+	if w.decided && w.writer == nil {
+		if readerFrom, ok := w.ResponseWriter.(io.ReaderFrom); ok {
+			n, err := readerFrom.ReadFrom(r)
+			if err != nil {
+				w.err = err
+			}
+			return n, err
+		}
+	}
+	return io.Copy(struct{ io.Writer }{w}, r)
+}
+
 func (w *responseWriter) WriteString(s string) (int, error) {
 	return w.Write([]byte(s))
 }

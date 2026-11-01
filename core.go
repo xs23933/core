@@ -50,6 +50,8 @@ var syncCoreAutomaticHTTPRoutesForServe = func(app *Core, ctx context.Context) e
 }
 
 type Core struct {
+	resources     *applicationResources
+	dependencyErr error
 	*http.Server
 	h3                *http3.Server
 	mutex             sync.Mutex
@@ -59,6 +61,8 @@ type Core struct {
 	shutdownContext   context.Context
 	shutdownErr       error
 	grpcForceStopOnce sync.Once
+	moduleWG          sync.WaitGroup
+	startupWG         sync.WaitGroup
 	startupOnce       sync.Once
 	startupErr        error
 
@@ -129,6 +133,7 @@ func (app *Core) core() *Core {
 
 func New(options ...Options) *Core {
 	app := &Core{
+		resources:      &applicationResources{},
 		Server:         &http.Server{},
 		addr:           ":8080",
 		Debug:          true,
@@ -234,7 +239,9 @@ func New(options ...Options) *Core {
 
 		app.MaxMultipartMemory = app.Conf.GetInt64("max_multipart_memory", defaultMultipartMemory)
 	}
+	confMu.Lock()
 	Conf = app.Conf
+	confMu.Unlock()
 	app.caseSensitive = app.Conf.GetBool("case-sensitive", true)
 
 	var proxyErr error
@@ -243,7 +250,7 @@ func New(options ...Options) *Core {
 		panic(proxyErr)
 	}
 
-	app.RequestMethods = Conf.GetStrings("methods", Methods[:len(Methods)-1])
+	app.RequestMethods = app.Conf.GetStrings("methods", Methods[:len(Methods)-1])
 
 	// 路由树下标使用 methodPos 的固定 HTTP 方法序号，不能按配置 methods 的长度裁剪。
 	// methods 只控制自动路由扫描哪些方法；路由树本身必须保持固定下标，否则
@@ -289,25 +296,14 @@ func New(options ...Options) *Core {
 	configureLogger(LoggerConfig{ForceColor: colorful, Debug: app.Debug, Output: out})
 	app.Use(Recovery())
 
-	if conf := Conf.GetMap("database"); len(conf) > 0 {
-		if _, err := NewModel(conf, app.Debug, colorful); err != nil {
-			Erro("disconnect %s: %w", conf.GetString("dsn"), err)
+	app.dependencyErr = app.initializeResources(colorful)
+	if app.dependencyErr != nil {
+		// New's signature stays compatible. Serve/Run returns this sanitized error.
+		if err := app.resources.close(); err != nil {
+			Warn("dependency cleanup failed: %v", err)
 		}
 	}
-	if conf := Conf.GetMap("redis"); len(conf) > 0 {
-		if _, err := NewRedis(conf, app.Debug); err != nil {
-			Erro("redis connect failed: %v", err)
-		} else {
-			app.OnShutdown(func() { CloseRedis() })
-		}
-	}
-	if conf := Conf.GetMap("nsq"); len(conf) > 0 {
-		if err := InitNSQ(conf, app.Debug); err != nil {
-			Erro("nsq init failed: %v", err)
-		} else {
-			app.OnShutdown(func() { CloseNSQ() })
-		}
-	}
+
 	if !IsChild() {
 		Log(CoreHeader, VERSION)
 	}
@@ -523,27 +519,72 @@ func (app *Core) prepareServe(ln net.Listener) error {
 }
 
 func (app *Core) prepareServeOnce() error {
+	app.mutex.Lock()
+	if app.shutdownStarted {
+		app.mutex.Unlock()
+		return context.Canceled
+	}
+	app.startupWG.Add(1)
+	app.mutex.Unlock()
+	defer app.startupWG.Done()
+	if app.dependencyErr != nil {
+		return app.dependencyErr
+	}
+	if err := app.Ctx.Err(); err != nil {
+		return err
+	}
 	if app.Conf.GetBool("workload.enabled", false) {
 		if _, err := app.workloadIdentity(); err != nil {
 			return err
 		}
 	}
-	app.loadMods()
+	if err := app.loadMods(); err != nil {
+		return err
+	}
+	if err := app.startupContextErr(); err != nil {
+		return err
+	}
 	if err := app.startGRPCServer(); err != nil {
+		return err
+	}
+	if err := app.startupContextErr(); err != nil {
 		return err
 	}
 	if err := prepareCoreTLSForServe(app); err != nil {
 		return err
 	}
+	if err := app.startupContextErr(); err != nil {
+		return err
+	}
 	if err := syncCoreAutomaticHTTPRoutesForServe(app, app.Ctx); err != nil {
+		return err
+	}
+	if err := app.startupContextErr(); err != nil {
 		return err
 	}
 	if err := markCoreEtcdRegistryReadyForServe(app, app.Ctx); err != nil {
 		return err
 	}
 	app.mutex.Lock()
+	if app.shutdownStarted || app.Ctx.Err() != nil {
+		app.mutex.Unlock()
+		return context.Canceled
+	}
 	app.servingReady = true
 	app.mutex.Unlock()
+	return nil
+}
+
+// Shutdown and readiness publication share the same admission lock.
+func (app *Core) startupContextErr() error {
+	app.mutex.Lock()
+	defer app.mutex.Unlock()
+	if err := app.Ctx.Err(); err != nil {
+		return err
+	}
+	if app.shutdownStarted {
+		return context.Canceled
+	}
 	return nil
 }
 

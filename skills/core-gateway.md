@@ -485,3 +485,40 @@ Gateway 的普通 ReflectionProxy 调用使用 Gateway 本进程同一配置作�
 grpc:
   max_recv_message_bytes: 8388608
 ```
+
+
+## Gateway 请求与快照更新合同
+
+Gateway 的普通 HTTP→gRPC JSON 请求解析失败时立即返回 400，不执行 RPC；空正文、JSON null 和合法对象保持原有语义，ExactJSONBinding 的原始 bytes 透传不受影响。非法 JSON 日志仅包含路由及正文长度，不输出正文片段。
+
+HTTP 反代仍仅对 GET/HEAD 连接失败换一个实例重试一次；有正文时必须能通过 Request.GetBody 重建独立正文，重建失败或正文不可重建时返回 502，不向备用实例发送已消费/已关闭的 Body。普通服务端入站请求通常没有 GetBody；如需带正文重试，调用方中间件须在首次代理前提供一致、可重复读取的正文工厂。无正文重试和写请求不重放的规则不变，gRPC 只读重试规则不变。
+
+Gateway 活跃路由切换通过 `Core.ReplaceHandle` 在每个 HTTP method 的路由写锁内完成，不再先删除再注册造成瞬时 404；已经匹配的在途请求继续使用旧 handler。manual 优先于 automatic、自动来源冲突停用、全部 gRPC 实例离线保留 503 路由的规则不变。HTTP 实例 reconcile 按服务批量构建，只解析变化的 origin，并复用未变目标、服务快照与轮询计数；未就绪、删除和无效 origin 仍撤销目标。最后一个旧 HTTP 实例退出时清理该服务的轮询及熔断状态，同名服务重新注册不继承已退役服务的熔断；仍有旧实例保留时不重置。
+
+路由事件忽略完全相同的值和无效删除，未变 source 共享不可变对象；变化 source 在接收时复制，旧快照不被修改。路由变化仍重新计算冲突与索引，但仅排序一份记录，并以可比较的派发键代替 JSON 编码比较。JSON bytes 别名和扁平分页兼容预处理仅在 schema 存在对应字段时解析 JSON；简单 schema 直接进入 ProtoJSON，Any、bytes、嵌套 message 及 ExactJSON 语义不变。
+
+`(*Core).ReplaceHandle(methods []string, oldURI, uri string, handler any, middleware ...HandlerFunc) Router` 是框架内部、动态路由管理使用的增量 API，现有 AddHandle/RemoveHandle 和 Router 接口不变。旧路径不存在时仍注册新路径；支持 ALL、现有大小写配置、handler 适配和声明的 route middleware，不用于替换 USE 中间件。不复制旧 route middleware，新 handler 与 middleware 组成新的链；路径级和全局 middleware 继续由树匹配。每个 method 独立原子替换，不承诺多个 method 或多个 slot 同时切换。参数名可在无共享参数歧义时改变，原有路由格式/参数歧义校验继续生效；非法注册沿用现有程序错误 panic 合同。业务示例仍优先使用自动 Handler 路由。
+
+
+## 可信身份 metadata 边界
+
+客户端的 `core-identity-*` Header 永远不能写入可信 metadata；仅前置认证中间件通过 Ctx.Vars 写入。
+旧字段名使用 `gateway.protected_metadata_keys` 或 `Config.ProtectedMetadataKeys` 显式列出，例如
+`[user_id, x-user-id, tenant_id]`。这些键不接受入站 Header，没有中间件值时保持缺失，不回退原始值。
+为空时继续转发旧自定义 Header，避免破坏签名/认证协议；Authorization 和原始 headers/raw_body 保持原行为。
+下游仍须验证 Gateway 调用方并执行权限检查。core-client-ip 继续由连接计算，Vars 也不能覆盖。
+此配置启动时读取，不动态重载；不改变 public_routes 免登录列表、自动 reflection 路由或 manual 优先规则。
+
+
+### 旧 Handler 启动顺序兼容回归
+
+启动顺序兼容边界：未实现 `Prepare` 的旧 Handler 在绑定当前 Core 后，先调度异步 `Start`，再执行 `Init` 并建立路由，因此 `Init` 可以等待自身 `Start` 发出的信号。`Start` 可以一直运行到 `app.Ctx` 取消，框架不会等待它返回才发布自动 HTTP 目录或 ready。实现 `Prepare` 的 Handler 先执行 `Init`/路由建立，全部 Prepare 成功后才调度 Start；给旧 Handler 新增 Prepare 时，应把必需准备逻辑放入 Prepare，并移除 Init 对 Start 的等待。每个模块的异步调度顺序不代表全部 Start 已执行或业务后台任务已准备完成。
+
+回归覆盖见 `module_startup_compat_test.go`：旧 Handler 与 Prepare Handler 的两种装载顺序、准备失败时取消已启动旧模块、启动/停止只执行一次；Init 等待有时间上界，使顺序回归直接失败而不拖住全仓测试。自动目录发布边界继续由 `TestAutomaticHTTPRouteStartupSyncRunsAfterModuleLoading` 验证。
+
+
+### 启动与关闭并发的资源边界
+
+并发启动/关闭合同：Shutdown 开始后不再接纳新模块启动或发布 ready。框架先取消 app.Ctx，等待正在执行的 Init、Prepare 和启动发布步骤退出，再调用已加载模块的 Stop；Stop 可发出常驻 Start 的退出信号，框架等待这些 Start 返回后才最终关闭自己拥有的数据库、Redis 等依赖。不会把整个 ErrGroup（含停机观察协程）作为等待对象，避免自等待。ShutdownWithTimeout 的调用方期限仍独立生效；忽略取消或不退出的用户钩子/Start 会推迟后台清理，不能强制释放它们仍可能使用的资源。启动钩子应通过返回错误触发退出，不应同步等待自身的 Shutdown 完成。
+
+Gateway 初始化只执行一次；Close 与任务接纳、请求回退注册共享关闭边界，Close 返回后不允许回退路径重新填入期望实例或连接池。Close 仍清理已拥有的 watcher、连接及客户端，API 签名不变。gRPC 在 server 尚未创建时触发的强制停止不会耗尽未来 server 的一次性停止标记，关闭路径以受锁保护的 server 快照执行停止。

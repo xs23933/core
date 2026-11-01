@@ -214,15 +214,15 @@ func (app *Core) shutdownGRPC() {
 }
 
 func (app *Core) shutdownGRPCContext(ctx context.Context) {
-	if app.grpcServer == nil {
+	app.mutex.Lock()
+	server := app.grpcServer
+	app.mutex.Unlock()
+	if server == nil {
 		return
 	}
 	Info("Shutting down gRPC server...")
 	done := make(chan struct{})
-	go func() {
-		app.grpcServer.GracefulStop()
-		close(done)
-	}()
+	go func() { server.GracefulStop(); close(done) }()
 	select {
 	case <-done:
 	case <-ctx.Done():
@@ -231,11 +231,14 @@ func (app *Core) shutdownGRPCContext(ctx context.Context) {
 }
 
 func (app *Core) forceStopGRPC() {
-	app.grpcForceStopOnce.Do(func() {
-		if app.grpcServer != nil {
-			go app.grpcServer.Stop()
-		}
-	})
+	app.mutex.Lock()
+	server := app.grpcServer
+	app.mutex.Unlock()
+	// A timeout before startup creates the server must not consume its stop once.
+	if server == nil {
+		return
+	}
+	app.grpcForceStopOnce.Do(func() { go server.Stop() })
 }
 
 // EnableEtcdRegistry 启用 etcd 服务注册

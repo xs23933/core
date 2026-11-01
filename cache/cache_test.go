@@ -300,3 +300,35 @@ func (s *memoryStore) ttl(key string) time.Duration {
 	defer s.mu.Unlock()
 	return s.ttls[key]
 }
+
+func TestDefaultStoreProviderPreservesExplicitOverrideAndReset(t *testing.T) {
+	defaultMu.Lock()
+	oldStore, oldProvider := defaultStore, defaultStoreProvider
+	defaultStore, defaultStoreProvider = nil, nil
+	defaultMu.Unlock()
+	t.Cleanup(func() {
+		defaultMu.Lock()
+		defaultStore, defaultStoreProvider = oldStore, oldProvider
+		defaultMu.Unlock()
+	})
+	fallback, explicit := newMemoryStore(), newMemoryStore()
+	SetDefaultStoreProvider(func() Store { return fallback })
+	if DefaultStore() != nil {
+		t.Fatal("DefaultStore getter changed its explicit-store contract")
+	}
+	if Default().store != fallback {
+		t.Fatal("provider fallback not used")
+	}
+	SetDefaultStore(explicit)
+	if Default().store != explicit {
+		t.Fatal("provider overrides explicit default")
+	}
+	SetDefaultStore(nil)
+	if Default().store != fallback {
+		t.Fatal("reset did not restore fallback")
+	}
+	SetDefaultStoreProvider(nil)
+	if Default().store != nil {
+		t.Fatal("nil provider not disabled")
+	}
+}
