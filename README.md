@@ -2188,6 +2188,17 @@ prefork: true # 启用多进程模式，充分利用多核CPU
 
 ## 测试
 
+GitHub Actions 的 [CI 工作流](.github/workflows/ci.yml) 在 push、Pull Request 或手动触发时运行，
+从 `go.mod` 读取 Go 版本并缓存依赖，执行 `go mod verify`、`go vet ./...`、
+`go test ./... -count=1 -timeout=10m` 和 `go build ./...`。
+测试默认不要求外部服务；需要独立 `etcd` 可执行文件的工作负载集成测试在未安装时会跳过。
+
+CI 还调用 `bash scripts/stress.sh` 运行并发压力测试；本地可使用同一命令。
+脚本对根包、WebSocket 和 metrics 的并发、压力及关闭回归启用 race 检测，
+在 `GOMAXPROCS=1,4` 下各重复 5 次并随机排列测试顺序，每个测试包限时 10 分钟。
+HTTP 请求隔离压力测试每轮通过 32 个并发 worker 发出共 3200 次请求并校验路径参数和 query，
+用于发现请求上下文串扰；该检查不设置依赖机器性能的吞吐阈值。
+
 ### 单元测试
 
 ```go

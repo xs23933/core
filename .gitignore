@@ -3,6 +3,8 @@
 __debug_bin
 *.yml
 *.yaml
+!.github/workflows/*.yml
+!.github/workflows/*.yaml
 Makefile
 dist
 tmp
