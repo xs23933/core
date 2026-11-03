@@ -10,6 +10,7 @@ import (
 // RequireSubprotocol 要求客户端至少提供一个配置中的协议；配置为空时拒绝升级。
 // ReadTimeout 是接收消息/心跳的空闲期限；每条消息开始及收到 pong 时刷新。
 type Options struct {
+	EnableCompression  bool // Negotiate RFC7692 permessage-deflate; default false.
 	Subprotocols       []string
 	RequireSubprotocol bool
 	CheckOrigin        func(*http.Request) bool

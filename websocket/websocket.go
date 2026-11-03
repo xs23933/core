@@ -28,7 +28,7 @@ func (w *WS) Handler() func(core.Ctx) error {
 	if origin == nil {
 		origin = func(*http.Request) bool { return true }
 	}
-	upgrader := websocket.Upgrader{Subprotocols: options.Subprotocols, CheckOrigin: origin, HandshakeTimeout: options.HandshakeTimeout}
+	upgrader := websocket.Upgrader{EnableCompression: options.EnableCompression, Subprotocols: options.Subprotocols, CheckOrigin: origin, HandshakeTimeout: options.HandshakeTimeout}
 	return func(c core.Ctx) error {
 		if options.RequireSubprotocol {
 			matched := false

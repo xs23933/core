@@ -3,6 +3,7 @@ module github.com/xs23933/core/v3
 go 1.25.0
 
 require (
+	github.com/andybalholm/brotli v1.2.1
 	github.com/bytedance/sonic v1.15.1
 	github.com/caddyserver/certmagic v0.25.3
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc
@@ -48,7 +49,6 @@ require (
 	github.com/ClickHouse/ch-go v0.71.0 // indirect
 	github.com/ClickHouse/clickhouse-go/v2 v2.46.0 // indirect
 	github.com/KyleBanks/depth v1.2.1 // indirect
-	github.com/andybalholm/brotli v1.2.1 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/bytedance/gopkg v0.1.4 // indirect
 	github.com/bytedance/sonic/loader v0.5.1 // indirect

@@ -13,7 +13,7 @@ import (
 	"github.com/xs23933/core/v3"
 )
 
-func wsTestServer(t *testing.T, w *WS) *httptest.Server {
+func wsTestServer(t *testing.T, w *WS, middleware ...core.HandlerFunc) *httptest.Server {
 	t.Helper()
 	var handlers sync.WaitGroup
 	var mu sync.Mutex
@@ -34,6 +34,9 @@ func wsTestServer(t *testing.T, w *WS) *httptest.Server {
 		}
 	})
 	app := core.New()
+	for _, mw := range middleware {
+		app.Use(mw)
+	}
 	app.GET("/ws", w.Handler())
 	s := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		handlers.Add(1)

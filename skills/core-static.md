@@ -74,4 +74,4 @@ GOCACHE=/private/tmp/core-gocache go test ./middleware/gzip -count=1
 
 ### 统一压缩协商
 
-同时支持 zstd 与 gzip 的站点使用 `middleware/compress.New()` 替代独立压缩入口，按 q 权重选择、平局优先 zstd；StaticConfig 缓存策略不变。禁止 identity 而静态响应因阈值、MIME、Range/no-transform 无法压缩时可能返回 406。详见 [统一响应压缩](core-middleware.md#18-统一响应压缩zstd-优先gzip-兜底)。
+同时支持 zstd、br 与 gzip 的站点使用 `middleware/compress.New()` 替代独立压缩入口，按 q 权重选择、平局按 zstd→br→gzip；StaticConfig 缓存策略不变。禁止 identity 而静态响应因阈值、MIME、Range/no-transform 无法压缩时可能返回 406。详见 [统一响应压缩](core-middleware.md#18-统一响应压缩zstdbrotligzip)。

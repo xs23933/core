@@ -1,4 +1,4 @@
-// Package compress negotiates zstd and gzip response compression. It reuses the
+// Package compress negotiates zstd, Brotli and gzip response compression. It reuses the
 // standalone middleware's streaming writers, thresholds and compressor pools.
 package compress
 
@@ -12,6 +12,7 @@ import (
 
 	zstdcodec "github.com/klauspost/compress/zstd"
 	"github.com/xs23933/core/v3"
+	"github.com/xs23933/core/v3/middleware/brotli"
 	"github.com/xs23933/core/v3/middleware/gzip"
 	"github.com/xs23933/core/v3/middleware/zstd"
 )
@@ -21,12 +22,14 @@ import (
 type Config struct {
 	ContentTypes []string               // nil uses defaults; a non-nil empty slice disables compression.
 	MinLength    int                    // Default 1024 bytes; negative disables the threshold.
+	EnableSSE    bool                   // Opt into SSE compression; event Flush bypasses MinLength.
+	BrotliLevel  int                    // Zero defaults to Brotli quality 6; explicit levels 1..11.
 	GzipLevel    int                    // compress/gzip level; zero uses DefaultCompression.
 	ZstdLevel    zstdcodec.EncoderLevel // Zero uses SpeedDefault.
 	Skip         func(core.Ctx) bool
 }
 
-// New selects the highest positive q weight, preferring zstd on ties. An
+// New selects the highest positive q weight, preferring zstd, then Brotli, then gzip on ties. An
 // explicit identity entry can outrank compression; implicit identity is a
 // fallback. Missing/empty Accept-Encoding retains uncompressed responses.
 // Install this once, instead of stacking the standalone gzip/zstd middleware.
@@ -38,9 +41,13 @@ func New(config ...Config) core.HandlerFunc {
 	if err := validate(cfg); err != nil {
 		return func(core.Ctx) error { return err }
 	}
-	gzipHandler := gzip.New(gzip.Config{ContentTypes: cfg.ContentTypes, MinLength: cfg.MinLength, Level: cfg.GzipLevel})
-	zstdHandler := zstd.New(zstd.Config{ContentTypes: cfg.ContentTypes, MinLength: cfg.MinLength, Level: cfg.ZstdLevel})
+	gzipHandler := gzip.New(gzip.Config{ContentTypes: cfg.ContentTypes, MinLength: cfg.MinLength, EnableSSE: cfg.EnableSSE, Level: cfg.GzipLevel})
+	zstdHandler := zstd.New(zstd.Config{ContentTypes: cfg.ContentTypes, MinLength: cfg.MinLength, EnableSSE: cfg.EnableSSE, Level: cfg.ZstdLevel})
+	brotliHandler := brotli.New(brotli.Config{ContentTypes: cfg.ContentTypes, MinLength: cfg.MinLength, EnableSSE: cfg.EnableSSE, Level: cfg.BrotliLevel})
 	return func(c core.Ctx) error {
+		if c.GetHeader("Upgrade") != "" || c.Method() == http.MethodConnect {
+			return c.Next()
+		}
 		if cfg.Skip != nil && cfg.Skip(c) {
 			return c.Next()
 		}
@@ -61,6 +68,8 @@ func New(config ...Config) core.HandlerFunc {
 		switch coding {
 		case "zstd":
 			err = zstdHandler(c)
+		case "br":
+			err = brotliHandler(c)
 		case "gzip":
 			err = gzipHandler(c)
 		default:
@@ -108,6 +117,9 @@ func validate(cfg Config) error {
 			return fmt.Errorf("compress content type %q: %w", value, err)
 		}
 	}
+	if cfg.BrotliLevel < 0 || cfg.BrotliLevel > 11 {
+		return fmt.Errorf("compress brotli level: %d", cfg.BrotliLevel)
+	}
 	if cfg.GzipLevel < -2 || cfg.GzipLevel > 9 {
 		return fmt.Errorf("compress gzip level: %d", cfg.GzipLevel)
 	}
@@ -120,7 +132,7 @@ func validate(cfg Config) error {
 // Unspecified codings inherit wildcard weights. Duplicate declarations use the
 // minimum weight, so an explicit prohibition cannot be undone by field order.
 func negotiate(values []string) (coding string, identityAllowed bool) {
-	weights := [4]int{-1, -1, -1, -1} // zstd, gzip, identity, wildcard
+	weights := [5]int{-1, -1, -1, -1, -1} // zstd, gzip, identity, wildcard, br
 	for _, value := range values {
 		for item := range strings.SplitSeq(value, ",") {
 			name, params, hasParams := strings.Cut(strings.TrimSpace(item), ";")
@@ -130,6 +142,8 @@ func negotiate(values []string) (coding string, identityAllowed bool) {
 				index = 0
 			case strings.EqualFold(strings.TrimSpace(name), "gzip"):
 				index = 1
+			case strings.EqualFold(strings.TrimSpace(name), "br"):
+				index = 4
 			case strings.EqualFold(strings.TrimSpace(name), "identity"):
 				index = 2
 			case strings.TrimSpace(name) == "*":
@@ -152,18 +166,25 @@ func negotiate(values []string) (coding string, identityAllowed bool) {
 			}
 		}
 	}
-	zq, gq := weights[0], weights[1]
+	zq, gq, bq := weights[0], weights[1], weights[4]
 	if zq < 0 {
 		zq = weights[3]
 	}
 	if gq < 0 {
 		gq = weights[3]
 	}
+	if bq < 0 {
+		bq = weights[3]
+	}
 	identityAllowed = weights[2] > 0 || (weights[2] < 0 && weights[3] != 0)
 	best := 0
 	if zq > 0 {
 		coding = "zstd"
 		best = zq
+	}
+	if bq > best {
+		coding = "br"
+		best = bq
 	}
 	if gq > best {
 		coding = "gzip"

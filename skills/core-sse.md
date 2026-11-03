@@ -228,3 +228,9 @@ app.GET("/custom-sse", func(c core.Ctx) error {
 - **Nginx 缓冲**：`Get` 方法自动设置了 `X-Accel-Buffering: no`，但建议同时配置 `proxy_buffering off`
 - **浏览器限制**：同一域名下浏览器默认允许 6 个 SSE 连接
 - **EventData.ID**：设置后可实现断线重连（客户端重连时发送 `Last-Event-ID` header）
+
+## 6. 可选流式压缩
+
+通过 `app.Use(compress.New(compress.Config{EnableSSE: true}))`（导入 middleware/compress）启用 zstd/br/gzip 协商。默认 false；也可在单算法 gzip/brotli/zstd Config 设置同名字段。保留 Content-Type: text/event-stream 与 Cache-Control: no-cache，事件方法会刷新编码器及网络，首次刷新头不会关闭 SSE 的压缩选择，消息不等待流结束。No-transform 会禁止中间件压缩；空 ContentTypes 也会禁用。EventHub 已设置 SSE MIME、no-cache 和逐事件 Flush，可直接配合使用。
+
+按 q 权重选择；同权重 zstd→br→gzip。HTTP 实时流与 WebSocket 消息压缩是不同机制。测试已验证本地逐条解压，不代表代理或 CF 端到端延迟保证。

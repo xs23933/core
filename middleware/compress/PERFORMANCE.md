@@ -1,5 +1,7 @@
 # 统一响应压缩验证与性能对比
 
+> v3.1.68 双算法入口的历史报告；Brotli、SSE 与 WebSocket 新增能力及当前测量见 [流式压缩报告](STREAMING.md)。
+
 日期：2026-11-02。入口：`github.com/xs23933/core/v3/middleware/compress`。
 
 ```go

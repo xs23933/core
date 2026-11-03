@@ -4,6 +4,7 @@ import (
 	"compress/gzip"
 	"errors"
 	"fmt"
+	brcodec "github.com/andybalholm/brotli"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,7 @@ import (
 
 	zstdcodec "github.com/klauspost/compress/zstd"
 	"github.com/xs23933/core/v3"
+	brmw "github.com/xs23933/core/v3/middleware/brotli"
 	"github.com/xs23933/core/v3/middleware/etag"
 	gzipmw "github.com/xs23933/core/v3/middleware/gzip"
 	zstdmw "github.com/xs23933/core/v3/middleware/zstd"
@@ -31,13 +33,19 @@ func TestNegotiation(t *testing.T) {
 		{"missing", nil, "", true},
 		{"empty", []string{""}, "", true},
 		{"both", []string{"gzip, zstd"}, "zstd", true},
+		{"br only", []string{"br"}, "br", true},
+		{"all tie", []string{"gzip,br,zstd"}, "zstd", true},
+		{"br before gzip", []string{"gzip,br"}, "br", true},
+		{"br q lower", []string{"gzip;q=1,br;q=0.5"}, "gzip", true},
+		{"br overrides star", []string{"*;q=1,zstd;q=0,br;q=0"}, "gzip", true},
+		{"br duplicate deny", []string{"br;q=1,br;q=0,gzip"}, "gzip", true},
 		{"gzip only", []string{"gzip"}, "gzip", true},
 		{"zstd only", []string{"zstd"}, "zstd", true},
 		{"q wins", []string{"zstd;q=0.2, gzip;q=0.8"}, "gzip", true},
 		{"tie", []string{"gzip;q=0.5,zstd;q=0.5"}, "zstd", true},
 		{"explicit zero", []string{"zstd;q=0, gzip"}, "gzip", true},
 		{"wildcard", []string{"*"}, "zstd", true},
-		{"explicit overrides star", []string{"*;q=1,zstd;q=0"}, "gzip", true},
+		{"explicit overrides star", []string{"*;q=1,zstd;q=0"}, "br", true},
 		{"star denied explicit gzip", []string{"*;q=0,gzip;q=0.1"}, "gzip", false},
 		{"all denied", []string{"*;q=0"}, "", false},
 		{"identity exception", []string{"*;q=0,identity;q=0.2"}, "", true},
@@ -48,7 +56,7 @@ func TestNegotiation(t *testing.T) {
 		{"duplicates deny", []string{"zstd;q=1", "zstd;q=0,gzip"}, "gzip", true},
 		{"duplicates reversed", []string{"zstd;q=0,zstd;q=1,gzip"}, "gzip", true},
 		{"duplicate star", []string{"*;q=1,*;q=0"}, "", false},
-		{"unknown", []string{"br"}, "", true},
+		{"unknown", []string{"deflate"}, "", true},
 		{"malformed", []string{"zstd;q=NaN,gzip;q=1e0"}, "", true},
 		{"too precise", []string{"zstd;q=0.1234,gzip"}, "gzip", true},
 		{"extra params", []string{"zstd;q=1;q=0,gzip"}, "gzip", true},
@@ -73,6 +81,12 @@ func decode(t testing.TB, encoding string, data []byte) []byte {
 		if err != nil {
 			t.Fatal(err)
 		}
+	case "br":
+		out, err := io.ReadAll(brcodec.NewReader(strings.NewReader(string(data))))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
 	case "zstd":
 		r, err := zstdcodec.NewReader(nil, zstdcodec.WithDecoderConcurrency(1))
 		if err != nil {
@@ -121,8 +135,8 @@ func TestResponseSelectionAndOriginalHeaders(t *testing.T) {
 		{"gzip,zstd", "zstd", 200}, {"gzip", "gzip", 200}, {"zstd;q=0.1,gzip;q=0.9", "gzip", 200},
 		{"zstd;q=0,gzip", "gzip", 200}, {"*;q=0,gzip;q=0.1", "gzip", 200},
 		{"zstd;q=0,zstd;q=1,gzip", "gzip", 200}, {"*;q=0,*;q=1,identity;q=1", "", 200},
-		{"gzip;q=0.1,identity;q=0.9", "", 200}, {"", "", 200}, {"br", "", 200},
-		{"*;q=0", "", 406}, {"identity;q=0,br", "", 406},
+		{"gzip;q=0.1,identity;q=0.9", "", 200}, {"", "", 200}, {"br", "br", 200},
+		{"*;q=0", "", 406}, {"identity;q=0,deflate", "", 406},
 	} {
 		t.Run(tt.accept, func(t *testing.T) {
 			called := 0
@@ -265,7 +279,7 @@ func TestStaticAndETagComposition(t *testing.T) {
 }
 
 func TestConfigurationAndSkip(t *testing.T) {
-	for _, cfg := range []Config{{GzipLevel: 10}, {ZstdLevel: 10}, {ContentTypes: []string{"not a mime"}}} {
+	for _, cfg := range []Config{{BrotliLevel: 12}, {GzipLevel: 10}, {ZstdLevel: 10}, {ContentTypes: []string{"not a mime"}}} {
 		app := newApp(New(cfg), func(c core.Ctx) error { t.Fatal("handler called for invalid config"); return nil })
 		if rec := request(app, "GET", ""); rec.Code != 500 {
 			t.Fatal(rec.Code, rec.Body.String())
@@ -361,6 +375,8 @@ func BenchmarkCompression(b *testing.B) {
 	}{
 		{"gzip-direct", "gzip", gzipmw.New()},
 		{"gzip-unified", "gzip", New()},
+		{"br-direct", "br", brmw.New()},
+		{"br-unified", "br,gzip", New()},
 		{"zstd-direct", "zstd", zstdmw.New()},
 		{"zstd-unified", "gzip,zstd", New()},
 		{"identity-direct", "", func(c core.Ctx) error { return c.Next() }},
@@ -565,7 +581,7 @@ func TestDynamicConditionalETag(t *testing.T) {
 func TestPreEncodedResponseAtEntry(t *testing.T) {
 	app := newApp(New(), func(c core.Ctx) error { return c.SendString("pre-encoded bytes") })
 	app.Use(func(c core.Ctx) error { c.SetHeader("Content-Encoding", "br"); return c.Next() })
-	rec := request(app, "GET", "br,identity;q=0")
+	rec := request(app, "GET", "deflate,identity;q=0")
 	if rec.Code != 200 || rec.Header().Get("Content-Encoding") != "br" || rec.Body.String() != "pre-encoded bytes" {
 		t.Fatal(rec.Code, rec.Header(), rec.Body.String())
 	}
@@ -630,5 +646,54 @@ func TestRefusalStopsStreamingCopyAfterFirstRead(t *testing.T) {
 	rec := request(app, "GET", "zstd,identity;q=0")
 	if rec.Code != 406 || source.reads != 1 || rec.Body.String() != "Not Acceptable\n" {
 		t.Fatal(rec.Code, source.reads, rec.Body.String())
+	}
+}
+
+func (*benchmarkWriter) Flush() {}
+
+func BenchmarkSSECompression(b *testing.B) {
+	var events []string
+	var expected strings.Builder
+	for i := 0; i < 32; i++ {
+		event := fmt.Sprintf(`{"sequence":%d,"status":"active","payload":"streaming event content"}`, i)
+		events = append(events, event)
+		fmt.Fprintf(&expected, "event: update\ndata: %s\n\n", event)
+	}
+	for _, coding := range []string{"br", "gzip", "zstd"} {
+		b.Run(coding, func(b *testing.B) {
+			app := newApp(New(Config{EnableSSE: true}), func(c core.Ctx) error {
+				c.SetHeader("Content-Type", "text/event-stream")
+				c.Response().Flush()
+				for _, event := range events {
+					if err := c.SSEWrite("update", event); err != nil {
+						return err
+					}
+				}
+				return nil
+			})
+			req := httptest.NewRequest("GET", "/", nil)
+			req.Header.Set("Accept-Encoding", coding)
+			warm := httptest.NewRecorder()
+			app.ServeHTTP(warm, req)
+			if string(decode(b, coding, warm.Body.Bytes())) != expected.String() {
+				b.Fatal("decoded SSE differs")
+			}
+			dst := &benchmarkWriter{header: make(http.Header)}
+			b.SetBytes(int64(expected.Len()))
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				clear(dst.header)
+				dst.size = 0
+				dst.status = 0
+				app.ServeHTTP(dst, req)
+				if dst.status != 200 || dst.size != warm.Body.Len() {
+					b.Fatal(dst.status, dst.size)
+				}
+			}
+			b.StopTimer()
+			b.ReportMetric(float64(warm.Body.Len()), "body-B/stream")
+			b.ReportMetric(32, "events/stream")
+		})
 	}
 }

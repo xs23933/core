@@ -128,3 +128,9 @@ TrySend/TrySendWithType 复制输入，仅确认入队，不能作为实际网�
 - 不要在业务复制 upgrader、读写循环或用旁路连接绕过 Core Options。
 - 不要忘记 `defer manager.Remove(client)`。
 - 不要在项目里重复实现用户连接 map；优先使用 `websocket.DefaultUserManager` 或 `websocket.NewUserManager()`。
+
+## 7. 标准消息压缩
+
+在 Options 设置 `EnableCompression: true`（默认false）开启 RFC7692 permessage-deflate 协商；仅双方支持时发送压缩消息，未协商客户端仍正常使用。配置 ReadLimit 限制解压后的消息大小，OnMessage 收到解压后的原始正文，Text/Binary 类型不变。默认读写循环逐条结束消息；框架回调按完整消息交付，并非无限消息中的分片回调。
+
+WebSocket 通过 Sec-WebSocket-Extensions 协商，不使用 HTTP Accept-Encoding 或 gzip/br/zstd Content-Encoding；统一 compress 中间件对 Upgrade/CONNECT 直接放行。不要把 HTTP 压缩 writer 套在升级后的字节流上，也不要把 permessage-deflate 称作 gzip 或 Brotli。

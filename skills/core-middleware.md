@@ -273,7 +273,7 @@ app.Use(gzip.New(gzip.Config{
 - `Level: 0` 使用标准库默认压缩级别；其它值使用 `compress/gzip` 级别（如 BestSpeed、BestCompression、HuffmanOnly）。无效级别或 MIME 会使中间件返回配置错误。
 - `MinLength: 0` 使用默认 1024 字节；负数取消阈值。只缓冲不足阈值的前缀，之后流式发送，不缓冲整份文件。
 - 协商 `Accept-Encoding`，尊重 `gzip;q=0` 并设置 `Vary: Accept-Encoding`；压缩后删除原始长度、Accept-Ranges、内容摘要，强 ETag 转弱 ETag。
-- HEAD/CONNECT/Upgrade/Range、204/304、SSE、已有 Content-Encoding、`Cache-Control: no-transform` 均跳过压缩。
+- HEAD/CONNECT/Upgrade/Range、204/304、默认 SSE、已有 Content-Encoding、`Cache-Control: no-transform` 均跳过压缩。
 - 提前 Flush/DoWriteHeader 会提交原始响应，不等待阈值；已开始压缩后 Flush 同步刷新 gzip 与底层响应。SSE 始终直接发送。
 - 当前响应已提交后返回错误，Core 只记录错误，不追加明文或重写状态，避免损坏压缩流。未提交前保持原有错误处理。
 - 响应包装使用 `c.SetResponseWriter(wrapped)`，中间件退出时必须恢复原 writer。压缩池在请求结束时清除对请求 writer 的引用。
@@ -290,11 +290,11 @@ app.Use(zstd.New())
 // app.Use(zstd.New(zstd.Config{MinLength: 2048}))
 ```
 
-`middleware/zstd` 与 gzip 使用相同的 `New(config ...Config)` 形式，支持 `ContentTypes`、`Level`、`MinLength`、`Skip`；默认 MIME 列表、1024 字节阈值和跳过规则同 gzip。`Level` 使用 `github.com/klauspost/compress/zstd.EncoderLevel`，0 使用 `SpeedDefault`，可选 `SpeedFastest`、`SpeedDefault`、`SpeedBetterCompression`、`SpeedBestCompression`；非法级别或 MIME 返回配置错误。复用已有 klauspost/compress 依赖，单个 encoder 使用并发度 1，请求间池化复用并清除请求 writer 引用。
+`middleware/zstd` 与 gzip 使用相同的 `New(config ...Config)` 形式，支持 `ContentTypes`、`Level`、`MinLength`、`EnableSSE`、`Skip`；默认 MIME 列表、1024 字节阈值和跳过规则同 gzip。`Level` 使用 `github.com/klauspost/compress/zstd.EncoderLevel`，0 使用 `SpeedDefault`，可选 `SpeedFastest`、`SpeedDefault`、`SpeedBetterCompression`、`SpeedBestCompression`；非法级别或 MIME 返回配置错误。复用已有 klauspost/compress 依赖，单个 encoder 使用并发度 1，请求间池化复用并清除请求 writer 引用。
 
-客户端通过 `Accept-Encoding: zstd`（支持 q 值、通配符和显式 `zstd;q=0` 拒绝）协商，响应设置 `Content-Encoding: zstd` 和 `Vary: Accept-Encoding`。不足阈值时保留原文，达到后流式压缩；Flush 刷新压缩流，压缩前提前 Flush/DoWriteHeader 则保持原文。HEAD/CONNECT/Upgrade/Range、204/304、SSE、已有编码和 no-transform 跳过；长度、摘要、ETag 的处理同 gzip，未协商压缩时保留静态 ReaderFrom 传输路径。独立入口选择 gzip 或 zstd 之一安装；需要自动协商二者时使用 `middleware/compress`。叠加不提供跨算法 q 值优先选择，只由先处理正文的中间件决定编码，已有编码阻止重复压缩。
+客户端通过 `Accept-Encoding: zstd`（支持 q 值、通配符和显式 `zstd;q=0` 拒绝）协商，响应设置 `Content-Encoding: zstd` 和 `Vary: Accept-Encoding`。不足阈值时保留原文，达到后流式压缩；Flush 刷新压缩流，普通响应压缩前提前 Flush/DoWriteHeader 则保持原文；显式启用的 SSE 会先建立编码器再提交/刷新。HEAD/CONNECT/Upgrade/Range、204/304、默认 SSE、已有编码和 no-transform 跳过；长度、摘要、ETag 的处理同 gzip，未协商压缩时保留静态 ReaderFrom 传输路径。独立入口选择 gzip 或 zstd 之一安装；需要自动协商二者时使用 `middleware/compress`。叠加不提供跨算法 q 值优先选择，只由先处理正文的中间件决定编码，已有编码阻止重复压缩。
 
-## 18. 统一响应压缩（zstd 优先、gzip 兜底）
+## 18. 统一响应压缩（zstd、Brotli、gzip）
 
 ```go
 import "github.com/xs23933/core/v3/middleware/compress"
@@ -304,22 +304,42 @@ app.Use(compress.New())
 // app.Use(compress.New(compress.Config{MinLength: 2048, GzipLevel: 1}))
 ```
 
-`compress.New(config ...compress.Config)` 返回 `core.HandlerFunc`。`Config` 提供 `ContentTypes`、`MinLength`、`GzipLevel`、`ZstdLevel`、`Skip`。默认 MIME、1024 字节阈值和两种编码器的默认级别沿用独立中间件；`ContentTypes` 为非 nil 空切片时禁用压缩，负 `MinLength` 取消阈值。非法 MIME/算法级别返回配置错误，不按客户端算法静默回退。
+`compress.New(config ...compress.Config)` 返回 `core.HandlerFunc`。`Config` 提供 `ContentTypes`、`MinLength`、`GzipLevel`、`ZstdLevel`、`BrotliLevel`、`EnableSSE`、`Skip`。默认 MIME、1024 字节阈值和三种编码器的默认级别沿用独立中间件；`ContentTypes` 为非 nil 空切片时禁用压缩，负 `MinLength` 取消阈值。非法 MIME/算法级别返回配置错误，不按客户端算法静默回退。
 
-按 `Accept-Encoding` 的正 q 值从高到低选择，平局优先 zstd；显式编码覆盖通配符，显式 q=0 禁止。q 必须为 0～1、至多三位小数；非法参数视为该编码不可接受。多行头合并解析；同一编码重复时取最低权重，防止禁止声明被覆盖。显式 identity 权重高于压缩编码时发送原文；未显式声明的 identity 只作兜底（显式 identity 不写 q 时按 1 处理）。缺失或空头保持原文，不自动压缩，也不改写下游看到的请求头。
+按 `Accept-Encoding` 的正 q 值从高到低选择，平局依次优先 zstd、br、gzip；显式编码覆盖通配符，显式 q=0 禁止。q 必须为 0～1、至多三位小数；非法参数视为该编码不可接受。多行头合并解析；同一编码重复时取最低权重，防止禁止声明被覆盖。显式 identity 权重高于压缩编码时发送原文；未显式声明的 identity 只作兜底（显式 identity 不写 q 时按 1 处理）。缺失或空头保持原文，不自动压缩，也不改写下游看到的请求头。
 
 | Accept-Encoding | 结果（响应符合压缩条件时） |
 | --- | --- |
 | `gzip, zstd` | zstd |
+| `br, gzip` | br |
+| `zstd;q=0.2, br;q=0.8, gzip;q=0.5` | br |
 | `zstd;q=0.2, gzip;q=0.8` | gzip |
 | `zstd;q=0, gzip` | gzip |
 | `*;q=0, gzip;q=0.5` | gzip；不允许原文 |
 | `identity;q=1, gzip;q=0.5` | 原文 |
 | `*;q=0` | 406，不调用 handler |
 
-仅安装统一入口即可；现有 `gzip.New()` / `zstd.New()` API 和行为不变。统一入口复用两者的流式 writer、池化与清理逻辑，不复制压缩器。保留 Vary、静态缓存、ReaderFrom、HEAD/Range/Upgrade/CONNECT、204/304、SSE、既有编码和 no-transform 等处理。入口已有非 identity 的 Content-Encoding 时透传，不重新编码；下游 handler 写出时设置既有编码也不重复压缩，其编码协商由生成该响应的一方负责。但请求拒绝 identity 且不接受 gzip/zstd 时会提前 406，无法预知下游才生成的 br 等表示；这种预编码路径应使用 Skip（或在进入统一入口前完成编码协商并设置响应头）。
+仅安装统一入口即可；现有 `gzip.New()` / `zstd.New()` 默认行为不变，新增 `brotli.New()`。三个入口复用内部流式 writer、池化与清理逻辑。保留 Vary、静态缓存、ReaderFrom、HEAD/Range/Upgrade/CONNECT、204/304、默认 SSE、既有编码和 no-transform 等处理。入口已有非 identity 的 Content-Encoding 时透传，不重新编码；下游 handler 写出时设置既有编码也不重复压缩，其编码协商由生成该响应的一方负责。但请求拒绝 identity 且不接受 br/gzip/zstd 时会提前 406，无法预知下游才生成的其它预编码表示；这种预编码路径应使用 Skip（或在进入统一入口前完成编码协商并设置响应头）。
 
-客户端允许 identity 时，不符合 MIME/阈值或提前 Flush 的响应保持原文。若显式禁止 identity（含 `*;q=0` 未给 identity 例外），而响应无法压缩，返回无缓存的 406，并向正文生产者返回内部拒绝错误以停止继续写出/读盘；该拒绝在中间件边界消化，不作为服务器故障，但其它写入/关闭错误仍保留。不强制压缩图片/SSE/no-transform；HEAD、204/304 等无正文响应保持无正文。后验发现无法压缩时 handler 已执行，406 不回滚业务副作用。`Skip` 为 true 则完全绕过协商（包括 406），由调用方负责该路径。zstd 输出开始后的失败继续返回错误，不能切换为 gzip。
+客户端允许 identity 时，不符合 MIME/阈值或提前 Flush 的响应保持原文。若显式禁止 identity（含 `*;q=0` 未给 identity 例外），而响应无法压缩，返回无缓存的 406，并向正文生产者返回内部拒绝错误以停止继续写出/读盘；该拒绝在中间件边界消化，不作为服务器故障，但其它写入/关闭错误仍保留。不强制压缩图片、默认 SSE 或 no-transform；HEAD、204/304 等无正文响应保持无正文。后验发现无法压缩时 handler 已执行，406 不回滚业务副作用。`Skip` 为 true 则完全绕过协商（包括 406），由调用方负责该路径。zstd 输出开始后的失败继续返回错误，不能切换为 gzip。
+
+
+## 19. Brotli 插件与 SSE 流式压缩
+
+```go
+// 推荐统一协商：q 权重优先，同权重 zstd → br → gzip。
+app.Use(compress.New(compress.Config{EnableSSE: true}))
+```
+
+独立入口是 `github.com/xs23933/core/v3/middleware/brotli`，API 为 `brotli.New(config ...brotli.Config)`；`Config` 含 `ContentTypes`、`Level`、`MinLength`、`EnableSSE`、`Skip`。仅安装统一或单算法入口之一。Brotli 复用已有 andybalholm/brotli 依赖，`Level: 0` 使用默认质量6，显式范围1～11；普通响应默认阈值1024字节，图片不默认压缩。`compress.Config.BrotliLevel` 采用相同规则。
+
+`EnableSSE` 在三个独立入口和统一入口中默认 false，保持现有 SSE 不压缩；设为 true 后，`text/event-stream`（允许 charset 参数）绕过 MinLength，并在首次 Flush/DoWriteHeader 时先选择压缩编码。每个 `SSEWrite` / `SSESend` / `SSEComment` 的 Flush 都刷新编码器再刷新 HTTP writer，因此微小事件不等待整个响应关闭。仍尊重请求协商、no-transform、Range、已有编码、无正文状态；非 nil 空 ContentTypes 完全禁用压缩，包括 SSE。EnableSSE 明确放行 SSE，不要求额外把它加进非空的 MIME 列表。
+
+SSE 发送前设置 `Content-Type: text/event-stream` 和 `Cache-Control: no-cache`；不要同时设置 no-transform 来期望开启压缩，因为压缩中间件会尊重它并跳过转换。普通 HTTP 流仍采用原有阈值规则：先写出达到阈值的数据再 Flush，或以负 MinLength 取消阈值；普通响应首次仅 Flush 仍提交原文。
+
+Upgrade 和 CONNECT 完全绕过统一 HTTP 压缩协商，不由 identity/q 规则阻止 WebSocket 握手。WebSocket 使用独立的 RFC7692 permessage-deflate；不是 Brotli/gzip/zstd Content-Encoding。通过 `websocket.Options{EnableCompression: true, ReadLimit: 1 << 20}` 开启标准浏览器消息压缩，仅双方协商成功才生效，默认 false。大消息可分段写入 NextWriter，但必须 Close 才结束该消息；浏览器以完整消息触发回调，实时推送应逐条发送，不把所有事件合成一个无限消息。ReadLimit 同时约束解压后的完整消息大小。
+
+本地真实 HTTP 流测试覆盖连接关闭前逐条解压事件、预先刷新头、三种编码与两种 ETag 安装顺序；不保证 Cloudflare/其它代理不会缓冲，生产链路需单独验证。
 
 ## 生成代码时避免
 
