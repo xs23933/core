@@ -150,10 +150,12 @@ type EtcdGateway struct {
 	desiredMu       sync.Mutex
 	desiredServices atomic.Value // serviceSnapshot, copy-on-write
 
-	httpMu        sync.Mutex
-	httpInstances atomic.Value // map[string]*httpServiceInstances
-	httpIndexMu   sync.Mutex
-	httpIndexes   atomic.Value // map[string]*atomic.Uint64
+	httpTransportMu sync.Mutex
+	httpTransports  map[string]*http.Transport
+	httpMu          sync.Mutex
+	httpInstances   atomic.Value // map[string]*httpServiceInstances
+	httpIndexMu     sync.Mutex
+	httpIndexes     atomic.Value // map[string]*atomic.Uint64
 
 	// 连接池
 	connPool *ConnectionPool
@@ -1634,6 +1636,7 @@ func (gw *EtcdGateway) Close() error {
 			gw.connPool.Close()
 		}
 
+		gw.closeHTTPTransports("")
 		gw.httpMu.Lock()
 		gw.storeHTTPInstances(make(map[string]*httpServiceInstances))
 		gw.httpMu.Unlock()

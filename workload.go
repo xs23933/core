@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"sync"
@@ -207,4 +208,26 @@ func (app *Core) RotateWorkloadIntermediate() error {
 		return errors.New("core: workload issuer unavailable")
 	}
 	return issuer.RotateIntermediate()
+}
+
+// WorkloadServerTLSConfig reuses the managed identity for a dedicated TLS listener.
+// The listener owner must enable TLS and close it during application shutdown.
+func (app *Core) WorkloadServerTLSConfig() (*tls.Config, error) {
+	identity, err := app.workloadIdentity()
+	if err != nil {
+		return nil, err
+	}
+	return identity.ServerTLSConfig(), nil
+}
+
+// WorkloadClientTLSConfig verifies the logical target and reads renewed certificates at handshake time.
+func (app *Core) WorkloadClientTLSConfig(target string) (*tls.Config, error) {
+	identity, err := app.workloadIdentity()
+	if err != nil {
+		return nil, err
+	}
+	if target == "" {
+		return nil, ErrGRPCClientServiceRequired
+	}
+	return identity.ClientTLSConfig(target), nil
 }

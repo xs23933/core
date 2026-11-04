@@ -618,3 +618,73 @@ func singleStoredRoute(t *testing.T, client *clientv3.Client, prefix string) (st
 	}
 	return string(response.Kvs[0].Key), value
 }
+
+func TestManagedHTTPRejectsPlaintextRegistryTarget(t *testing.T) {
+	app := core.New(core.Options{"workload": core.Options{"enabled": true}})
+	gw := &EtcdGateway{app: app}
+	if err := gw.addHTTPInstance("backend", "one", "http://127.0.0.1:9000"); err == nil {
+		t.Fatal("managed HTTP accepted plaintext")
+	}
+}
+
+func TestManagedHTTPRejectsUnavailableIdentity(t *testing.T) {
+	app := core.New(core.Options{"workload": core.Options{"enabled": true}})
+	gw := &EtcdGateway{app: app}
+	if err := gw.addHTTPInstance("backend", "one", "https://127.0.0.1:9000"); err != nil {
+		t.Fatal(err)
+	}
+	gw.registerRoute(&Route{Protocol: RouteProtocolHTTP, Method: "GET", Path: "/managed", ServiceName: "backend", Enabled: true})
+	response := httptest.NewRecorder()
+	app.ServeHTTP(response, httptest.NewRequest("GET", "/managed", nil))
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d", response.Code)
+	}
+}
+
+func TestManagedHTTPTransportRejectsPlaintextBeforeDial(t *testing.T) {
+	transport := managedHTTPTransport{}
+	request := httptest.NewRequest(http.MethodGet, "http://backend/status", nil)
+	if _, err := transport.RoundTrip(request); err == nil {
+		t.Fatal("plaintext request accepted")
+	}
+}
+
+func TestManagedHTTPReconcileRejectsPlaintext(t *testing.T) {
+	app := core.New(core.Options{"workload": core.Options{"enabled": true}})
+	gw := &EtcdGateway{app: app}
+	gw.reconcileHTTPInstances(serviceSnapshot{"one": {ServiceName: "backend", InstanceID: "one", HTTPAddr: "http://127.0.0.1:9000"}})
+	if len(gw.loadHTTPInstances()) != 0 {
+		t.Fatal("plaintext target survived reconcile")
+	}
+}
+
+func TestManagedHTTPTransportCacheLifecycle(t *testing.T) {
+	gw := &EtcdGateway{}
+	first, err := gw.managedHTTPClient("backend", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := gw.managedHTTPClient("backend", nil)
+	if err != nil || again != first || len(gw.httpTransports) != 1 {
+		t.Fatal("transport not reused")
+	}
+	if err := gw.addHTTPInstance("backend", "one", "https://127.0.0.1:9000"); err != nil {
+		t.Fatal(err)
+	}
+	gw.removeHTTPInstance("backend", "one")
+	if len(gw.httpTransports) != 0 {
+		t.Fatal("retired service transport retained")
+	}
+	if _, err := gw.managedHTTPClient("backend", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if len(gw.httpTransports) != 0 {
+		t.Fatal("closed gateway retained transports")
+	}
+	if _, err := gw.managedHTTPClient("backend", nil); err == nil {
+		t.Fatal("closed gateway created transport")
+	}
+}

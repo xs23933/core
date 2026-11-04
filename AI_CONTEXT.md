@@ -1402,3 +1402,5 @@ Gateway 初始化只执行一次；Close 与任务接纳、请求回退注册共
 HTTP/3 回调以同一应用锁检查关闭状态并发布 server 所有权；Shutdown/强制关闭读取受锁保护的快照。迟到回调不发布新 server，并关闭传入的 UDP listener；已经发布的 server 会被正常排空或强制关闭。该规则不增加公开 API 或改变默认无限并发配置。
 
 Brotli/SSE/WebSocket：新增 middleware/brotli.New，复用已有brotli依赖。三种 HTTP 中间件复用 internal/responsecompression；独立 Config 与 compress.Config 均支持 EnableSSE（默认false），开启后SSE绕过大小阈值、首次Flush/DoWriteHeader先建立编码器、每次事件Flush刷新编码流。ContentTypes空仍禁用、no-transform/Range等仍跳过。统一入口新增BrotliLevel（0默认6，1～11显式），同q顺序zstd→br→gzip；CF常见br,gzip回源将选br。Upgrade/CONNECT跳过HTTP协商。websocket.Options.EnableCompression 默认false，开启RFC7692 permessage-deflate，只在双方协商成功后生效，ReadLimit继续约束解压后消息。WebSocket不使用HTTP Brotli/gzip/zstd。详细示例见skills/core-middleware.md、core-sse.md、core-websocket.md。
+
+启用 `workload.enabled` 的 Gateway HTTP 反代只接受 `https://` 实例，并按 route.service_name 验证工作负载身份；身份不可用时拒绝受理，不回退明文。内部 HTTP listener/client 使用 `WorkloadServerTLSConfig()` / `WorkloadClientTLSConfig(target)` 复用动态证书；调用方须显式用 `tls.NewListener` 启用内部TLS，并保留应用授权。Gateway 公共浏览器 listener 不要求工作负载客户端证书，详见 [工作负载说明](workload/README.md)。

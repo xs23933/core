@@ -1083,3 +1083,5 @@ Gateway 可使用 Go 标准库首次自动创建私有 CA，后端自动申请�
 
 - 应用隔离与启动准备：`app.Conn/RConn/NProducer/NewNSQConsumer`、`Prepare` 和 `RegHandleFactory` 见 [core-handler.md](core-handler.md)、[core-model.md](core-model.md)、[core-nsq.md](core-nsq.md)。
 - Gateway 可信身份 metadata：`core-identity-*` 和 `protected_metadata_keys` 见 [core-gateway.md](core-gateway.md)；独立 fetch/cache 装配见对应 Skill。
+
+HTTP工作负载TLS及WebSocket/SSE透明反代见[Gateway技能](core-gateway.md#托管工作负载-mtls)；动态`WorkloadServerTLSConfig`/`WorkloadClientTLSConfig`与gRPC共用托管身份，不为HTTP创建第二个CA。

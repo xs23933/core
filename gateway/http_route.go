@@ -2,9 +2,11 @@ package gateway
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"maps"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -166,10 +168,38 @@ type httpProxyRetryState struct {
 	retried    bool
 }
 
+type managedHTTPTransport struct {
+	gateway *EtcdGateway
+	service string
+	config  *tls.Config
+}
+
+func (t managedHTTPTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.URL.Scheme != "https" {
+		return nil, errors.New("gateway: managed HTTP requires https")
+	}
+	transport, err := t.gateway.managedHTTPClient(t.service, t.config)
+	if err != nil {
+		return nil, err
+	}
+	return transport.RoundTrip(req)
+}
+
 func (gw *EtcdGateway) createHTTPProxyHandler(route *Route) core.HandlerFunc {
+	var transport http.RoundTripper
+	if gw.app != nil && gw.app.Conf.GetBool("workload.enabled", false) {
+		config, err := gw.app.WorkloadClientTLSConfig(route.ServiceName)
+		if err != nil {
+			return func(ctx core.Ctx) error {
+				return ctx.Status(http.StatusServiceUnavailable).JSON(core.Map{"code": 503, "msg": "workload identity unavailable"})
+			}
+		}
+		transport = managedHTTPTransport{gateway: gw, service: route.ServiceName, config: config}
+	}
 	var proxy *httputil.ReverseProxy
 	proxy = &httputil.ReverseProxy{
-		Director: func(*http.Request) {},
+		Director:  func(*http.Request) {},
+		Transport: transport,
 		ErrorHandler: func(w http.ResponseWriter, req *http.Request, proxyErr error) {
 			state, _ := req.Context().Value(httpProxyRetryContextKey{}).(httpProxyRetryState)
 			if gatewayRequestCanRetry(req.Method) && !state.retried && req.Context().Err() == nil && (req.Body == nil || req.Body == http.NoBody || req.GetBody != nil) {
@@ -378,7 +408,7 @@ func (gw *EtcdGateway) addHTTPInstance(serviceName, instanceID, addr string) err
 			return nil
 		}
 	}
-	target, err := parseHTTPServiceURL(addr)
+	target, err := gw.parseHTTPServiceURL(addr)
 	if err != nil {
 		gw.removeHTTPInstance(serviceName, instanceID)
 		return err
@@ -417,6 +447,7 @@ func (gw *EtcdGateway) removeHTTPInstance(serviceName, instanceID string) {
 		gw.storeHTTPInstances(next)
 		gw.removeHTTPIndex(serviceName)
 		gw.circuitStates.Delete(serviceName)
+		gw.closeHTTPTransports(serviceName)
 		return
 	}
 	next[serviceName] = newHTTPServiceInstances(byID)
@@ -466,7 +497,7 @@ func (gw *EtcdGateway) reconcileHTTPInstances(desired serviceSnapshot) {
 			instance = old.byID[id]
 		}
 		if instance == nil || instance.Addr != addr {
-			target, err := parseHTTPServiceURL(addr)
+			target, err := gw.parseHTTPServiceURL(addr)
 			if err != nil {
 				core.Warn("[Gateway] invalid HTTP instance: %v", err)
 				continue
@@ -497,6 +528,9 @@ func (gw *EtcdGateway) reconcileHTTPInstances(desired serviceSnapshot) {
 				}
 			}
 		}
+		if next[name] == nil {
+			gw.closeHTTPTransports(name)
+		}
 		if !retained {
 			gw.removeHTTPIndex(name)
 			gw.circuitStates.Delete(name)
@@ -507,5 +541,47 @@ func (gw *EtcdGateway) reconcileHTTPInstances(desired serviceSnapshot) {
 	}
 	if !maps.Equal(current, next) {
 		gw.storeHTTPInstances(next)
+	}
+}
+
+func (gw *EtcdGateway) parseHTTPServiceURL(addr string) (*url.URL, error) {
+	target, err := parseHTTPServiceURL(addr)
+	if err != nil {
+		return nil, err
+	}
+	if gw.app != nil && gw.app.Conf.GetBool("workload.enabled", false) && target.Scheme != "https" {
+		return nil, errors.New("gateway: managed HTTP requires https")
+	}
+	return target, nil
+}
+
+func (gw *EtcdGateway) managedHTTPClient(service string, config *tls.Config) (*http.Transport, error) {
+	gw.httpTransportMu.Lock()
+	defer gw.httpTransportMu.Unlock()
+	gw.lifecycleMu.Lock()
+	closed := gw.closed
+	gw.lifecycleMu.Unlock()
+	if closed {
+		return nil, errors.New("gateway: closed")
+	}
+	if transport := gw.httpTransports[service]; transport != nil {
+		return transport, nil
+	}
+	transport := &http.Transport{TLSClientConfig: config, DialContext: (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext, MaxIdleConns: 100, IdleConnTimeout: 90 * time.Second, TLSHandshakeTimeout: 10 * time.Second, ExpectContinueTimeout: time.Second}
+	if gw.httpTransports == nil {
+		gw.httpTransports = make(map[string]*http.Transport)
+	}
+	gw.httpTransports[service] = transport
+	return transport, nil
+}
+
+func (gw *EtcdGateway) closeHTTPTransports(service string) {
+	gw.httpTransportMu.Lock()
+	defer gw.httpTransportMu.Unlock()
+	for name, transport := range gw.httpTransports {
+		if service == "" || name == service {
+			transport.CloseIdleConnections()
+			delete(gw.httpTransports, name)
+		}
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -184,7 +185,7 @@ func TestWorkloadGatewayRealEtcd(t *testing.T) {
 	pagesOptions := common("pages", filepath.Join(base, "pages-identity"))
 	pagesOptions["listen"] = pagesAddress
 	pagesOptions["etcd"].(core.Options)["service_addr"] = pagesAddress
-	pagesOptions["etcd"].(core.Options)["http_addr"] = "http://" + pagesAddress
+	pagesOptions["etcd"].(core.Options)["http_addr"] = "https://" + pagesAddress
 	pagesApp := core.New(pagesOptions)
 	nextBackend := 0
 	if e = gatewayApp.EnableWorkloadIdentity(); e != nil {
@@ -226,7 +227,11 @@ func TestWorkloadGatewayRealEtcd(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	workloadTestServe(t, pagesApp, pagesListener)
+	pagesTLS, e := pagesApp.WorkloadServerTLSConfig()
+	if e != nil {
+		t.Fatal(e)
+	}
+	workloadTestServe(t, pagesApp, tls.NewListener(pagesListener, pagesTLS))
 	for _, test := range []struct{ path, body string }{{"/site/asset.txt", "static ready"}, {"/http-events", "data: ready\n\n"}} {
 		deadline := time.Now().Add(10 * time.Second)
 		for {

@@ -134,3 +134,7 @@ TrySend/TrySendWithType 复制输入，仅确认入队，不能作为实际网�
 在 Options 设置 `EnableCompression: true`（默认false）开启 RFC7692 permessage-deflate 协商；仅双方支持时发送压缩消息，未协商客户端仍正常使用。配置 ReadLimit 限制解压后的消息大小，OnMessage 收到解压后的原始正文，Text/Binary 类型不变。默认读写循环逐条结束消息；框架回调按完整消息交付，并非无限消息中的分片回调。
 
 WebSocket 通过 Sec-WebSocket-Extensions 协商，不使用 HTTP Accept-Encoding 或 gzip/br/zstd Content-Encoding；统一 compress 中间件对 Upgrade/CONNECT 直接放行。不要把 HTTP 压缩 writer 套在升级后的字节流上，也不要把 permessage-deflate 称作 gzip 或 Brotli。
+
+## Gateway内网工作负载TLS
+
+HTTP反代同样复用托管工作负载身份：启用后实例`http_addr`必须为HTTPS，Gateway以自身证书访问并按路由ServiceName校验目标逻辑身份，拒绝明文或不可用身份；不使用环境HTTP代理。内部listener使用`app.WorkloadServerTLSConfig()`配合`tls.NewListener`，专用客户端使用`app.WorkloadClientTLSConfig(target)`；应用继续校验调用方身份和方法授权。Transport按目标服务复用并在退役/关闭时清理。WebSocket升级/子协议/双向帧和SSE流式Flush沿用ReverseProxy；浏览器到Gateway的TLS/WSS单独配置。隔离Unix测试覆盖真实代理、错误目标拒绝、SSE分段及WebSocket双向通信，不代表生产轮换验收。

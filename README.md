@@ -3307,3 +3307,5 @@ Gateway 初始化只执行一次；Close 与任务接纳、请求回退注册共
 框架后台任务仍加入原 ErrGroup，保留 `ErrGroup().SetLimit(n)` 的有限并发语义：容量满时等待已有任务释放位置，等待不持应用锁，并可被 app.Ctx 或关闭标志打断。模块 Start、停机观察协程、gRPC Serve 和 HTTP/3 回调均使用这一可取消接纳边界，避免“启动等入组、停机等启动、Start 等 Stop”的循环。gRPC 已打开但未获接纳的 listener 会立即关闭。
 
 HTTP/3 回调以同一应用锁检查关闭状态并发布 server 所有权；Shutdown/强制关闭读取受锁保护的快照。迟到回调不发布新 server，并关闭传入的 UDP listener；已经发布的 server 会被正常排空或强制关闭。该规则不增加公开 API 或改变默认无限并发配置。
+
+启用 `workload.enabled` 的 Gateway HTTP 反代只接受 `https://` 实例，并按 route.service_name 验证工作负载身份；身份不可用时拒绝受理，不回退明文。内部 HTTP listener/client 使用 `WorkloadServerTLSConfig()` / `WorkloadClientTLSConfig(target)` 复用动态证书；调用方须显式用 `tls.NewListener` 启用内部TLS，并保留应用授权。Gateway 公共浏览器 listener 不要求工作负载客户端证书，详见 [工作负载说明](workload/README.md)。

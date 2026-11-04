@@ -98,3 +98,9 @@ CA 必需，客户端证书/私钥必须成对；仅服务端 TLS 可省略客�
 ## HTTP-only 服务
 
 工作负载身份同时支持只调用后端的 HTTP-only 服务。先启用 `EnableWorkloadIdentity`，随后 `EnableEtcdRegistry` 和 HTTP 路由发布即可，无需配置无用途的 `grpc.addr`。Registry 不创建 gRPC server；它仅为已通过 `RegisterGRPCService` 或 `GetGRPCServer` 创建的 server 开启 reflection。实例 `metadata.grpc_enabled=false` 使 Gateway 和 gRPC resolver 跳过入站 gRPC，但不影响 HTTP 代理或本进程出站 mTLS。该字段表示能力，不替代业务认证。真正提供 gRPC 的应用仍必须独立 mTLS 端口，共用 HTTP 端口会拒绝启动。
+
+## HTTP 反向代理的托管身份
+
+启用 `workload.enabled` 后，Gateway 的 HTTP 反代按路由的 `service_name` 验证后端工作负载身份；注册实例的 `http_addr` 必须为 `https://`，不接受明文目标或身份初始化失败后的明文回退。出站 Transport 独立于全局 `http.DefaultTransport`，不使用环境代理。未启用工作负载身份时保持原有 HTTP 反代行为。
+
+专用 HTTP listener 使用 `app.WorkloadServerTLSConfig()`，出站 HTTP 客户端使用 `app.WorkloadClientTLSConfig(targetService)`，两者复用当前进程身份并在握手时读取续期证书。服务 owner 须用 `tls.NewListener(listener, config)` 启用内部 TLS 并纳入 Core shutdown；单独设置 `http.Server.TLSConfig` 不会让 `Core.Serve` 的普通 listener 自动启用 TLS。服务端配置验证受信工作负载，应用仍应收紧允许的调用方及业务权限。Gateway 对浏览器的公共 listener 不因此要求浏览器提供工作负载证书。
