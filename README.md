@@ -81,22 +81,11 @@ func main() {
 
 ## 项目结构
 
-```
-project/
-├── cmd/               # 命令行目录
-│   └── main.go        # 主入口文件
-├── config.yaml        # 配置文件
-├── views/             # 模板文件
-├── static/            # 静态文件
-├── internal/          # 内部目录
-    ├── handler/       # 处理器目录
-    │   └── handler.go # 业务逻辑
-    ├── models/        # 数据模型
-    │   └── models.go  # 数据库模型定义
-    ├── middleware/    # 中间件
-    ├── service/       # (业务逻辑：事务操作，调用 dao/model)
-    └── dao/           # (数据访问：复杂查询封装)
-```
+新业务项目采用 `cmd/main.go → internal/app` 统一装配，
+`handler/grpc → services → dao → models` 处理业务。domain 只放纯业务错误与规则，
+不依赖 Core/GORM；现有带数据库支持的生成枚举放在 models。
+完整目录、启动与迁移约定见 [项目架构](skills/core-architecture.md)。
+可运行样例见 [example/standard](example/standard/README.md)。
 
 ## 配置
 
@@ -138,15 +127,19 @@ database:
 
 ## corectl 命令行工具
 
-```bash
-brew install xs23933/core/corectl
-
-# generate restful app
-corectl new myapp
-
-# generate grpc app
-corectl new myapp -t=grpc
+```sh
+go install ./cmd/corectl
+corectl new myapp -m example.com/myapp
+corectl new users -m example.com/users -t grpc
+corectl gen enums ./internal
+corectl gen enums --check
 ```
+
+new 只创建新目录，生成 cmd/main.go、internal/app 装配、查询业务链和测试。
+Go 默认 1.25.0，Core 模板基线 v3.1.71；可显式指定 --go-version 和 --core-version。
+初始化步骤、固定 protobuf 工具、版本边界及生成验收见 [corectl](skills/core-corectl.md)。
+枚举扫描将 *_enums.yaml/enums.yaml 就地生成到同目录，冲突在写入前报错，--check 不写文件；
+旧 coregen 单文件方式保留，详见 [枚举生成](skills/core-gen.md)。
 
 ## 核心概念
 
@@ -2274,7 +2267,7 @@ GET {{baseURL}}/users?page=1&size=10
 ### 1. 编译
 
 ```bash
-go build -o app main.go
+go build -o app ./cmd
 ```
 
 ### 2. 使用 Systemd
@@ -2300,13 +2293,14 @@ WantedBy=multi-user.target
 ### 3. 使用 Docker
 
 ```dockerfile
-FROM golang:1.24-alpine AS builder
+FROM golang:1.25-alpine AS builder
+RUN apk add --no-cache build-base
 
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN go build -o app main.go
+RUN go build -o app ./cmd
 
 FROM alpine:latest
 RUN apk --no-cache add ca-certificates
@@ -2433,34 +2427,10 @@ app := core.New(core.Options{
 
 ### 1. 项目组织
 
-```
-project/
-├── cmd/
-│   └── server/
-│       └── main.go          # 应用入口
-├── internal/
-│   ├── handler/             # 处理器
-│   │   ├── user.go
-│   │   └── auth.go
-│   ├── model/               # 数据模型
-│   │   ├── user.go
-│   │   └── order.go
-│   ├── service/             # 业务逻辑
-│   │   ├── user_service.go
-│   │   └── auth_service.go
-│   └── middleware/          # 中间件
-│       ├── auth.go
-│       └── logger.go
-├── pkg/
-│   └── utils/               # 工具函数
-├── configs/
-│   └── config.yaml          # 配置文件
-├── migrations/              # 数据库迁移
-├── scripts/                 # 部署脚本
-├── tests/                   # 测试文件
-├── go.mod
-└── go.sum
-```
+使用 [统一项目架构](skills/core-architecture.md)，不要在 main、Handler 构造器和 DAO
+构造器分散装配。Service 使用标准 context，HTTP 传 c.Ctx()，gRPC 传 RPC context；
+由协议层映射业务错误，事务在 Service 开启，迁移显式执行。
+已有项目按文档迁移并保持接口、表名与启动参数兼容，不由生成器自动搬迁。
 
 ### 2. 错误处理
 
@@ -3069,7 +3039,15 @@ func (h *Handler) GetByID(c core.Ctx) error {}
 
 ## 版本历史
 
-### v3.1.57 (当前版本)
+### v3.1.72
+
+- 统一下游项目的 `cmd/main.go → internal/app` 装配与 `handler/grpc → services → dao → models` 分层，新增可运行标准样例及真实生成验收。
+- corectl 项目模板拆分为嵌入文件，补齐参数/版本校验、目录独占创建、显式迁移、gRPC protobuf 工具和注册顺序。
+- 新增 `corectl gen enums [目录]` 与 `--check`，扫描 `*_enums.yaml`/`enums.yaml` 并原地生成，检查包名、符号冲突、输出归属和 Go 特殊文件名，保护手写文件。
+- 保留 coregen 单文件入口；枚举配置校验更严格，旧无 Source 标记产物切换扫描模式前需人工确认并移除。持久化 iota 值只追加、不重排。
+- 脚手架默认依赖基线仍为已验证的 Core v3.1.71；本次生成器与枚举扫描能力通过 v3.1.72 分发。
+
+### v3.1.57
 
 - 修复 HTTP 路由树未应用 `case-sensitive: false` 的问题，支持 `/transferIn` 与 `/transferin` 兼容；默认保持大小写敏感。
 - 保留参数名、参数值、query 和原始 URL，统一注册、中间件、Group 及移除行为，并补充回归测试。
@@ -3259,7 +3237,7 @@ core.RegHandleFactory(func() core.Module { return &UserHandler{} })
 func (h *UserHandler) Prepare(app *core.Core) error {
     db := app.Conn()
     if db == nil { return core.ErrNoConfig }
-    h.svc = service.NewUserService(dao.NewUserDAO(db))
+    h.svc = services.NewUserService(dao.NewUserDAO(db))
     return nil
 }
 ```

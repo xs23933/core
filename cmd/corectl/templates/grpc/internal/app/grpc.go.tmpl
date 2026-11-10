@@ -1,0 +1,17 @@
+package app
+
+import (
+	"github.com/xs23933/core/v3"
+	"google.golang.org/grpc"
+	pb "{{.ModulePath}}/gen/user/v1"
+	rpc "{{.ModulePath}}/internal/grpc"
+	"{{.ModulePath}}/internal/services"
+)
+
+func register(engine *core.Core, svc *services.UserService) error {
+	engine.RegisterGRPCService(func(server *grpc.Server) { pb.RegisterUserServiceServer(server, rpc.NewUserServer(svc)) })
+	if engine.Conf.GetBool("etcd.enabled", false) {
+		return engine.EnableEtcdRegistry(nil)
+	}
+	return nil
+}

@@ -1,0 +1,57 @@
+package services
+
+import (
+	"context"
+	"errors"
+
+	"github.com/xs23933/core/v3"
+	"github.com/xs23933/uid"
+	"gorm.io/gorm"
+	"{{.ModulePath}}/internal/dao"
+	domain "{{.ModulePath}}/internal/domain/user"
+	"{{.ModulePath}}/internal/models"
+)
+
+type UserService struct{ users *dao.UserDAO }
+
+func NewUserService(users *dao.UserDAO) *UserService { return &UserService{users: users} }
+
+type UserResult struct {
+	ID       string `json:"id"`
+	Username string `json:"username"`
+	Status   string `json:"status"`
+}
+
+func userResult(row *models.User) UserResult {
+	return UserResult{ID: row.ID.String(), Username: row.Username, Status: row.Status.String()}
+}
+
+func (s *UserService) Get(ctx context.Context, id string) (*UserResult, error) {
+	if _, err := uid.FromString(id); err != nil {
+		return nil, domain.ErrInvalidQuery
+	}
+	row, err := s.users.GetByID(ctx, id)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, domain.ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	result := userResult(row)
+	return &result, nil
+}
+
+func (s *UserService) List(ctx context.Context, page, size int) (core.Page[UserResult], error) {
+	if page < 1 || size < 1 || size > 100 {
+		return core.Page[UserResult]{}, domain.ErrInvalidQuery
+	}
+	rows, err := s.users.List(ctx, page, size)
+	if err != nil {
+		return core.Page[UserResult]{}, err
+	}
+	result := core.Page[UserResult]{P: rows.P, L: rows.L, Total: rows.Total, Extra: rows.Extra, Data: make([]UserResult, 0, len(rows.Data))}
+	for i := range rows.Data {
+		result.Data = append(result.Data, userResult(&rows.Data[i]))
+	}
+	return result, nil
+}

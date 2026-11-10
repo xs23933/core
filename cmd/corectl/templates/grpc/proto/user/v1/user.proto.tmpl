@@ -1,0 +1,13 @@
+syntax = "proto3";
+package user.v1;
+option go_package = "{{.ModulePath}}/gen/user/v1;userv1";
+
+service UserService {
+ rpc GetUser(GetUserRequest) returns (GetUserResponse);
+ rpc ListUsers(ListUsersRequest) returns (ListUsersResponse);
+}
+message User { string id = 1; string username = 2; string status = 3; }
+message GetUserRequest { string id = 1; }
+message GetUserResponse { User user = 1; }
+message ListUsersRequest { int32 page = 1; int32 size = 2; }
+message ListUsersResponse { repeated User users = 1; int64 total = 2; }

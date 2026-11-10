@@ -19,3 +19,8 @@ corectl*
 .worktrees/
 docs
 graphify-out
+
+# Source templates and runnable standard example belong in version control.
+!/cmd/corectl/
+!/cmd/corectl/**
+!/example/standard/**/*.yaml

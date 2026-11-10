@@ -6,6 +6,11 @@ tags: [go, core-framework, model, gorm, database, uuid, money]
 
 # Core Model 开发技能
 
+
+新项目的模型放 internal/models，由 internal/app 注入数据库；目录与 domain 边界见
+[core-architecture.md](core-architecture.md)。带 GORM 支持的 YAML 枚举同目录生成，
+参见 [core-gen.md](core-gen.md)；构造器不执行迁移。
+
 ## 触发条件
 
 当用户请求以下内容时激活此 Skill：

@@ -1,0 +1,61 @@
+package grpc
+
+import (
+	"context"
+	"errors"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+	pb "{{.ModulePath}}/gen/user/v1"
+	domain "{{.ModulePath}}/internal/domain/user"
+	"{{.ModulePath}}/internal/services"
+)
+
+type UserServer struct {
+	pb.UnimplementedUserServiceServer
+	service *services.UserService
+}
+
+func NewUserServer(service *services.UserService) *UserServer { return &UserServer{service: service} }
+
+func rpcError(err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, domain.ErrNotFound):
+		return status.Error(codes.NotFound, err.Error())
+	case errors.Is(err, domain.ErrInvalidQuery):
+		return status.Error(codes.InvalidArgument, err.Error())
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return status.FromContextError(err).Err()
+	default:
+		return status.Error(codes.Internal, "internal server error")
+	}
+}
+
+func (s *UserServer) GetUser(ctx context.Context, req *pb.GetUserRequest) (*pb.GetUserResponse, error) {
+	result, err := s.service.Get(ctx, req.GetId())
+	if err != nil {
+		return nil, rpcError(err)
+	}
+	return &pb.GetUserResponse{User: &pb.User{Id: result.ID, Username: result.Username, Status: result.Status}}, nil
+}
+
+func (s *UserServer) ListUsers(ctx context.Context, req *pb.ListUsersRequest) (*pb.ListUsersResponse, error) {
+	page, size := req.GetPage(), req.GetSize()
+	if page == 0 {
+		page = 1
+	}
+	if size == 0 {
+		size = 20
+	}
+	result, err := s.service.List(ctx, int(page), int(size))
+	if err != nil {
+		return nil, rpcError(err)
+	}
+	users := make([]*pb.User, 0, len(result.Data))
+	for _, user := range result.Data {
+		users = append(users, &pb.User{Id: user.ID, Username: user.Username, Status: user.Status})
+	}
+	return &pb.ListUsersResponse{Users: users, Total: result.Total}, nil
+}

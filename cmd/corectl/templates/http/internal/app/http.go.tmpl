@@ -1,0 +1,14 @@
+package app
+
+import (
+	"github.com/xs23933/core/v3"
+	"github.com/xs23933/core/v3/middleware/requestid"
+	"{{.ModulePath}}/internal/handler"
+	"{{.ModulePath}}/internal/services"
+)
+
+func register(engine *core.Core, svc *services.UserService) error {
+	engine.Use(requestid.New())
+	core.RegHandle(handler.NewUserHandler(svc))
+	return nil
+}

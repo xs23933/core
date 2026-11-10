@@ -1,0 +1,30 @@
+// Package app owns dependency assembly. The demo runs one Core per process.
+package app
+
+import (
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/xs23933/core/v3"
+	"github.com/xs23933/core/v3/example/standard/internal/dao"
+	"github.com/xs23933/core/v3/example/standard/internal/models"
+	"github.com/xs23933/core/v3/example/standard/internal/services"
+)
+
+func Run(configFile string, migrate bool) (err error) {
+	engine := core.New(core.LoadConfigFile(configFile))
+	defer func() { err = errors.Join(err, engine.ShutdownWithTimeout(10*time.Second)) }()
+	db := engine.Conn()
+	if db == nil {
+		return fmt.Errorf("default database is not configured")
+	}
+	if migrate {
+		return db.WithContext(engine.Ctx).AutoMigrate(&models.User{})
+	}
+	svc := services.NewUserService(dao.NewUserDAO(db))
+	if err := register(engine, svc); err != nil {
+		return err
+	}
+	return engine.Run()
+}

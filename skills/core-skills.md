@@ -12,7 +12,7 @@ Core Framework v3 是一个轻量级企业级 Go Web 框架，模块路径为 `g
 
 | 层级 | 技术选型 | 说明 |
 | ---- | -------- | ---- |
-| 语言 | Go 1.24+ | 高性能编译型语言 |
+| 语言 | Go 1.25.0+ | 高性能编译型语言 |
 | Web 框架 | Core Framework v3 | 自研轻量级框架 |
 | ORM | GORM v2 | 支持 MySQL/PostgreSQL/SQLite/ClickHouse |
 | 缓存 | go-redis/v9 | Redis 客户端 |
@@ -29,7 +29,7 @@ Core Framework v3 是一个轻量级企业级 Go Web 框架，模块路径为 `g
 
 - **自动路由注册**：Handler 方法名即路由，无需手动配置路由表
 - **默认健康检查**：内置 `GET /health` 返回 `204 No Content`，业务同路径注册会覆盖默认实现
-- **DDD 分层架构**：handler → service → dao → model 清晰分层
+- **业务分层与装配**：cmd → app 装配，handler/grpc → services → dao → models
 - **双协议兼容**：Service 层同时支持 HTTP 和 gRPC 调用
 - **多数据库支持**：MySQL、PostgreSQL、SQLite、ClickHouse 统一 GORM 接口
 - **服务治理**：内建 etcd 注册发现、gRPC 网关自动路由映射
@@ -50,6 +50,7 @@ Core Framework v3 是一个轻量级企业级 Go Web 框架，模块路径为 `g
 ```
 skills/
 ├── core-handler.md          # RESTful Handler 创建与自动路由注册
+├── core-architecture.md     # 下游目录、装配、领域边界与迁移
 ├── core-model.md            # 数据模型定义、GORM 类型、分页查询、事务
 ├── core-service.md          # 业务逻辑层编写（兼容 HTTP/gRPC）
 ├── core-middleware.md       # 中间件开发（CORS/限流/Metrics/RequestID/compress/br/gzip/zstd/SSE）
@@ -69,6 +70,8 @@ skills/
 ├── core-fileupload.md       # 文件上传（SaveFile/FormFile/ReadBody 绑定/校验）
 ├── core-ctx.md              # Ctx 上下文使用规范（避坑指南/场景模板）
 ├── core-test.md             # 测试编写（Handler/路由/中间件/Ctx 模拟）
+├── core-corectl.md         # 项目脚手架、版本与生成验收
+├── core-gen.md             # 枚举目录扫描、--check、单文件生成
 └── core-refactor.md         # 代码重构指南（文件拆分/迁移/性能优化）
 ```
 
@@ -192,19 +195,16 @@ gRPC 请求 ────→│  proto → DTO     │─────────
 
 | 层级 | 输入类型 | 输出类型 | 上下文 |
 | ---- | -------- | -------- | ------ |
-| Handler | `dto.XxxRequest` | `core.Ctx` 响应 | `core.Ctx` |
-| Service | `dto.XxxRequest` / 基础类型 | `vo.XxxVO` + `error` | `context.Context` |
-| DAO | `context.Context` + 查询条件 | `model.Xxx` + `error` | `context.Context` |
+| Handler | `services.XxxInput` | `core.Ctx` 响应 | `core.Ctx` |
+| Service | `services.XxxInput` / 基础类型 | `services.XxxResult` + `error` | `context.Context` |
+| DAO | `context.Context` + 查询条件 | `models.Xxx` + `error` | `context.Context` |
 
-**返回值格式**：
+**当前标准用例**：
 ```go
-// Service 标准方法签名
-func (s *UserService) GetUserByID(ctx context.Context, id string) (*vo.UserVO, error)
-func (s *UserService) GetUserList(ctx context.Context, page, size int) ([]vo.UserVO, int64, error)
-func (s *UserService) CreateUser(ctx context.Context, req *dto.CreateUserRequest) (*vo.UserVO, error)
-func (s *UserService) UpdateUser(ctx context.Context, id string, req *dto.UpdateUserRequest) (*vo.UserVO, error)
-func (s *UserService) DeleteUser(ctx context.Context, id string) error
+func (s *UserService) Get(ctx context.Context, id string) (*UserResult, error)
+func (s *UserService) List(ctx context.Context, page, size int) (core.Page[UserResult], error)
 ```
+UserResult 在 services 就近定义；具体实现与测试见 example/standard/internal/services。
 
 ---
 
@@ -430,442 +430,15 @@ Take(ctx, key, &out, loader) → Redis Hit? → 返回
 
 ---
 
-## 三、完整使用规范
-
-### 3.1 标准项目目录结构
-
-```
-your-project/
-├── main.go                      # 应用入口
-├── config.yaml                  # 配置文件
-├── proto/                       # Protobuf 定义
-│   └── user/v1/
-│       └── user.proto
-├── internal/
-│   ├── handler/                 # HTTP Handler 层
-│   │   └── user_handler.go
-│   ├── grpc/                    # gRPC 服务实现层
-│   │   └── user_grpc.go
-│   ├── service/                 # 业务逻辑层（协议无关）
-│   │   └── user_service.go
-│   ├── dao/                     # 数据访问层
-│   │   └── user_dao.go
-│   ├── model/                   # 数据模型层
-│   │   └── user_model.go
-│   ├── dto/                     # 请求参数定义
-│   │   └── user_dto.go
-│   ├── vo/                      # 响应数据结构
-│   │   └── user_vo.go
-│   └── middleware/              # 自定义中间件
-│       └── auth.go
-└── go.mod
-```
-
-### 3.2 完整 CRUD 调用链路示例
-
-以用户模块为例，展示 HTTP 和 gRPC 两种协议如何共享同一个 Service 层。
-
-#### Step 1: 定义 Model（internal/model/user_model.go）
-
-```go
-package model
-
-import "github.com/xs23933/core/v3"
-
-type User struct {
-    core.Model
-    Username string `json:"username" gorm:"size:64;uniqueIndex;not null"`
-    Email    string `json:"email" gorm:"size:128;uniqueIndex"`
-    Password string `json:"-" gorm:"size:96;not null"`
-    Phone    string `json:"phone" gorm:"size:20"`
-    Status   int    `json:"status" gorm:"default:1"`
-}
-
-func (User) TableName() string {
-    return "users"
-}
-```
-
-#### Step 2: 定义 DTO/VO
-
-```go
-// internal/dto/user_dto.go
-package dto
-
-type CreateUserRequest struct {
-    Username string `json:"username" validate:"required,min=3,max=64"`
-    Email    string `json:"email" validate:"required,email"`
-    Password string `json:"password" validate:"required,min=6,max=96"`
-    Phone    string `json:"phone" validate:"omitempty,len=11"`
-}
-
-type UpdateUserRequest struct {
-    Email  string `json:"email" validate:"omitempty,email"`
-    Phone  string `json:"phone" validate:"omitempty,len=11"`
-    Status *int   `json:"status" validate:"omitempty,oneof=0 1"`
-}
-
-// internal/vo/user_vo.go
-package vo
-
-type UserVO struct {
-    ID        string `json:"id"`
-    Username  string `json:"username"`
-    Email     string `json:"email"`
-    Phone     string `json:"phone"`
-    Status    int    `json:"status"`
-    CreatedAt string `json:"created_at"`
-    UpdatedAt string `json:"updated_at"`
-}
-
-func ToUserVO(m *model.User) *UserVO {
-    return &UserVO{
-        ID:        m.ID.String(),
-        Username:  m.Username,
-        Email:     m.Email,
-        Phone:     m.Phone,
-        Status:    m.Status,
-        CreatedAt: m.CreatedAt.Format("2006-01-02 15:04:05"),
-        UpdatedAt: m.UpdatedAt.Format("2006-01-02 15:04:05"),
-    }
-}
-```
-
-#### Step 3: 定义 DAO（internal/dao/user_dao.go）
-
-```go
-package dao
-
-import (
-    "context"
-    "github.com/xs23933/core/v3"
-    "your-project/internal/model"
-)
-
-type UserDAO struct{}
-
-var UserDAOApp = &UserDAO{}
-
-func (d *UserDAO) Create(ctx context.Context, user *model.User) error {
-    return core.Conn().WithContext(ctx).Create(user).Error
-}
-
-func (d *UserDAO) GetByID(ctx context.Context, id string) (*model.User, error) {
-    var user model.User
-    err := core.Conn().WithContext(ctx).First(&user, "id = ?", id).Error
-    return &user, err
-}
-
-func (d *UserDAO) List(ctx context.Context, page, size int) ([]model.User, int64, error) {
-    var users []model.User
-    whr := &core.Map{"p": page, "l": size, "desc": "created_at"}
-    result, err := core.FindPageBy(whr, &users, core.Conn().WithContext(ctx))
-    return users, result.Total, err
-}
-
-func (d *UserDAO) Update(ctx context.Context, id string, updates map[string]any) error {
-    return core.Conn().WithContext(ctx).Model(&model.User{}).Where("id = ?", id).Updates(updates).Error
-}
-
-func (d *UserDAO) Delete(ctx context.Context, id string) error {
-    return core.Conn().WithContext(ctx).Delete(&model.User{}, "id = ?", id).Error
-}
-```
-
-#### Step 4: 定义 Service（internal/service/user_service.go）
-
-```go
-package service
-
-import (
-    "context"
-    "errors"
-    "github.com/xs23933/core/v3"
-    "your-project/internal/dao"
-    "your-project/internal/dto"
-    "your-project/internal/model"
-    "your-project/internal/vo"
-    "gorm.io/gorm"
-)
-
-type UserService struct {
-    dao *dao.UserDAO
-}
-
-func NewUserService() *UserService {
-    return &UserService{dao: dao.UserDAOApp}
-}
-
-func (s *UserService) GetUserList(ctx context.Context, page, size int) ([]vo.UserVO, int64, error) {
-    users, total, err := s.dao.List(ctx, page, size)
-    if err != nil {
-        return nil, 0, err
-    }
-    result := make([]vo.UserVO, len(users))
-    for i, u := range users {
-        result[i] = *vo.ToUserVO(&u)
-    }
-    return result, total, nil
-}
-
-func (s *UserService) GetUserByID(ctx context.Context, id string) (*vo.UserVO, error) {
-    user, err := s.dao.GetByID(ctx, id)
-    if err != nil {
-        if errors.Is(err, gorm.ErrRecordNotFound) {
-            return nil, core.NewError(404, "user not found")
-        }
-        return nil, err
-    }
-    return vo.ToUserVO(user), nil
-}
-
-func (s *UserService) CreateUser(ctx context.Context, req *dto.CreateUserRequest) (*vo.UserVO, error) {
-    hash, err := core.HashPassword(req.Password)
-    if err != nil {
-        return nil, err
-    }
-    user := &model.User{
-        Username: req.Username,
-        Email:    req.Email,
-        Password: hash,
-        Phone:    req.Phone,
-    }
-    if err := s.dao.Create(ctx, user); err != nil {
-        return nil, err
-    }
-    return vo.ToUserVO(user), nil
-}
-
-func (s *UserService) UpdateUser(ctx context.Context, id string, req *dto.UpdateUserRequest) (*vo.UserVO, error) {
-    updates := map[string]any{}
-    if req.Email != "" {
-        updates["email"] = req.Email
-    }
-    if req.Phone != "" {
-        updates["phone"] = req.Phone
-    }
-    if req.Status != nil {
-        updates["status"] = *req.Status
-    }
-    if err := s.dao.Update(ctx, id, updates); err != nil {
-        return nil, err
-    }
-    return s.GetUserByID(ctx, id)
-}
-
-func (s *UserService) DeleteUser(ctx context.Context, id string) error {
-    return s.dao.Delete(ctx, id)
-}
-```
-
-#### Step 5: 定义 HTTP Handler（internal/handler/user_handler.go）
-
-```go
-package handler
-
-import (
-    "github.com/xs23933/core/v3"
-    "your-project/internal/dto"
-    "your-project/internal/service"
-)
-
-type UserHandler struct {
-    core.Handler
-    svc *service.UserService
-}
-
-func init() {
-    core.RegHandle(&UserHandler{svc: service.NewUserService()})
-}
-
-func (h *UserHandler) Init() {
-    h.Prefix("/api/v1/users")
-}
-
-func (h *UserHandler) Preload(c core.Ctx) error {
-    return c.Next()
-}
-
-func (h *UserHandler) Get(c core.Ctx) {
-    page := c.QueryInt("page", 1)
-    size := c.QueryInt("size", 20)
-    users, total, err := h.svc.GetUserList(c.StdContext(), page, size)
-    c.ToJSON(core.Map{"list": users, "total": total, "page": page, "size": size}, err)
-}
-
-func (h *UserHandler) GetByID(c core.Ctx) {
-    id := c.Params("id")
-    user, err := h.svc.GetUserByID(c.StdContext(), id)
-    c.ToJSON(user, err)
-}
-
-func (h *UserHandler) Post(c core.Ctx) {
-    var req dto.CreateUserRequest
-    if err := c.ReadBody(&req); err != nil {
-        c.ToJSON(nil, err)
-        return
-    }
-    if err := c.Validate(&req); err != nil {
-        c.ToJSON(nil, err)
-        return
-    }
-    user, err := h.svc.CreateUser(c.StdContext(), &req)
-    c.ToJSON(user, err)
-}
-
-func (h *UserHandler) Put_id(c core.Ctx) {
-    id := c.Params("id")
-    var req dto.UpdateUserRequest
-    if err := c.ReadBody(&req); err != nil {
-        c.ToJSON(nil, err)
-        return
-    }
-    user, err := h.svc.UpdateUser(c.StdContext(), id, &req)
-    c.ToJSON(user, err)
-}
-
-func (h *UserHandler) Delete_id(c core.Ctx) {
-    id := c.Params("id")
-    err := h.svc.DeleteUser(c.StdContext(), id)
-    c.ToJSON(nil, err)
-}
-```
-
-#### Step 6: 定义 gRPC Handler（internal/grpc/user_grpc.go）
-
-```go
-package grpc
-
-import (
-    "context"
-    "github.com/xs23933/core/v3"
-    "your-project/internal/dto"
-    "your-project/internal/service"
-    pb "your-project/proto/user/v1"
-    "google.golang.org/grpc"
-)
-
-type UserService struct {
-    pb.UnimplementedUserServiceServer
-    svc *service.UserService
-}
-
-func NewUserGRPCService(app *core.Core) {
-    pb.RegisterUserServiceServer(app.GetGRPCServer(), &UserService{
-        svc: service.NewUserService(),
-    })
-}
-
-func (s *UserService) GetProfile(ctx context.Context, req *pb.GetProfileRequest) (*pb.User, error) {
-    vo, err := s.svc.GetUserByID(ctx, req.Id)
-    if err != nil {
-        return nil, err
-    }
-    return &pb.User{
-        Id:       vo.ID,
-        Username: vo.Username,
-        Email:    vo.Email,
-        Phone:    vo.Phone,
-        Status:   int32(vo.Status),
-    }, nil
-}
-
-func (s *UserService) CreateUser(ctx context.Context, req *pb.CreateUserRequest) (*pb.User, error) {
-    dtoReq := &dto.CreateUserRequest{
-        Username: req.Username,
-        Email:    req.Email,
-        Password: req.Password,
-        Phone:    req.Phone,
-    }
-    vo, err := s.svc.CreateUser(ctx, dtoReq)
-    if err != nil {
-        return nil, err
-    }
-    return &pb.User{
-        Id:       vo.ID,
-        Username: vo.Username,
-        Email:    vo.Email,
-        Phone:    vo.Phone,
-        Status:   int32(vo.Status),
-    }, nil
-}
-```
-
-#### Step 7: 应用入口（main.go）
-
-```go
-package main
-
-import (
-    "github.com/xs23933/core/v3"
-    "github.com/xs23933/core/v3/middleware/cors"
-    "github.com/xs23933/core/v3/middleware/requestid"
-    _ "your-project/internal/handler"
-    "your-project/internal/grpc"
-    "google.golang.org/grpc"
-)
-
-func main() {
-    app := core.New(core.LoadConfigFile("config.yaml"))
-
-    app.Use(requestid.New())
-    app.Use(cors.New())
-
-    app.RegisterGRPCService(func(s *grpc.Server) {
-        grpc.NewUserGRPCService(app)
-    })
-
-    if err := app.EnableEtcdRegistry(nil); err != nil {
-        panic(err)
-    }
-
-    if err := app.Run(); err != nil {
-        panic(err)
-    }
-}
-```
-
-### 3.3 标准模块调用流程总结
-
-```
-                    HTTP 请求                          gRPC 请求
-                       │                                  │
-                       ▼                                  ▼
-              ┌────────────────┐                ┌────────────────┐
-              │  Middleware    │                │  Interceptor   │
-              │  (鉴权/限流)    │                │  (error wrap)  │
-              └───────┬────────┘                └───────┬────────┘
-                      │                                  │
-                      ▼                                  ▼
-              ┌────────────────┐                ┌────────────────┐
-              │  Handler       │                │  gRPC Handler  │
-              │  参数解析/DTO   │                │  proto → DTO   │
-              │  ToJSON/VO     │                │  VO → proto    │
-              └───────┬────────┘                └───────┬────────┘
-                      │                                  │
-                      └──────────────┬───────────────────┘
-                                     │
-                                     ▼
-                            ┌────────────────┐
-                            │    Service     │
-                            │  (协议无关)     │
-                            │  业务逻辑/事务  │
-                            └───────┬────────┘
-                                    │
-                                    ▼
-                            ┌────────────────┐
-                            │      DAO       │
-                            │  数据访问/缓存  │
-                            └───────┬────────┘
-                                    │
-                                    ▼
-                            ┌────────────────┐
-                            │     Model      │
-                            │  数据结构定义   │
-                            └────────────────┘
-```
-
----
+## 三、项目目录、装配与标准样例
+
+新项目和迁移先读 [core-architecture.md](core-architecture.md)，统一使用 internal/app、
+services、models；domain 与数据库映射分离。HTTP/gRPC 共用同一业务实现。
+可运行链路见 [example/standard](../example/standard/README.md)，生成方式见
+[core-corectl.md](core-corectl.md)。能力演示不强制扩展成完整业务应用。
+
+`corectl gen enums [目录]` 同目录生成 *_enums.yaml/enums.yaml，--check 检测缺失或过期；
+单文件兼容、输出归属和 iota 持久化限制见 [core-gen.md](core-gen.md)。
 
 ## 四、行业最佳实践
 
@@ -1018,7 +591,7 @@ func main() {
 | `c.SaveFile("file", dir)` | 保存上传文件 | `rel, abs, _ := c.SaveFile("file", "./uploads")` |
 | `c.GetHeader("Authorization")` | 获取请求头 | `token := c.GetHeader("Authorization")` |
 | `c.Set("key", val)` | 设置上下文变量 | `c.Set("user_id", uid)` |
-| `c.StdContext()` | 获取标准 context.Context | `ctx := c.StdContext()` |
+| `c.Ctx()` | 获取标准 context.Context | `ctx := c.Ctx()` |
 
 ### 5.2 数据库操作
 
@@ -1055,7 +628,7 @@ func main() {
 | 项目 | 信息 |
 | ---- | ---- |
 | 框架版本 | v3 |
-| Go 版本要求 | 1.24+ |
+| Go 版本要求 | 1.25.0+ |
 | 模块路径 | `github.com/xs23933/core/v3` |
 | 许可证 | LICENSE 文件 |
 | 技能文档版本 | 1.0.0 |

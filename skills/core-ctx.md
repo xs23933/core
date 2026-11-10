@@ -6,6 +6,10 @@ tags: [go, core-framework, ctx, context]
 
 # Core Ctx 使用规范
 
+
+HTTP core.Ctx 的标准 context 使用 c.Ctx() 或 c.Context()，没有 StdContext 方法。
+StdContext() 属于 core.NewGRPCCtx 返回的 RPC 适配对象；不要混用模板。
+
 ## ⚠️ 关键差异（AI 必读）
 
 ### 1. 参数获取：是 `Params()` 不是 `Param()`

@@ -1,110 +1,144 @@
 package main
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"go/format"
+	"go/version"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"text/template"
+
+	"github.com/xs23933/core/v3/gen"
+	"golang.org/x/mod/module"
+	"golang.org/x/mod/semver"
 )
 
-// ProjectConfig 项目生成配置
 type ProjectConfig struct {
-	ProjectName string // 项目名称（用于目录名）
-	ModulePath  string // Go module 路径，如 github.com/example/myapp
-	GoVersion   string // Go 版本号
-	CoreVersion string // Core Framework 版本号，如 v3.1.18
-	ProjectType string // 项目类型: http | grpc
-	OutputDir   string // 输出目录
+	ProjectName string
+	ModulePath  string
+	GoVersion   string
+	CoreVersion string
+	ProjectType string
+	OutputDir   string
 }
 
-// TemplateFile 定义需要生成的文件模板
-type TemplateFile struct {
-	Path     string // 相对于项目根目录的输出路径
-	Template string // 模板内容
-}
+type TemplateFile struct{ Path, Template string }
 
-// getProjectTemplates 返回项目所需的全部文件模板
-func getProjectTemplates(cfg *ProjectConfig) []TemplateFile {
-	common := []TemplateFile{
-		{Path: "go.mod", Template: goModTemplate},
-		{Path: "internal/models/user.go", Template: userModelTemplate},
-		{Path: "internal/dao/user.go", Template: userDaoTemplate},
-		{Path: "internal/service/user.go", Template: userServiceTemplate},
-	}
-
-	if cfg.ProjectType == "grpc" {
-		return append(common,
-			TemplateFile{Path: "cmd/main.go", Template: mainGoGrpcTemplate},
-			TemplateFile{Path: "config.yaml", Template: configYamlGrpcTemplate},
-			TemplateFile{Path: "proto/user/v1/user.proto", Template: protoTemplate},
-			TemplateFile{Path: "internal/grpc/user.go", Template: grpcUserTemplate},
-		)
-	}
-	return append(common,
-		TemplateFile{Path: "cmd/main.go", Template: mainGoTemplate},
-		TemplateFile{Path: "config.yaml", Template: configYamlTemplate},
-		TemplateFile{Path: "internal/handler/handler.go", Template: handlerGoTemplate},
-		TemplateFile{Path: "internal/middleware/auth.go", Template: middlewareAuthTemplate},
-	)
-}
-
-// CreateProject 根据配置创建完整的项目目录和文件
-func CreateProject(cfg *ProjectConfig) error {
-	projectDir := filepath.Join(cfg.OutputDir, cfg.ProjectName)
-
-	// 检查目标目录是否已存在
-	if _, err := os.Stat(projectDir); err == nil {
-		return fmt.Errorf("directory %s already exists", projectDir)
-	}
-
-	fmt.Printf("Creating project %s ...\n", cfg.ProjectName)
-	fmt.Printf("  Module:      %s\n", cfg.ModulePath)
-	fmt.Printf("  Type:        %s\n", cfg.ProjectType)
-	fmt.Printf("  Core:        %s\n", cfg.CoreVersion)
-	fmt.Printf("  Output:      %s\n\n", projectDir)
-
-	templates := getProjectTemplates(cfg)
-
-	created := 0
-	for _, f := range templates {
-		targetPath := filepath.Join(projectDir, f.Path)
-		if err := renderTemplate(cfg, f.Template, targetPath); err != nil {
-			return fmt.Errorf("render %s: %w", f.Path, err)
+func getProjectTemplates(cfg *ProjectConfig) ([]TemplateFile, error) {
+	var files []TemplateFile
+	for _, kind := range []string{"common", cfg.ProjectType} {
+		prefix := "templates/" + kind + "/"
+		err := fs.WalkDir(projectTemplates, strings.TrimSuffix(prefix, "/"), func(path string, entry fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if entry.IsDir() {
+				return nil
+			}
+			content, err := projectTemplates.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			files = append(files, TemplateFile{Path: strings.TrimSuffix(strings.TrimPrefix(path, prefix), ".tmpl"), Template: string(content)})
+			return nil
+		})
+		if err != nil {
+			return nil, err
 		}
-		created++
-		fmt.Printf("  CREATED  %s\n", f.Path)
 	}
+	return files, nil
+}
 
-	fmt.Printf("\nDone. %d files created in %s\n", created, projectDir)
-	fmt.Printf("\nNext steps:\n")
-	fmt.Printf("  cd %s\n", cfg.ProjectName)
-	fmt.Printf("  go mod tidy\n")
-	fmt.Printf("  go run cmd/main.go\n")
-
+func validateProject(cfg *ProjectConfig) error {
+	if cfg == nil {
+		return fmt.Errorf("project config is required")
+	}
+	if err := validateInput(cfg.ProjectName); err != nil {
+		return err
+	}
+	if err := module.CheckImportPath(cfg.ModulePath); err != nil {
+		return fmt.Errorf("module: %w", err)
+	}
+	if cfg.ProjectType != "http" && cfg.ProjectType != "grpc" {
+		return fmt.Errorf("project type must be http or grpc")
+	}
+	if !version.IsValid("go"+cfg.GoVersion) || version.Compare("go"+cfg.GoVersion, "go1.25.0") < 0 {
+		return fmt.Errorf("Go version must be a valid version >= 1.25.0")
+	}
+	if !semver.IsValid(cfg.CoreVersion) || semver.Canonical(cfg.CoreVersion) != cfg.CoreVersion || strings.Contains(cfg.CoreVersion, "+") || semver.Major(cfg.CoreVersion) != "v3" {
+		return fmt.Errorf("Core version must be a concrete v3 semantic version")
+	}
 	return nil
 }
 
-// renderTemplate 解析模板并写入目标文件
-func renderTemplate(cfg *ProjectConfig, tmplStr, targetPath string) error {
-	tmpl, err := template.New("").Parse(tmplStr)
+func validateInput(name string) error {
+	if !regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`).MatchString(name) {
+		return fmt.Errorf("project name must start with a letter or digit and contain only letters, digits, '.', '_' or '-'")
+	}
+	return nil
+}
+
+// CreateProject validates and renders everything before exclusively creating a directory.
+func CreateProject(cfg *ProjectConfig) (err error) {
+	if err := validateProject(cfg); err != nil {
+		return err
+	}
+	templates, err := getProjectTemplates(cfg)
 	if err != nil {
-		return fmt.Errorf("parse template: %w", err)
+		return err
 	}
-
-	dir := filepath.Dir(targetPath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("create directory %s: %w", dir, err)
+	rendered := make(map[string][]byte)
+	for _, file := range templates {
+		tmpl, err := template.New(file.Path).Option("missingkey=error").Parse(file.Template)
+		if err != nil {
+			return fmt.Errorf("parse %s: %w", file.Path, err)
+		}
+		var buffer bytes.Buffer
+		if err := tmpl.Execute(&buffer, cfg); err != nil {
+			return fmt.Errorf("render %s: %w", file.Path, err)
+		}
+		code := buffer.Bytes()
+		if strings.HasSuffix(file.Path, ".go") {
+			code, err = format.Source(code)
+			if err != nil {
+				return fmt.Errorf("format %s: %w", file.Path, err)
+			}
+		}
+		rendered[file.Path] = code
 	}
-
-	f, err := os.Create(targetPath)
-	if err != nil {
-		return fmt.Errorf("create file: %w", err)
+	// mkdir reserves the new directory without a check/create race.
+	outputDir := cfg.OutputDir
+	if outputDir == "" {
+		outputDir = "."
 	}
-	defer f.Close()
-
-	if err := tmpl.Execute(f, cfg); err != nil {
-		return fmt.Errorf("execute template: %w", err)
+	if err := os.MkdirAll(outputDir, 0o755); err != nil {
+		return err
 	}
-
+	projectDir := filepath.Join(outputDir, cfg.ProjectName)
+	if err := os.Mkdir(projectDir, 0o755); err != nil {
+		return fmt.Errorf("create project: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			err = errors.Join(err, os.RemoveAll(projectDir))
+		}
+	}()
+	for _, file := range templates {
+		target := filepath.Join(projectDir, file.Path)
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(target, rendered[file.Path], 0o644); err != nil {
+			return err
+		}
+	}
+	if err := gen.GenerateEnumsInDir(projectDir, false); err != nil {
+		return err
+	}
 	return nil
 }

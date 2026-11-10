@@ -1,11 +1,18 @@
 package gen
 
 import (
+	"bytes"
 	"fmt"
+	"go/build"
+	"go/format"
+	"go/token"
+	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"text/template"
+	"unicode"
 )
 
 // Enum 定义单个枚举类型配置。
@@ -40,7 +47,7 @@ import ({{if not .Sensitive}}
 type {{.Name}} uint8
 
 var {{.Name}}Mapping = []string{
-	{{range .Values}}"{{.}}", {{end}}
+	{{range .Values}}{{quote .}}, {{end}}
 }
 
 const ({{range $i, $val := .Values}}
@@ -194,57 +201,110 @@ func Parse{{.Name}}(in any) any {
 }
 `
 
-// GenerateEnums 为配置中的所有枚举生成 Go 源文件。
-func GenerateEnums(cfg EnumConfig) error {
+// RenderEnums validates and formats a batch without touching the filesystem.
+func RenderEnums(cfg EnumConfig) (map[string][]byte, error) {
 	if cfg.Package == "" {
 		cfg.Package = "constants"
+	}
+	if !token.IsIdentifier(cfg.Package) || cfg.Package == "_" {
+		return nil, fmt.Errorf("invalid package %q", cfg.Package)
+	}
+	if len(cfg.Enums) == 0 {
+		return nil, fmt.Errorf("no enums defined")
+	}
+	// An unknown target rejects every recognized GOOS/GOARCH filename suffix.
+	portable := build.Context{GOOS: "coreenum", GOARCH: "coreenum", OpenFile: func(string) (io.ReadCloser, error) { return io.NopCloser(strings.NewReader("package fixture\n")), nil }}
+	names := make(map[string]bool)
+	files := make(map[string][]byte)
+	tmpl, err := template.New("enum").Funcs(template.FuncMap{
+		"nameToConst": func(v string) string { return strings.ToUpper(SnakeCase(v)) },
+		"valToConst":  func(v string) string { return strings.ToUpper(ToFixed(v)) },
+		"quote":       strconv.Quote,
+	}).Parse(enumTemplate)
+	if err != nil {
+		return nil, err
+	}
+	for _, enum := range cfg.Enums {
+		runes := []rune(enum.Name)
+		if !token.IsIdentifier(enum.Name) || len(runes) == 0 || !unicode.IsUpper(runes[0]) {
+			return nil, fmt.Errorf("invalid exported enum name %q", enum.Name)
+		}
+		if len(enum.Values) == 0 || len(enum.Values) > 256 || enum.Values[0] != "none" {
+			return nil, fmt.Errorf("%s: expected 1..256 values starting with none", enum.Name)
+		}
+		symbols := []string{enum.Name, enum.Name + "Mapping", enum.Name + "FromString", "Parse" + enum.Name}
+		values := make(map[string]bool)
+		for _, value := range enum.Values {
+			key := value
+			if !enum.Sensitive {
+				key = strings.ToLower(key)
+			}
+			if values[key] {
+				return nil, fmt.Errorf("%s: duplicate value %q", enum.Name, value)
+			}
+			values[key] = true
+			symbol := strings.ToUpper(SnakeCase(enum.Name)) + "_" + strings.ToUpper(ToFixed(value))
+			if !token.IsIdentifier(symbol) {
+				return nil, fmt.Errorf("%s: invalid value %q", enum.Name, value)
+			}
+			symbols = append(symbols, symbol)
+		}
+		for _, name := range symbols {
+			if names[name] {
+				return nil, fmt.Errorf("duplicate generated identifier %s", name)
+			}
+			names[name] = true
+		}
+		filename := "gen_" + strings.ToLower(SnakeCase(enum.Name)) + ".go"
+		matches, err := portable.MatchFile(".", filename)
+		if err != nil {
+			return nil, err
+		}
+		if !matches || strings.HasSuffix(filename, "_test.go") {
+			return nil, fmt.Errorf("%s: output %s would be restricted by Go filename rules; use an Enum suffix on the type name", enum.Name, filename)
+		}
+		if _, exists := files[filename]; exists {
+			return nil, fmt.Errorf("duplicate output %s", filename)
+		}
+		var buf bytes.Buffer
+		data := struct {
+			EnumConfig
+			Enum
+		}{cfg, enum}
+		if err := tmpl.Execute(&buf, data); err != nil {
+			return nil, fmt.Errorf("render %s: %w", enum.Name, err)
+		}
+		code, err := format.Source(buf.Bytes())
+		if err != nil {
+			return nil, fmt.Errorf("format %s: %w", enum.Name, err)
+		}
+		files[filename] = code
+	}
+	return files, nil
+}
+
+// GenerateEnums retains the explicit single-config output convention.
+func GenerateEnums(cfg EnumConfig) error {
+	files, err := RenderEnums(cfg)
+	if err != nil {
+		return err
 	}
 	if cfg.Output == "" {
 		cfg.Output = "."
 	}
-
+	for name := range files {
+		path := filepath.Join(cfg.Output, name)
+		if err := checkGeneratedTarget(path, ""); err != nil {
+			return err
+		}
+	}
 	if err := os.MkdirAll(cfg.Output, 0o755); err != nil {
-		return fmt.Errorf("create output dir: %w", err)
+		return err
 	}
-
-	funcMap := template.FuncMap{
-		"nameToConst": func(v string) string {
-			return strings.ToUpper(SnakeCase(v))
-		},
-		"valToConst": func(v string) string {
-			return strings.ToUpper(ToFixed(v))
-		},
-	}
-
-	tmpl, err := template.New("enum").Funcs(funcMap).Parse(enumTemplate)
-	if err != nil {
-		return fmt.Errorf("parse template: %w", err)
-	}
-
-	for _, enum := range cfg.Enums {
-		filename := fmt.Sprintf("gen_%s.go", strings.ToLower(SnakeCase(enum.Name)))
-		path := filepath.Join(cfg.Output, filename)
-
-		f, err := os.Create(path)
-		if err != nil {
-			return fmt.Errorf("create %s: %w", path, err)
+	for _, name := range sortedKeys(files) {
+		if err := writeGenerated(filepath.Join(cfg.Output, name), files[name]); err != nil {
+			return err
 		}
-
-		data := struct {
-			EnumConfig
-			Enum
-		}{
-			EnumConfig: cfg,
-			Enum:       enum,
-		}
-
-		if err := tmpl.Execute(f, data); err != nil {
-			f.Close()
-			return fmt.Errorf("execute template for %s: %w", enum.Name, err)
-		}
-		f.Close()
-		fmt.Printf("  generated %s\n", path)
 	}
-
 	return nil
 }

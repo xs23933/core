@@ -1,0 +1,89 @@
+package app
+
+import (
+	"encoding/json"
+	"net"
+	"net/http"
+	"testing"
+	"time"
+
+	"github.com/xs23933/core/v3"
+	"github.com/xs23933/core/v3/example/standard/internal/dao"
+	"github.com/xs23933/core/v3/example/standard/internal/models"
+	"github.com/xs23933/core/v3/example/standard/internal/services"
+	"github.com/xs23933/uid"
+)
+
+func TestHTTPQueries(t *testing.T) {
+	engine := core.New(core.Options{"debug": false, "listen": "127.0.0.1:0", "database": core.Options{"type": "sqlite", "dsn": ":memory:"}})
+	db := engine.Conn()
+	if db == nil {
+		t.Fatal("database missing")
+	}
+	if err := db.AutoMigrate(&models.User{}); err != nil {
+		t.Fatal(err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqlDB.SetMaxOpenConns(1)
+	if err := db.Create(&models.User{Username: "alice", Status: models.USER_STATUS_ACTIVE}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := register(engine, services.NewUserService(dao.NewUserDAO(db))); err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine.Handler = engine
+	done := make(chan error, 1)
+	go func() { done <- engine.Serve(listener) }()
+	t.Cleanup(func() {
+		if err := engine.ShutdownWithTimeout(5 * time.Second); err != nil {
+			t.Error(err)
+		}
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Error(err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Error("server did not stop")
+		}
+	})
+	deadline := time.Now().Add(5 * time.Second)
+	for !engine.ServingReady() {
+		if time.Now().After(deadline) {
+			t.Fatal("server not ready")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	client := &http.Client{Timeout: 3 * time.Second}
+	for _, tc := range []struct {
+		path   string
+		status int
+	}{
+		{"/api/v1/users?p=1&l=20", 200},
+		{"/api/v1/users?p=invalid", 400},
+		{"/api/v1/users?l=101", 400},
+		{"/api/v1/users/invalid", 400},
+		{"/api/v1/users/" + uid.New().String(), 404},
+	} {
+		response, err := client.Get("http://" + listener.Addr().String() + tc.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var body map[string]any
+		err = json.NewDecoder(response.Body).Decode(&body)
+		response.Body.Close()
+		if err != nil || response.StatusCode != tc.status {
+			t.Fatalf("%s: status %d, body %v, err %v", tc.path, response.StatusCode, body, err)
+		}
+		if tc.status == 200 && body["data"] == nil {
+			t.Fatal("list response missing data")
+		}
+	}
+}

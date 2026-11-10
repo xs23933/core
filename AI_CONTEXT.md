@@ -20,7 +20,7 @@ monitor 资源采集使用固定间隔缓存：必须安装 `monitor.New`，`Sna
 
 ## 1. 框架身份
 - **名称**: Core Framework
-- **语言**: Go (Golang 1.24+)
+- **语言**: Go (Golang 1.25.0+)
 - **模块**: `github.com/xs23933/core/v3`
 - **类型**: 轻量级企业级 Web 框架 (类似 Koa.js, Sinatra)
 - **核心特性**: 自动路由注册、GORM 集成、中间件、WebSocket、gRPC/etcd 网关。
@@ -73,17 +73,16 @@ AI 在生成 Handler 时必须严格遵守以下命名约定，禁止手动配�
 - **Catch-all**: 具名 catch-all 如 `/*path` 用 `c.Params("path")` 读取；裸 `/*` 用 `c.Params("*")` 读取。
 
 ### 2.2 项目结构规范
-AI 推荐使用以下 DDD 分层结构：
-```
-/internal
-├── handler/    (控制器：处理请求/响应，调用 service)
-├── service/    (业务逻辑：事务操作，调用 dao/model)
-├── model/      (数据模型：定义表结构)
-├── dao/        (数据访问：复杂查询封装)
-└── middleware/ (中间件)
-```
+
+创建项目、目录调整与依赖装配必须先读 [core-architecture.md](skills/core-architecture.md)。
+标准入口 `cmd/main.go → internal/app`；业务调用 `handler/grpc → services → dao → models`。
+app 负责依赖与生命周期，domain 只放不依赖 Core/GORM 的业务语义。
+DTO/VO 就近定义，不强制增加目录；带 GORM 支持的生成枚举放 models。
+旧项目保持接口/表名/配置兼容，生成器不自动移动文件。
 
 ### 2.3 禁止行为 (AI MUST NOT)
+
+以下路由和分层约定用于下游业务代码；Core 框架内部、底层路由与测试可以显式注册路由。
 
 AI 生成代码时禁止：
 
@@ -141,7 +140,7 @@ Handler 只负责：
 推荐：
 
 ```text
-handler -> service -> dao -> model
+handler/grpc -> services -> dao -> models
 ```
 
 #### 错误处理
@@ -170,40 +169,11 @@ data, _ := xxx()
 
 ---
 
-### 2.4 DTO / VO 规范
+### 2.4 输入与输出类型
 
-推荐使用：
-
-```text
-model -> 数据库存储结构
-dto   -> 请求参数结构
-vo    -> 响应结构
-```
-
-禁止直接返回数据库 model 给前端。
-
-示例：
-
-```go
-type User struct {
-    core.Model
-    Username string
-    Password string
-}
-
-type UserVO struct {
-    ID       uint   `json:"id"`
-    Username string `json:"username"`
-}
-```
-
-推荐：
-
-* handler 使用 dto 接收参数
-* service 返回 vo
-* model 不直接暴露给前端
-
----
+数据库结构放 models，用例输入与结果就近放 services，协议专用结构归 handler/grpc。
+DTO/VO 是职责名称，不强制新增目录。Model 不直接返回客户端，Service 转换为独立结果；
+共享业务错误与规则放 domain，保持无 Core/GORM 依赖。完整示例见 example/standard。
 
 ### 2.5 Go 代码风格
 
@@ -998,104 +968,20 @@ core.Finds[User](core.FindsParams{
 * 最大限制 limit
 * cursor 使用 `created_at,id` 或单独唯一 `id` 的稳定排序
 
-## 4. 代码生成模板
+## 4. 代码生成与标准样例
 
-### 模板 1: 标准 Handler (CRUD)
-```go
-package handler
+使用 `corectl new myapp -m example.com/myapp`，gRPC 加 `-t grpc`。
+工具默认生成 Go 1.25.0、Core v3.1.71 项目，入口只调用 internal/app，构造器不迁移数据库。
+生成文件使用 [corectl/templates](cmd/corectl/templates)，可运行 HTTP 参考见
+[example/standard](example/standard/README.md)。不要复制旧的全局 DAO 或 Handler 接受 Ctx 的业务模板。
 
-import (
-    "your-project/internal/model"
-    "your-project/internal/service"
-    "github.com/xs23933/core/v3"
-)
+HTTP 的标准 context 是 `c.Ctx()`/`c.Context()`，没有 StdContext；后者属于 GRPCCtx。
+HTTP 非成功状态应显式设置 c.Status，再 ToJSON；ToJSON(error) 本身不替代 HTTP 状态映射。
+Service 返回纯业务错误，由 HTTP/gRPC 分别映射；不直接把数据库错误消息暴露客户端。
 
-type UserHandler struct {
-    core.Handler
-}
-
-func (h *UserHandler) Init() {
-    // 可选：覆盖默认路由前缀
-    h.Prefix("/api/v1/users")
-}
-
-// GET /api/v1/users
-func (h *UserHandler) Get(c core.Ctx) {
-    users, err := service.GetUserList(c)
-    c.ToJSON(users, err)
-}
-
-// GET /api/v1/users/:id
-func (h *UserHandler) GetByID(c core.Ctx) {
-    id := c.Params("id")
-    user, err := service.GetUserByID(id)
-    c.ToJSON(user, err)
-}
-
-// POST /api/v1/users
-func (h *UserHandler) Post(c core.Ctx) {
-    var user model.User
-    if err := c.ReadBody(&user); err != nil {
-        c.ToJSON(nil, err)
-        return
-    }
-    err := service.CreateUser(&user)
-    c.ToJSON(user, err)
-}
-
-// PUT /api/v1/users/:id
-func (h *UserHandler) Put_id(c core.Ctx) {
-    id := c.Params("id")
-    var updates map[string]any
-    c.ReadBody(&updates)
-    err := service.UpdateUser(id, updates)
-    c.ToJSON(nil, err)
-}
-
-// DELETE /api/v1/users/:id
-func (h *UserHandler) Delete_id(c core.Ctx) {
-    id := c.Params("id")
-    err := service.DeleteUser(id)
-    c.ToJSON(nil, err)
-}
-```
-
-### 模板 2: 模型定义
-```go
-package model
-
-import "github.com/xs23933/core/v3"
-
-type Product struct {
-    core.Model
-    Name  string  `json:"name" gorm:"not null" validate:"required"`
-    Price float64 `json:"price" validate:"gt=0"`
-    Stock int     `json:"stock"`
-}
-
-func init() {
-    // 自动迁移 (建议放在 main.go 或单独初始化函数)
-    // core.Conn().AutoMigrate(&Product{})
-}
-```
-
-### 模板 3: 配置文件 config.yaml
-```yaml
-debug: true
-listen: ":8080"
-
-database:
-  type: mysql
-  dsn: user:pass@tcp(127.0.0.1:3306)/db?charset=utf8mb4&parseTime=True&loc=Local
-  pool:
-    max_idle: 10
-    max_open: 100
-
-restful:
-  data: data
-  status: success
-  message: msg
-```
+枚举使用 `corectl gen enums [目录]` 查找 *_enums.yaml/enums.yaml，就地输出，--check 只读验证。
+必须检查包名、输出所有权和批次冲突，旧 coregen 没有 enum 子命令。详见
+[corectl](skills/core-corectl.md)、[枚举生成](skills/core-gen.md)。
 
 ## 4.1 AI 错误示例
 
@@ -1348,7 +1234,7 @@ core.RegHandleFactory(func() core.Module { return &UserHandler{} })
 func (h *UserHandler) Prepare(app *core.Core) error {
     db := app.Conn()
     if db == nil { return core.ErrNoConfig }
-    h.svc = service.NewUserService(dao.NewUserDAO(db))
+    h.svc = services.NewUserService(dao.NewUserDAO(db))
     return nil
 }
 ```

@@ -1,0 +1,18 @@
+debug: true
+listen: ":8080"
+database:
+  default:
+    type: sqlite
+    dsn: data.db
+restful:
+  status: status
+  data: data
+  message: msg
+{{if eq .ProjectType "grpc"}}
+# Enable registration only when etcd is available. Services are registered first.
+etcd:
+  enabled: false
+  endpoints: [127.0.0.1:2379]
+  service_name: {{.ProjectName}}
+  service_addr: 127.0.0.1:8080
+{{end}}

@@ -2,6 +2,7 @@
 # 配置加密密钥：core-utils.md；NSQ 认证继承：core-nsq.md。
 skills/
 ├── core-skills.md           # 技能模块总览（功能概述/使用规范/最佳实践）
+├── core-architecture.md     # 下游项目目录、internal/app 装配、domain/models 边界与迁移
 ├── core-handler.md          # 创建 RESTful Handler
 ├── core-model.md            # 定义数据模型
 ├── core-service.md          # 编写业务逻辑层
@@ -23,8 +24,8 @@ skills/
 ├── core-test.md             # 测试编写
 ├── core-ctx.md              # Ctx 上下文使用规范（避坑指南/场景模板）
 ├── core-refactor.md         # 代码重构指南
-├── core-gen.md              # Enum 代码生成器（YAML 配置/程序化生成）
-└── core-corectl.md          # 项目脚手架工具（corectl 使用指南）
+├── core-gen.md              # Enum 代码生成器（目录扫描/--check/单文件兼容）
+└── core-corectl.md          # 项目脚手架工具（标准装配、模板与真实生成验收）
 
 ```
 

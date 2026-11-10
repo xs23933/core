@@ -6,6 +6,11 @@ tags: [go, core-framework, grpc, protobuf, tls, interceptor, etcd, reflection]
 
 # Core gRPC 服务端技能
 
+
+业务项目由 internal/app 装配，internal/grpc 只适配 protobuf/metadata，调用
+internal/services 的协议无关用例。目录见 [core-architecture.md](core-architecture.md)，
+可运行生成与固定 protobuf 工具见 [core-corectl.md](core-corectl.md)。
+
 ## 触发条件
 
 当用户请求以下内容时激活此 Skill：

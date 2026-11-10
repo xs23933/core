@@ -1,284 +1,100 @@
 ---
 name: core-gen
-description: 使用 core 内置 Enum 代码生成器，快速生成类型安全的枚举类型（含 GORM/JSON 支持）
-tags: [go, core-framework, codegen, enum, generator]
+description: 枚举 YAML、corectl 目录扫描与检查、coregen 单文件生成、类型与持久化兼容性
 ---
 
-# Core Enum 代码生成技能
+# 类型枚举生成
 
-## 触发条件
+## 项目目录扫描
 
-当用户请求以下内容时激活此 Skill：
-
-- "创建枚举类型" / "生成 enum" / "添加 UserStatus 枚举"
-- "枚举代码生成"
-- "enum 模板"
-- "批量生成常量"
-
----
-
-## 方式一：YAML 配置 + CLI（推荐）
-
-### 1. 安装 CLI
-
-```bash
-cd ~/mbp/work/core
-go install ./cmd/coregen
-# 或直接运行
-go run ./cmd/coregen -f enums.yaml -o ./constants/
+```sh
+corectl gen enums
+corectl gen enums ./internal
+corectl gen enums --check
 ```
 
-### 2. 编写 YAML 配置
+从指定目录递归查找 *_enums.yaml 和 enums.yaml，在 YAML 同目录生成每个类型的
+`gen_<snake_case类型名>.go`。相同内容不重写；--check 不写入，缺失或过期返回非零。
+跳过 .git、vendor、node_modules、符号链接与嵌套 go.mod 目录；扫描根目录必须是普通目录。
+根目录可以是项目或 internal 等子目录。
+
+```text
+internal/models/
+├── user_enums.yaml
+└── gen_user_status.go
+```
 
 ```yaml
-# enums.yaml
-package: constants
+package: models
 enums:
   - name: UserStatus
-    values:
-      - none
-      - active
-      - disabled
-      - deleted
-  - name: DeviceType
-    values:
-      - none
-      - web
-      - ios
-      - android
-      - other
+    values: [none, active, disabled]
   - name: Lang
-    values:
-      - none
-      - en
-      - zh-CN
-    sensitive: true   # UnmarshalJSON 区分大小写
+    values: [none, en, zh-CN]
+    sensitive: true
 ```
 
-### 3. 执行生成
+package 必填，必须与目录现有非测试 Go 文件相符；批量模式不允许 output。
+每文件一个 YAML document，未知配置字段报错。同目录多个 YAML 合并检查符号冲突。
+类型名是导出的 Go 标识符；避免 UserTest、StateLinux、StateAmd64 等使输出成为测试或平台文件的名称，
+此类名称报错，可用 UserTestEnum 等后缀。枚举有 1..256 个值且首项为 none；- 和 . 转换为常量名中的 _，
+原 wire 值保留。转换后的常量、类型、辅助函数都不能重名；非敏感枚举也检查大小写重复。
 
-```bash
-coregen enum -f enums.yaml -o ./constants/
-# 或指定 package
-coregen enum -f enums.yaml -o ./constants/ -p constants
+写入前检查整个批次、手写 Go 声明、包名、目标所有权和格式。手写文件按当前默认
+GOOS/GOARCH 与 build constraints 选择，忽略测试文件、点/下划线文件和忽略脚本；
+只比较手写与生成声明，不校验手写文件彼此是否重复。其它构建目标仍需对应编译验证。
+目标必须不存在或具有本生成器的头部及匹配的 Source 标记；不覆盖手写文件、其它 YAML
+产物或符号链接。旧无 Source 标记产物需要人工确认并移除，再用扫描命令生成。
+源文件改名、移除类型后遗留的产物需人工检查删除；扫描目录内有配置时会报告多余的已标记产物。
+不自动清理孤立目录，不提供跨所有文件的事务或并发编辑保证；生成期间不要同时修改配置或输出。
+每个变化文件用临时文件替换，磁盘故障仍可能留下已完成的部分更新，修复后重新运行。
+
+生成类型含 Core/GORM 与 JSON 支持，放在 models 或其子包；不要放入约定无框架依赖的 domain。
+产物提交版本控制，不手改，生成命令不绑定应用启动。CI 用 --check 防止 YAML 与 Go 不一致。
+
+## 保留 coregen 单文件方式
+
+```sh
+go install ./cmd/coregen
+coregen -f enums.yaml -o ./constants -p constants
 ```
 
-### 4. 生成结果
+coregen 使用标准 flag，**没有 enum 子命令**。-o/-p 覆盖 YAML 的 output/package；
+未指定时输出相对当前工作目录，默认包 constants。单文件旧接口不强制 Source 标记，
+但只更新带 Core 生成头的文件，拒绝覆盖手写文件。
 
-```
-constants/
-  gen_user_status.go
-  gen_device_type.go
-  gen_lang.go
-```
-
----
-
-## 方式二：`go:generate` 程序化调用
-
-在项目中创建 `gen.go`：
+程序化调用复用相同模板与校验：
 
 ```go
-//go:build ignore
-
-package main
-
-import "github.com/xs23933/core/v3/gen"
-
-func main() {
-    gen.GenerateEnums(gen.EnumConfig{
-        Package: "constants",
-        Output:  "./",
-        Enums: []gen.Enum{
-            {
-                Name:   "UserStatus",
-                Values: []string{"none", "active", "disabled", "deleted"},
-            },
-            {
-                Name:      "Lang",
-                Values:    []string{"none", "en", "zh-CN"},
-                Sensitive: true,
-            },
-        },
-    })
-}
+err := gen.GenerateEnums(gen.EnumConfig{
+    Package: "constants",
+    Output: "./constants",
+    Enums: []gen.Enum{
+        {Name: "State", Values: []string{"none", "active", "disabled"}},
+    },
+})
+// 调用方必须处理 err。
 ```
 
-运行：
+RenderEnums 返回格式化后的文件内容，不写文件。GenerateEnumsInDir(root, check) 提供
+与 corectl 相同的目录语义。旧 GenerateEnums 默认 package/output 保留；非法配置和手写覆盖
+现在返回错误。不会自动补救或重排业务枚举。
 
-```bash
-go generate ./...
-# 或直接运行
-go run gen.go
+## 生成合同与验收
+
+类型为 uint8，包含 iota 常量、Mapping、FromString、String/Int、JSON、SQL Scan/Value、
+GORM 类型和 Parse 辅助函数。默认 JSON 解析不区分大小写，sensitive: true 保留大小写。
+首项 none 对应 0；已经持久化的值只追加，不能重排或插入，否则旧数据含义改变。
+
+Scan 支持 int64/uint8/uint16/uint32/float64/string/[]byte；数值必须为 0..255 的整数，
+拒绝负数、溢出及非有限值且不修改原值。String 越界返回空串，JSON/Text 越界返回错误。
+字符串领域合法性仍由业务校验，数字范围有效不代表业务取值有效。
+
+```sh
+go test ./gen ./cmd/corectl -count=1
+corectl gen enums --check
+go test ./...
+go vet ./...
 ```
 
----
-
-## 生成代码结构
-
-每个 `gen_xxx.go` 包含以下内容：
-
-```go
-// 1. 类型定义
-type UserStatus uint8
-
-// 2. 字符串映射表
-var UserStatusMapping = []string{"none", "active", "disabled", "deleted"}
-
-// 3. 常量（自动 iota）
-const (
-    USER_STATUS_NONE    UserStatus = iota
-    USER_STATUS_ACTIVE
-    USER_STATUS_DISABLED
-    USER_STATUS_DELETED
-)
-
-// 4. 字符串 → 枚举
-func UserStatusFromString(s string) UserStatus
-
-// 5. GORM 支持
-func (UserStatus) GormDBDataType(db *core.DB, field *schema.Field) string
-func (UserStatus) GormDataType() string
-func (v *UserStatus) Scan(value any) error    // ✅ 兼容 int64/uint8/float64
-func (v UserStatus) Value() (driver.Value, error)
-func (v UserStatus) GormValue(ctx, db) clause.Expr
-
-// 6. JSON 序列化
-func (v UserStatus) MarshalJSON() ([]byte, error)
-func (v *UserStatus) UnmarshalJSON(data []byte) error
-
-// 7. 工具方法
-func (v UserStatus) Int() uint8
-func (v UserStatus) String() string
-func ParseUserStatus(in any) any   // 万能解析
-```
-
----
-
-## `sensitive` 字段说明
-
-```yaml
-sensitive: true   # UnmarshalJSON 不自动 ToLower
-                   # 适用于区分大小写的值，如 "en" vs "EN"
-
-sensitive: false  # （默认）UnmarshalJSON 自动 bytes.ToLower
-                   # 适用于不区分大小写的场景
-```
-
----
-
-## Scan() 兼容性与数值边界
-
-枚举边界：生成的 Scan 支持 int64/uint8/uint16/uint32/float64/string/[]byte；数值输入必须为 0～255 的整数，拒绝负数、溢出和非有限浮点且不修改原值。EnumString 对越界索引返回空串，EnumMarshalJSON/EnumMarshalText 返回错误；EnumUnmarshalJSON 在转换前检查数值范围，并支持 256 项映射。字符串解析沿用现行合同，领域取值仍由调用方校验。修改模板后须重新生成业务枚举。
-
-生成产物使用以下实现；涉及 float64 校验时导入 `math`。
-
-```go
-func (v *UserStatus) Scan(value any) error {
-	switch val := value.(type) {
-	case int64:
-		if val < 0 || val > 255 {
-			return fmt.Errorf("cannot scan %v into UserStatus: invalid uint8 value", val)
-		}
-		*v = UserStatus(uint8(val))
-	case uint8:
-		*v = UserStatus(val)
-	case uint16:
-		if val > 255 {
-			return fmt.Errorf("cannot scan %v into UserStatus: invalid uint8 value", val)
-		}
-		*v = UserStatus(uint8(val))
-	case uint32:
-		if val > 255 {
-			return fmt.Errorf("cannot scan %v into UserStatus: invalid uint8 value", val)
-		}
-		*v = UserStatus(uint8(val))
-	case float64:
-		if val < 0 || val > 255 || val != math.Trunc(val) {
-			return fmt.Errorf("cannot scan %v into UserStatus: invalid uint8 value", val)
-		}
-		*v = UserStatus(uint8(val))
-	case string:
-		*v = UserStatusFromString(val)
-	case []byte:
-		*v = UserStatusFromString(string(val))
-	default:
-		return fmt.Errorf("cannot scan %T into UserStatus", value)
-	}
-	return nil
-}
-```
-
----
-
-## 在 model 中使用生成的枚举
-
-```go
-package model
-
-import "your-project/constants"
-
-type User struct {
-    core.Model
-    Status  constants.UserStatus `json:"status" gorm:"type:tinyint;default:0"`
-    Lang    constants.Lang     `json:"lang" gorm:"type:tinyint;default:0"`
-}
-
-// 创建
-user := User{
-    Status: constants.USER_STATUS_ACTIVE,
-    Lang:   constants.LANG_EN,
-}
-
-// 查询
-var users []User
-core.Conn().Where("status = ?", constants.USER_STATUS_ACTIVE).Find(&users)
-
-// JSON 输入输出
-// 输入:  {"status":"active","lang":"en"}
-// 输出:  {"status":"active","lang":"en"}
-```
-
----
-
-## YAML 配置字段说明
-
-```yaml
-package: constants        # 生成文件的 package 名（必填）
-
-enums:
-  - name: UserStatus     # 类型名（Go 标识符，首字母大写）
-    values:              # 枚举值列表（第一个必须是 "none"=0）
-      - none
-      - active
-      - disabled
-    sensitive: false    # 是否区分大小写（默认 false）
-```
-
-### values 命名规则
-
-- 第一个值必须是 `"none"`（对应 iota = 0）
-- 名称会出现在 JSON 序列化和 `String()` 输出中
-- 含 `-` 的值（如 `zh-CN`）会自动转换为 `ZH_CN` 常量
-
----
-
-## 禁止事项
-
-- ❌ 不要在项目中手写 `Scan()` 只支持 `int64` 的枚举类型
-- ❌ 不要修改生成的 `gen_*.go` 文件（标记了 `DO NOT EDIT`）
-- ❌ 不要在 `values` 中省略 `"none"` 作为第一个值
-- ❌ 不要在同一个 YAML 中混用不同 `package`（一次生成一个 package）
-
----
-
-## 输出要求
-
-生成枚举时必须：
-
-1. ✅ 使用 `coregen` CLI 或 `gen.GenerateEnums()`
-2. ✅ `values` 第一个元素是 `"none"`
-3. ✅ 需要区分大小写时设置 `sensitive: true`
-4. ✅ 生成后执行 `go build ./...` 和 `go vet ./...`
-
-带点协议值可直接进入枚举 values：ToFixed 将点及连字符转换为常量名下划线，原 wire 值保持不变；无需在业务代码追加映射或伪造生成文件。
+生成回归编译真实产物，检查数值边界、带点 wire 值、扫描冲突、防覆盖和只读检查。

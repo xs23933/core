@@ -1,7 +1,3 @@
-
-## Skill 1: core-handler.md
-
-```markdown
 ---
 name: core-handler
 description: 创建 Core Framework RESTful Handler，遵循自动路由注册规范
@@ -30,9 +26,8 @@ type XxxHandler struct {
     // service *xxx.XxxService
 }
 
-func init() {
-    core.RegHandle(new(XxxHandler))
-}
+// 在 internal/app 中装配 Service 后登记：
+// core.RegHandle(handler.NewXxxHandler(svc))
 ```
 
 ### 2. 路由命名规则
@@ -85,11 +80,7 @@ func (h *UserHandler) Init() {
 }
 
 func (h *UserHandler) Preload(c core.Ctx) error {
-    token := c.GetHeader("Authorization")
-    if token == "" {
-        return c.SendStatus(401, "unauthorized")
-    }
-    c.Set("token", token)
+    // 如需鉴权，在此调用真实身份验证器；Header 非空不代表认证成功。
     return c.Next()
 }
 
@@ -110,91 +101,17 @@ func (h *UserHandler) Stop(app *core.Core) error {
 - `Start()` 保留旧的异步行为；常驻任务必须响应 `app.Ctx`，不阻塞就绪但也不保证已初始化。
 - `Stop()` 用于清理资源，不要 panic。
 
-### 5. 标准模板
+### 5. 标准模板与装配
 
-```go
-package handler
+完整、可运行模板见 [标准 Handler](../example/standard/internal/handler/user.go)，
+[app 装配](../example/standard/internal/app/http.go)。目录约定见
+[core-architecture.md](core-architecture.md)。
 
-import (
-    "github.com/xs23933/core/v3"
-    "your-project/internal/service"
-    "your-project/internal/dto"
-)
-
-type UserHandler struct {
-    core.Handler
-}
-
-func init() {
-    core.RegHandle(new(UserHandler))
-}
-
-func (h *UserHandler) Init() {
-    h.Prefix("/api/v1/users")
-}
-
-func (h *UserHandler) Preload(c core.Ctx) error {
-    return c.Next()
-}
-
-// GET /api/v1/users
-func (h *UserHandler) Get(c core.Ctx) {
-    page := c.QueryInt("page", 1)
-    size := c.QueryInt("size", 20)
-    
-    users, total, err := service.GetUserList(page, size)
-    c.ToJSON(core.Map{
-        "list":  users,
-        "total": total,
-        "page":  page,
-        "size":  size,
-    }, err)
-}
-
-// GET /api/v1/users/:id
-func (h *UserHandler) GetByID(c core.Ctx) {
-    id := c.Params("id")
-    user, err := service.GetUserByID(id)
-    c.ToJSON(user, err)
-}
-
-// POST /api/v1/users
-func (h *UserHandler) Post(c core.Ctx) {
-    var req dto.CreateUserRequest
-    if err := c.ReadBody(&req); err != nil {
-        c.ToJSON(nil, err)
-        return
-    }
-    
-    if err := c.Validate(&req); err != nil {
-        c.ToJSON(nil, err)
-        return
-    }
-    
-    user, err := service.CreateUser(&req)
-    c.ToJSON(user, err)
-}
-
-// PUT /api/v1/users/:id
-func (h *UserHandler) Put_id(c core.Ctx) {
-    id := c.Params("id")
-    var req dto.UpdateUserRequest
-    if err := c.ReadBody(&req); err != nil {
-        c.ToJSON(nil, err)
-        return
-    }
-    
-    user, err := service.UpdateUser(id, &req)
-    c.ToJSON(user, err)
-}
-
-// DELETE /api/v1/users/:id
-func (h *UserHandler) Delete_id(c core.Ctx) {
-    id := c.Params("id")
-    err := service.DeleteUser(id)
-    c.ToJSON(nil, err)
-}
-```
+Handler 接收构造好的 Service，app 统一 core.RegHandle；不要求 init() 隐式注册。
+参数使用 Params/ReadBody/Validate。HTTP context 通过 c.Ctx() 传入 Service，
+业务方法不得接收 core.Ctx。格式非法在入口拒绝，业务规则由 Service 再保证。
+HTTP 状态显式调用 c.Status(code)，然后 c.ToJSON(data, err) 生成响应体；
+ToJSON(error) 不自动设置对应 HTTP 状态。内部故障只返回通用错误。
 
 ### 6. 禁止事项
 
@@ -248,11 +165,10 @@ c.SendStatus(404, "Not Found")
 生成 Handler 时必须包含：
 
 1. ✅ 结构体定义（嵌入 `core.Handler`）
-2. ✅ `init()` 函数注册
+2. ✅ 在 internal/app 装配 Service 并登记自动 Handler
 3. ✅ 方法按命名规范命名
 4. ✅ 使用 `c.ToJSON()` 返回响应
 5. ✅ 错误处理完整
-```
 
 
 ## 动态路由原子替换（框架内部）

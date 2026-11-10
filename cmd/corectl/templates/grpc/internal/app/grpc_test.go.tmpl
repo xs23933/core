@@ -1,0 +1,133 @@
+package app
+
+import (
+	"context"
+	"net"
+	"os"
+	"testing"
+	"time"
+
+	"github.com/xs23933/core/v3"
+	"github.com/xs23933/uid"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
+	reflectionpb "google.golang.org/grpc/reflection/grpc_reflection_v1"
+	"google.golang.org/grpc/status"
+	pb "{{.ModulePath}}/gen/user/v1"
+	"{{.ModulePath}}/internal/dao"
+	"{{.ModulePath}}/internal/models"
+	"{{.ModulePath}}/internal/services"
+)
+
+func TestGRPCQueries(t *testing.T) {
+	options := core.Options{"debug": false, "listen": "127.0.0.1:0", "database": core.Options{"type": "sqlite", "dsn": ":memory:"}}
+	endpoint := os.Getenv("CORECTL_TEST_ETCD")
+	if endpoint != "" {
+		options["etcd"] = core.Options{"enabled": true, "endpoints": []string{endpoint}, "service_name": "corectl-demo", "service_addr": "127.0.0.1:8080"}
+	}
+	engine := core.New(options)
+	t.Cleanup(func() {
+		if err := engine.ShutdownWithTimeout(5 * time.Second); err != nil {
+			t.Error(err)
+		}
+	})
+	db := engine.Conn()
+	if db == nil {
+		t.Fatal("database missing")
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqlDB.SetMaxOpenConns(1)
+	if err := db.AutoMigrate(&models.User{}); err != nil {
+		t.Fatal(err)
+	}
+	row := models.User{Username: "alice", Status: models.USER_STATUS_ACTIVE}
+	if err := db.Create(&row).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := register(engine, services.NewUserService(dao.NewUserDAO(db))); err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine.Handler = engine
+	done := make(chan error, 1)
+	go func() { done <- engine.Serve(listener) }()
+	t.Cleanup(func() {
+		if err := engine.ShutdownWithTimeout(5 * time.Second); err != nil {
+			t.Error(err)
+		}
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Error(err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Error("server did not stop")
+		}
+	})
+	deadline := time.Now().Add(5 * time.Second)
+	for !engine.ServingReady() {
+		if time.Now().After(deadline) {
+			t.Fatal("server not ready")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	conn, err := grpc.NewClient(listener.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client := pb.NewUserServiceClient(conn)
+	list, err := client.ListUsers(ctx, &pb.ListUsersRequest{})
+	if err != nil || len(list.GetUsers()) != 1 || list.GetTotal() != 1 {
+		t.Fatalf("list = %v, %v", list, err)
+	}
+	detail, err := client.GetUser(ctx, &pb.GetUserRequest{Id: row.ID.String()})
+	if err != nil || detail.GetUser().GetUsername() != "alice" {
+		t.Fatalf("detail = %v, %v", detail, err)
+	}
+	for _, tc := range []struct {
+		id   string
+		code codes.Code
+	}{
+		{"invalid", codes.InvalidArgument}, {uid.New().String(), codes.NotFound},
+	} {
+		if _, err := client.GetUser(ctx, &pb.GetUserRequest{Id: tc.id}); status.Code(err) != tc.code {
+			t.Fatalf("get %q: %v", tc.id, err)
+		}
+	}
+	if _, err := client.ListUsers(ctx, &pb.ListUsersRequest{Size: 101}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("invalid size: %v", err)
+	}
+	if endpoint != "" {
+		stream, err := reflectionpb.NewServerReflectionClient(conn).ServerReflectionInfo(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := stream.Send(&reflectionpb.ServerReflectionRequest{MessageRequest: &reflectionpb.ServerReflectionRequest_ListServices{ListServices: ""}}); err != nil {
+			t.Fatal(err)
+		}
+		response, err := stream.Recv()
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, service := range response.GetListServicesResponse().GetService() {
+			if service.GetName() == "user.v1.UserService" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("reflection missing UserService: %v", response)
+		}
+		stream.CloseSend()
+	}
+}

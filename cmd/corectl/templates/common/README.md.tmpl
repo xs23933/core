@@ -1,0 +1,53 @@
+# {{.ProjectName}}
+
+本项目采用 `cmd → internal/app` 装配、`handler/grpc → services → dao → models` 调用链。
+纯业务错误与规则放在 `internal/domain`；带 Core/GORM 支持的枚举放在 `internal/models`。
+这是无认证的本地查询样例，生产部署前须配置身份验证和业务权限；不提供默认账号或密码。
+
+要求 Go {{.GoVersion}} 或更高版本，Core {{.CoreVersion}}。
+{{if eq .ProjectType "grpc"}}
+## 生成 protobuf
+
+需要预先安装 protoc（本模板验收使用 36.2），然后安装固定版本的 Go 插件：
+
+```sh
+mkdir -p .tools/bin
+GOBIN="$PWD/.tools/bin" go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.11
+GOBIN="$PWD/.tools/bin" go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.6.1
+PATH="$PWD/.tools/bin:$PATH" protoc --go_out=. --go_opt=module={{.ModulePath}} --go-grpc_out=. --go-grpc_opt=module={{.ModulePath}} proto/user/v1/user.proto
+```
+
+protobuf 生成成功后再执行以下步骤。提交 `gen/user/v1/*.go`，普通构建无需安装 protoc。
+{{end}}
+## 初始化与启动
+
+```sh
+go mod tidy
+go run ./cmd -migrate
+go run ./cmd -f config.yaml
+```
+
+`-migrate` 显式执行演示库的 AutoMigrate 后退出；普通启动不会修改表结构。
+生产数据库应使用经过审核的版本化迁移。首次查询为空，可通过受控测试夹具插入用户验证非空结果。
+{{if eq .ProjectType "http"}}
+```sh
+curl 'http://localhost:8080/api/v1/users?p=1&l=20'
+curl 'http://localhost:8080/api/v1/users/invalid-id'
+```
+{{else}}
+gRPC 默认与 HTTP 共用 `:8080`，无需 etcd 即可启动。需要 Gateway 发现时，在配置中设置
+`etcd.enabled: true` 并提供可用 etcd 地址。应用先注册 protobuf service，再调用 EnableEtcdRegistry。
+启用后 reflection 中的方法可由 Gateway 自动形成路由；请在入口与下游落实权限判断。
+{{end}}
+## 枚举与验证
+
+```sh
+corectl gen enums
+corectl gen enums --check
+go test ./...
+go vet ./...
+```
+
+修改 `internal/models/user_enums.yaml` 后重新生成。枚举使用 iota；已持久化的值只追加，不重排。
+测试与源文件放在同一包。`internal/app` 是单进程单 Core 的装配示例；多 Core 使用 Core 的
+RegHandleFactory/Prepare 按实例注入，不复用已绑定的 Handler。

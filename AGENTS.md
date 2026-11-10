@@ -29,6 +29,7 @@
 | 任务 | 必读 Skill |
 | --- | --- |
 | Handler、自动路由、请求响应 | `core-handler.md`、`core-ctx.md` |
+| 项目目录、应用装配、旧项目迁移 | `core-architecture.md` |
 | Service、业务分层 | `core-service.md` |
 | GORM、模型、事务、分页 | `core-model.md`、`core-page.md` |
 | 中间件 | `core-middleware.md` |
@@ -62,12 +63,12 @@
 
 ### 4.2 编写下游使用示例或生成业务代码
 
-- 默认采用 `handler -> service -> dao -> model`，Handler 只负责协议适配、参数解析、鉴权、调用 Service 和响应。
+- 下游项目目录与装配先读 `skills/core-architecture.md`；默认采用 `handler/grpc -> services -> dao -> models`，Handler 只负责协议适配、参数解析、鉴权、调用 Service 和响应。
 - 自动路由 Handler 必须嵌入 `core.Handler`，遵循方法名到 HTTP 路径的映射规则；动态参数使用 `_id` 或规定的 `Param/Params` 形式。
 - 使用 `c.Params(...)`、`c.ReadBody(...)`、`c.Validate(...)` 和 `c.ToJSON(...)`，不要生成 Gin/Fiber/Echo 风格 API。
 - Service 使用 `context.Context`，不要依赖 `core.Ctx`；事务边界放在 Service。
 - 不直接向客户端暴露数据库 Model，使用 DTO/VO 表达输入输出。
-- `core.Ctx` 只在当前请求生命周期有效；禁止存入全局或在 goroutine 中继续使用。异步工作先提取值并传递 `c.StdContext()` 或独立 context。
+- `core.Ctx` 只在当前请求生命周期有效；禁止存入全局或在 goroutine 中继续使用。异步工作先提取值并传递 `c.Ctx()` 或独立 context。
 
 ## 5. 通用编码规则
 

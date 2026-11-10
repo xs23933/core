@@ -23,6 +23,12 @@ jobs:
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version-file: go.mod
+      - name: Install protobuf generation tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.11
+          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.6.1
       - name: Verify dependencies
         run: go mod verify
       - name: Vet
@@ -31,5 +37,7 @@ jobs:
         run: go test ./... -count=1 -timeout=10m
       - name: Build
         run: go build ./...
+      - name: Published scaffold baseline
+        run: bash scripts/check-scaffold-release.sh
       - name: Concurrency stress tests
         run: bash scripts/stress.sh

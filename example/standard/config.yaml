@@ -1,0 +1,10 @@
+debug: true
+listen: ":8080"
+database:
+  default:
+    type: sqlite
+    dsn: data.db
+restful:
+  status: status
+  data: data
+  message: msg
