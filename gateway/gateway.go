@@ -26,6 +26,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 type Route = route.Definition
@@ -1200,7 +1201,7 @@ func (gw *EtcdGateway) createProxyHandler(route *Route) core.HandlerFunc {
 					return ctx.Status(http.StatusBadRequest).JSON(core.Map{"code": 400, "msg": "invalid request body"})
 				}
 			}
-			reqBody := mergeGRPCRequestBody(ctx.ParamsMaps(), ctx.Request().URL.Query(), bodyMap)
+			reqBody := mergeGRPCRequestBody(ctx.ParamsMaps(), ctx.Request().URL.Query(), bodyMap, proxy.schema.methods[route.GRPCMethod].NewRequest().ProtoReflect().Descriptor())
 			appendGatewayRequestMetadata(reqBody, ctx.Request().Header, rawBody)
 			var err error
 			jsonReq, err = sonic.Marshal(reqBody)
@@ -1294,8 +1295,29 @@ func buildGRPCRequestBody(params map[string]string, query map[string][]string) c
 	return reqBody
 }
 
-func mergeGRPCRequestBody(params map[string]string, query map[string][]string, body core.Map) core.Map {
+func mergeGRPCRequestBody(params map[string]string, query map[string][]string, body core.Map, descriptors ...protoreflect.MessageDescriptor) core.Map {
 	reqBody := buildGRPCRequestBody(nil, query)
+	if len(descriptors) > 0 && descriptors[0] != nil {
+		fields := descriptors[0].Fields()
+		for key, values := range query {
+			field := fields.ByName(protoreflect.Name(key))
+			if field == nil {
+				field = fields.ByJSONName(key)
+			}
+			if field == nil || !field.IsList() {
+				continue
+			}
+			// 查询列表保留全部原始字符串及顺序，避免ID和大整数经过浮点转换。
+			items := make([]any, len(values))
+			for i, value := range values {
+				items[i] = value
+				if field.Kind() == protoreflect.BoolKind && (value == "true" || value == "false") {
+					items[i] = value == "true"
+				}
+			}
+			reqBody[key] = items
+		}
+	}
 	maps.Copy(reqBody, body)
 	for key, value := range params {
 		reqBody[key] = value
