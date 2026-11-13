@@ -1,325 +1,59 @@
 ---
 name: core-ctx
-description: Core Framework Ctx 上下文正确使用方法，避免与 Gin 混淆
-tags: [go, core-framework, ctx, context]
+description: HTTP Ctx 参数解析、请求体校验、JSON/状态响应及请求生命周期
 ---
 
-# Core Ctx 使用规范
+# HTTP Ctx
 
+## 适用任务
 
-HTTP core.Ctx 的标准 context 使用 c.Ctx() 或 c.Context()，没有 StdContext 方法。
-StdContext() 属于 core.NewGRPCCtx 返回的 RPC 适配对象；不要混用模板。
+读取路径/query/body、校验输入、返回 HTTP 响应或传播请求 context；自动路由配合 [Handler](core-handler.md)。
 
-## ⚠️ 关键差异（AI 必读）
+## 必须遵守
 
-### 1. 参数获取：是 `Params()` 不是 `Param()`
+| 操作 | Core API | 完成条件 |
+| --- | --- | --- |
+| 路径 | c.Params("id") | 按业务规则验证格式 |
+| 数字路径 | c.ParamsInt("id") | 检查返回的 error |
+| query | c.Query("q", "") | 严格整数用 strconv.Atoi 并检查错误 |
+| body | c.ReadBody(&req) | 错误时返回 400，不继续业务 |
+| 校验 | c.Validate(&req) | 使用 validate 标签，检查 error |
+| JSON | return c.ToJSON(data, err) | 业务错误先设置 HTTP 状态并脱敏 |
+| 状态 | c.Status(http.StatusBadRequest) | 在写出响应之前调用 |
+| context | c.Ctx() 或 c.Context() | 传给 Service 与下游操作 |
 
-```go
-// ❌ 错误（Gin 风格）
-id := c.Param("id")
+ToJSON 不从 error 自动推导 HTTP 状态。Ctx 只在当前请求有效，不能保留给 goroutine；
+先提取值并选择符合异步任务生命周期的 context。StdContext 属于 GRPCCtx，不是 HTTP Ctx。
 
-// ✅ 正确（Core 风格）
-id := c.Params("id")  // 注意有个 s
-```
+## 最小示例
 
-### 2. 请求体解析：用 `ReadBody()` 不是 `ShouldBindJSON()`
-
-```go
-// ❌ 错误（Gin 风格）
-var user User
-if err := c.ShouldBindJSON(&user); err != nil {
-    return
-}
-
-// ✅ 正确（Core 风格）
-var user User
-if err := c.ReadBody(&user); err != nil {
-    c.ToJSON(nil, err)
-    return
-}
-```
-
-### 3. 响应返回：用 `ToJSON()` 不是 `JSON()`
+以下为 Handler 方法片段；完整 imports/装配见 [标准 Handler](../example/standard/internal/handler/user.go)。
 
 ```go
-// ❌ 错误（手动处理错误）
-user, err := service.GetUser()
-if err != nil {
-    c.JSON(gin.H{"error": err.Error()})
-    return
-}
-c.JSON(gin.H{"data": user})
-
-// ✅ 正确（Core 自动处理）
-user, err := service.GetUser()
-c.ToJSON(user, err)  // 自动格式化：{"data": user, "msg": "ok"}
-```
-
-## 📚 Core 特有方法详解
-
-### 路径参数类型转换
-
-Core 提供了多种类型的路径参数解析，AI 应根据业务场景选择：
-
-```go
-// 字符串参数（通用）
-id := c.Params("id")
-
-// UID 类型（推荐用于 ID）
-uid, err := c.ParamsUid("userId")  // 返回 uid.UID 类型
-
-// SID 类型（短ID，适合对外暴露）
-sid, err := c.ParamsSid("code")    // 返回 sid.ID 类型
-
-// XID 类型（分布式ID）
-xid, err := c.ParamsXid("traceId") // 返回 xid.ID 类型
-
-// 整数类型
-id, err := c.ParamsInt("page")     // 返回 int 类型
-```
-
-### 表单/Query 参数类型转换
-
-```go
-// Query 参数（GET 请求）
-name := c.Query("name", "default")
-age := c.QueryInt("age", 18)
-
-// 表单参数（POST 表单）
-email := c.FormValue("email")
-
-// 类型化表单值
-userID := c.FromValueUid("user_id")      // 解析为 uid.UID
-xid := c.FromValueXid("request_id")      // 解析为 xid.ID
-sid := c.GetSid("session_id")            // 解析为 sid.ID
-```
-
-### 响应方法
-
-```go
-// 标准 JSON 响应（推荐）
-c.ToJSON(data, err)
-// 成功：{"data": {...}, "msg": "ok", "status": true}
-// 失败：{"data": null, "msg": "error message", "status": false}
-
-// 带自定义状态码
-c.ToJSONCode(data, 200, "custom message")
-
-// 纯 JSON（不包装）
-c.JSON(map[string]any{"key": "value"})
-
-// 字符串响应
-c.SendString("Hello")
-
-// 状态码响应
-c.SendStatus(404, "Not Found")
-```
-
-## 🎯 常见场景模板
-
-### 响应 writer 包装（框架中间件）
-
-中间件需要拦截响应时，先保存 `original := c.Response()`，再调用
-`c.SetResponseWriter(wrapped)`，并 `defer c.SetResponseWriter(original)`。
-包装器必须实现 `core.ResponseWriter`（包括 WriteString、DoWriteHeader、Flush
-和 Hijack 等行为），不得将 writer 或 Ctx 保存到请求生命周期之外。
-一般业务 Handler 直接使用响应便捷方法，无需包装 writer。
-
-响应写出后返回错误，Core 记录错误，不会继续追加错误文本或重写状态。
-未写出前的错误仍由框架返回；不要依赖先写出半份响应再返回错误来生成结构化错误页。
-
-### 场景 1：标准 CRUD - 获取资源
-
-```go
-// GET /api/v1/users/:id
-func (h *UserHandler) Get_id(c core.Ctx) {
-    // 1. 获取并转换参数
-    id, err := c.ParamsUid("id")
-    if err != nil {
-        c.ToJSON(nil, err)
-        return
+func (h *UserHandler) Post(c core.Ctx) error {
+    var req struct {
+        Name string `json:"name" validate:"required"`
     }
-    
-    // 2. 调用 service
-    user, err := service.GetUserByID(id)
-    
-    // 3. 返回响应
-    c.ToJSON(user, err)
-}
-```
-
-### 场景 2：创建资源 - JSON Body
-
-```go
-// POST /api/v1/users
-func (h *UserHandler) Post(c core.Ctx) {
-    var req dto.CreateUserRequest
-    
-    // 1. 解析 JSON body
     if err := c.ReadBody(&req); err != nil {
-        c.ToJSON(nil, err)
-        return
+        c.Status(400)
+        return c.ToJSON(nil, core.NewError(400, "invalid request"))
     }
-    
-    // 2. 验证
     if err := c.Validate(&req); err != nil {
-        c.ToJSON(nil, err)
-        return
+        c.Status(400)
+        return c.ToJSON(nil, core.NewError(400, "invalid name"))
     }
-    
-    // 3. 业务逻辑
-    user, err := service.CreateUser(&req)
-    c.ToJSON(user, err)
+    // 此片段仅演示解析与校验；实际创建需调用 Service 并映射业务错误。
+    return c.ToJSON(req.Name, nil)
 }
 ```
 
-### 场景 3：列表查询 - Query 参数
+## 易错边界
 
-```go
-// GET /api/v1/users
-func (h *UserHandler) Get(c core.Ctx) {
-    // 获取分页参数
-    page := c.QueryInt("page", 1)
-    size := c.QueryInt("size", 20)
-    keyword := c.Query("keyword")
-    
-    // 业务逻辑
-    users, total, err := service.GetUserList(page, size, keyword)
-    
-    c.ToJSON(core.Map{
-        "list":  users,
-        "total": total,
-        "page":  page,
-        "size":  size,
-    }, err)
-}
-```
+QueryInt 的默认值不能替代严格格式校验。写出响应后无法再改状态；写出后返回错误不会追加错误文本。
+超时是协作式取消，需要下游响应 context；异步保存 Ctx 会越过复用边界。
+文件上传、cookie、writer 包装、超时细节见 [完整 Ctx 参考](core-ctx-reference.md)。
 
-### 场景 4：文件上传
+## 验证与深入
 
-```go
-// POST /api/v1/upload
-func (h *UploadHandler) Post(c core.Ctx) {
-    // 单文件上传
-    relpath, abspath, err := c.SaveFile("file", "./uploads")
-    if err != nil {
-        c.ToJSON(nil, err)
-        return
-    }
-    
-    c.ToJSON(map[string]string{
-        "path": relpath,
-    }, nil)
-}
-```
-
-### 场景 5：请求级别变量存储
-
-```go
-// 中间件中存储用户信息
-func AuthMiddleware(next core.HandlerFunc) core.HandlerFunc {
-    return func(c core.Ctx) error {
-        userID := validateToken(c.GetHeader("Authorization"))
-        
-        // 存储到上下文
-        c.Set("user_id", userID)
-        c.Locals("user", user)  // 另一种方式
-        
-        return next(c)
-    }
-}
-
-// Handler 中获取
-func (h *UserHandler) GetProfile(c core.Ctx) {
-    // 获取存储的值
-    userID := c.GetString("user_id")
-    user := c.Locals("user")
-    
-    // 类型安全的获取
-    uid := c.GetSid("user_id")
-    
-    c.ToJSON(user, nil)
-}
-```
-
-## 🔧 方法对照表（AI 自查用）
-
-| 操作 | ❌ 错误（Gin/其他） | ✅ 正确（Core） |
-|-----|-------------------|----------------|
-| 路径参数 | `c.Param("id")` | `c.Params("id")` |
-| Query 参数 | `c.Query("name")` | `c.Query("name")` ✅ 相同 |
-| Query 整数 | `c.DefaultQuery("age", 18)` | `c.QueryInt("age", 18)` |
-| JSON 绑定 | `c.ShouldBindJSON(&user)` | `c.ReadBody(&user)` |
-| 表单绑定 | `c.Bind(&form)` | `c.ReadBody(&form)` |
-| 验证 | `c.ShouldBind(&form)` | `c.Validate(&form)` |
-| 响应 JSON | `c.JSON(200, user)` | `c.ToJSON(user, err)` |
-| 响应错误 | `c.JSON(400, gin.H{"error": err})` | `c.ToJSON(nil, err)` |
-| 设置变量 | `c.Set("key", val)` | `c.Set("key", val)` ✅ 相同 |
-| 获取变量 | `c.GetString("key")` | `c.GetString("key")` ✅ 相同 |
-| 请求 ID | `c.GetHeader("X-Request-Id")` | `c.GetHeader("X-Request-Id")` ✅ 相同 |
-
-## 🚫 禁止事项（AI 特别注意）
-
-1. **禁止使用 `c.Param()`**（Gin 风格），必须用 `c.Params()`
-2. **禁止使用 `c.ShouldBindJSON()`**，必须用 `c.ReadBody()`
-3. **禁止手动处理错误响应**，使用 `c.ToJSON(data, err)` 统一处理
-4. **禁止忽略 `ParamsUid` 等方法的错误返回**
-5. **禁止在 goroutine 中直接使用 `c`**，需要先提取数据
-
-## ✅ 正确示例总结
-
-```go
-// 完整的 Handler 示例
-type OrderHandler struct {
-    core.Handler
-}
-
-func (h *OrderHandler) Init() {
-    h.Prefix("/api/v1/orders")
-}
-
-// GET /api/v1/orders/:id
-func (h *OrderHandler) Get_id(c core.Ctx) {
-    // 1. 解析参数（注意是 Params 不是 Param）
-    id, err := c.ParamsSid("id")
-    if err != nil {
-        c.ToJSON(nil, err)
-        return
-    }
-    
-    // 2. 调用 service
-    order, err := service.GetOrder(id)
-    
-    // 3. 统一响应
-    c.ToJSON(order, err)
-}
-
-// POST /api/v1/orders
-func (h *OrderHandler) Post(c core.Ctx) {
-    var req dto.CreateOrderRequest
-    
-    // 4. 解析 body（注意是 ReadBody）
-    if err := c.ReadBody(&req); err != nil {
-        c.ToJSON(nil, err)
-        return
-    }
-    
-    // 5. 验证
-    if err := c.Validate(&req); err != nil {
-        c.ToJSON(nil, err)
-        return
-    }
-    
-    // 6. 业务逻辑
-    order, err := service.CreateOrder(&req)
-    c.ToJSON(order, err)
-}
-```
-## gRPC 场景的 Cookie 对应接口
-
-HTTP Handler 使用 `c.SetCookie`/`c.RemoveCookie`/`c.Cookie`；gRPC Handler 使用 `core.GrpcSetCookie(ctx, name, value, exp, path, args...)`/`core.GrpcRemoveCookie(ctx, name, path, dom...)`/`core.GrpcCookie(ctx, *http.Cookie)` 并处理 error。设置/删除共享 BaseCtx 默认值、value 编码与可变参数；完整 cookie 入口不补默认值、不编码 value。Core 托管 RPC 的默认 Domain 取当前应用配置，不能依赖全局 Conf。详见 [core-grpc.md](core-grpc.md)。
-
-
-### 超时上下文与生命周期
-
-`middleware/timeout` 采用协作式取消：默认 30 秒（Timeout 非正值仍用默认），deadline 同时作用于 `c.Context()`、`c.Ctx()`、`c.Request().Context()` 和 `c.Stream()`。保留 JSON/XML/multipart 正文。取消后的 writer 写入返回 `http.ErrHandlerTimeout`；中间件等待 handler 返回后才恢复 request/writer、回收 Ctx。未提交响应时返回配置的超时状态（默认 503）；已提交响应保留原状态与正文，不追加超时消息。handler 必须把 context 传给下游并主动退出；不响应取消的 handler 会继续占用请求，**不保证立即返回 503**。这是对原先不安全的 goroutine 抢先返回行为的兼容调整；流式连接建议用 Skip 排除。
+检查非法 JSON、缺必填字段、非法数字、状态码与取消传播。实现见 [ctx.go](../ctx.go)，
+集成样例见 [HTTP 测试](../example/standard/internal/app/http_test.go)。

@@ -42,7 +42,7 @@ Core 是一个用于快速开发企业级 Go 应用程序的 Web 框架，包括
 
 <!-- AI_CONFIG_START -->
 参考文档：
-- ./AI_CONTEXT.md - Core 框架完整上下文
+- ./AI_CONTEXT.md - Core 任务速查（完整参考见 AI_CONTEXT_REFERENCE.md）
 - ./skills/ - 场景化开发模板
 <!-- AI_CONFIG_END -->
 
@@ -3037,7 +3037,22 @@ func (h *Handler) GetByID(c core.Ctx) error {}
   - 自定义参数: c.Params("id"), c.Params("userId") 等
 ```
 
+## 本地模型与按需上下文
+
+从 [AGENTS.md](AGENTS.md) 和 [AI_CONTEXT.md](AI_CONTEXT.md) 开始，按 [skills 索引](skills/README.md) 选择任务资料。
+8k HTTP 任务可直接注入 [Handler 包](context/handler-8k.md)，不用重复加载完整文档；
+预算、生成及验证方法见 [context/README.md](context/README.md)。
+[完整总览](AI_CONTEXT_REFERENCE.md)、[Handler 参考](skills/core-handler-reference.md) 与
+[Ctx 参考](skills/core-ctx-reference.md) 保留按需查阅。框架 API 与运行行为不因本次文档整理改变。
+
 ## 版本历史
+
+### v3.1.73
+
+- 精简 AGENTS/AI_CONTEXT，Handler/Ctx 采用统一的任务、规则、示例、边界和验证结构，保留完整参考。
+- 提供从规则和真实 Handler 源码生成的离线 8k 任务包、预算说明及 CI 漂移检查；未进行本地模型效果评测。
+- 包含 v3.1.72 后已合入的 Gateway protobuf repeated query 解析修正（含数量边界）。
+
 
 ### v3.1.72
 

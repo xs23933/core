@@ -1,3 +1,10 @@
+# Core 技能索引
+## 按任务加载（先读）
+
+短入口：[AI_CONTEXT](../AI_CONTEXT.md)。小窗口：[8k Handler 包](../context/handler-8k.md) 与 [加载说明](../context/README.md)。
+编写标准：[AUTHORING](AUTHORING.md)。Handler/Ctx 先读短 skill，路由生命周期、writer、cookie/超时等边界再查
+[Handler 完整参考](core-handler-reference.md)、[Ctx 完整参考](core-ctx-reference.md)。
+本文件的功能总览按需查询，不要求全文加载。其它主题仍使用下列原有文档。
 ```sh
 # 配置加密密钥：core-utils.md；NSQ 认证继承：core-nsq.md。
 skills/

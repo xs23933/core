@@ -29,6 +29,10 @@ jobs:
           sudo apt-get install -y protobuf-compiler
           go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.11
           go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.6.1
+      - name: Check local-model context
+        run: |
+          python3 scripts/build-handler-context.py --check
+          python3 -m unittest discover -s scripts -p 'test_*context.py'
       - name: Verify dependencies
         run: go mod verify
       - name: Vet
